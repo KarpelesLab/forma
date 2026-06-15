@@ -34,8 +34,13 @@ fn main() {
 }
 ```
 
-> **Status: pre-alpha / scaffolding.** The architecture and phased plan live in
-> [`ROADMAP.md`](./ROADMAP.md). APIs are unstable and largely unimplemented.
+> **Status: pre-alpha.** The architecture and phased plan live in
+> [`ROADMAP.md`](./ROADMAP.md). APIs are unstable.
+
+Forma running on a real X server (rendered by the native X11 backend under Xvfb
+in CI — see the `Visual` workflow):
+
+![Forma on X11](./docs/screenshots/forma-x11.png)
 
 ## Design at a glance
 
@@ -83,9 +88,13 @@ Pre-alpha scaffolding. The library crates build on **Rust 1.86** (edition
 - self-drawn, themeable, anti-aliased surfaces (panels, rows/columns, buttons,
   dividers, swatches) with flex layout and DPI scaling.
 
-Next milestones (see `ROADMAP.md`): the `forma-core` reactive runtime (state,
-reconcile, event dispatch, hit-testing), the `oxideav-scribe` text-rendering
-bridge, and the native Wayland/X11 platform backend.
+Working today: the full reactive toolkit (render, layout, state, tap/keyboard/
+focus/drag, text, 12 widgets, theming), a native **X11** backend (CI-verified
+with screenshots under Xvfb), and a cross-OS build matrix (Linux/macOS/Windows).
+
+Next milestones (see `ROADMAP.md`): native Windows/macOS backends (the CI
+matrix already build-checks them; Windows runners have a display for visual
+tests), then Wayland, mobile, web, and GPU backends.
 
 ## License
 

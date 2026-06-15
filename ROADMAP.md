@@ -41,12 +41,14 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Golden-pixel conformance** tests (font-free, deterministic) over the
   headless path — the cross-platform "pixel-identical" guarantee, enforced in
   CI; native backends must match the same samples.
-- 🚧 **Platform layer**: headless backend + a native **X11** backend written
-  directly against the wire protocol (pure sockets, no deps, no `unsafe`):
-  window create/map/resize/close, `PutImage` present, pointer + raw key events.
-  Its pure codec (setup-reply / `$DISPLAY` / `.Xauthority` parsing, RGBA→X11
-  conversion) is unit-tested; the live socket path needs an X server to verify.
-  `App::run` selects X11 when `$DISPLAY` is set, else headless.
+- ✅ **Native X11 backend** written directly against the wire protocol (pure
+  sockets, no deps, no `unsafe`): connect + auth, window create/map/resize/
+  close, `PutImage` present, pointer + raw key events. **CI-verified**: a
+  `Visual` workflow runs the `window` example under Xvfb and screenshots the
+  result (`docs/screenshots/forma-x11.png`). `App::run` selects X11 when
+  `$DISPLAY` is set, else headless.
+- ✅ **Cross-OS CI**: the workspace build matrix compiles on Ubuntu, macOS, and
+  Windows runners — build-verifying the platform layer on all three desktops.
 - ⬜ **Wayland backend** (needs hand-authored xdg-shell tables); ⬜ X11 keysym→
   text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
   selection text editing; ⬜ hover/cursor states; ⬜ a11y; ⬜ macOS/Windows;
