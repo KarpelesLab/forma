@@ -5,16 +5,15 @@
 //! their colors and metrics from a [`Theme`], so a single theme swap re-skins
 //! the whole UI.
 //!
-//! These are the structural and surface widgets available in the scaffold
-//! (panels, rows/columns, buttons, dividers, swatches, spacers). **Text** and
-//! **interaction** (`on_tap`, hover, focus) are intentionally absent here: text
-//! needs the `oxideav-scribe` shaping bridge and interaction needs the
-//! `forma-core` reactive runtime — both are the next roadmap milestones. Until
-//! then a "button" is a styled surface, not yet a clickable control.
+//! Available widgets: structure (`column`, `row`, `spacer`, `panel`),
+//! content (`label`, `swatch`, `divider`), and interactive controls
+//! (`button`, `button_labeled` with [`Element::on_tap`], and `text_field` with
+//! [`Element::on_key`] + [`edit_string`]). Hover states, multi-line/caret text
+//! editing, and richer controls (checkbox, slider, …) are still to come.
 
 #![forbid(unsafe_code)]
 
-use forma_core::{Align, Axis, BoxStyle, Element};
+use forma_core::{Align, Axis, BoxStyle, Cx, Element, KeyInput};
 use forma_geometry::Insets;
 use forma_render::Color;
 use forma_style::Theme;
@@ -73,6 +72,47 @@ pub fn button_labeled(theme: &Theme, label: impl Into<String>) -> Element {
         .radius(theme.radius)
         .padding(Insets::symmetric(theme.spacing.lg, theme.spacing.sm))
         .align(Align::Center, Align::Center)
+}
+
+/// Apply a [`KeyInput`] to an editable string: append committed text, or
+/// remove the last character on backspace. Navigation keys are ignored (no
+/// caret model yet). Handy as the body of a [`text_field`] handler.
+pub fn edit_string(value: &mut String, input: &KeyInput) {
+    match input {
+        KeyInput::Text(t) => value.push_str(t),
+        KeyInput::Backspace => {
+            value.pop();
+        }
+        _ => {}
+    }
+}
+
+/// A single-line editable text field showing `value` and routing keyboard
+/// input to `on_key` while focused (pair with [`edit_string`]). Default width
+/// 200 logical px; override with `.width(..)` on the returned element.
+pub fn text_field<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    value: &str,
+    on_key: impl FnMut(&mut S, &KeyInput) + 'static,
+) -> Element {
+    // A leading space keeps an empty field from collapsing to zero height.
+    let shown = if value.is_empty() {
+        String::from(" ")
+    } else {
+        value.to_string()
+    };
+    Element::stack(
+        Axis::Horizontal,
+        vec![Element::text(shown, theme.font_size, theme.palette.text)],
+    )
+    .fill(theme.palette.surface)
+    .radius(theme.radius)
+    .border(theme.palette.border, 1.0)
+    .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
+    .align(Align::Start, Align::Center)
+    .width(200.0)
+    .on_key(cx, on_key)
 }
 
 /// A 1px themed divider line spanning the cross axis.

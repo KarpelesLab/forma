@@ -38,9 +38,14 @@ pub use forma_render as render;
 pub use forma_style as style;
 pub use forma_widgets as widgets;
 
-use forma_core::{ActionId, Cx, Element, Handlers, LayoutNode, hit_test, layout, paint};
+use forma_core::{
+    ActionId, Cx, Element, FocusId, Handlers, KeyInput, LayoutNode, collect_focusables, focus_at,
+    hit_test, layout, paint,
+};
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
-use forma_platform::{ButtonState, ControlFlow, Event, WindowAttributes, backend::headless};
+use forma_platform::{
+    ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend::headless,
+};
 use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
@@ -68,6 +73,7 @@ where
     tree: Option<LayoutNode>,
     handlers: Handlers<S>,
     pressed: Option<ActionId>,
+    focused: Option<FocusId>,
 }
 
 impl<S, F> std::fmt::Debug for App<S, F>
@@ -101,6 +107,7 @@ where
             tree: None,
             handlers: Handlers::default(),
             pressed: None,
+            focused: None,
         }
     }
 
@@ -171,21 +178,37 @@ where
             .render(scene, self.scale)
     }
 
-    /// Route a completed click at `pos` (logical pixels): hit-test the current
-    /// frame and dispatch the hit element's handler against the state. Returns
-    /// `true` if a handler ran (the UI should be re-rendered).
-    ///
-    /// Ensures a frame has been built so the layout tree exists.
-    pub fn click_at(&mut self, pos: Point) -> bool {
+    /// The currently focused element, if any.
+    pub fn focused(&self) -> Option<FocusId> {
+        self.focused
+    }
+
+    fn ensure_tree(&mut self) {
         if self.tree.is_none() {
             let _ = self.build_frame();
         }
-        let hit = self.tree.as_ref().and_then(|t| hit_test(t, pos));
+    }
+
+    /// Route a completed click at `pos` (logical pixels): update keyboard focus
+    /// to the focusable under the cursor (if any), then dispatch the hit
+    /// element's tap handler. Returns `true` if a tap handler ran.
+    pub fn click_at(&mut self, pos: Point) -> bool {
+        self.ensure_tree();
+        let (hit, foc) = self
+            .tree
+            .as_ref()
+            .map(|t| (hit_test(t, pos), focus_at(t, pos)))
+            .unwrap_or((None, None));
+
+        // Clicking moves focus (to the focusable under the cursor, or away).
+        if foc != self.focused {
+            self.focused = foc;
+            self.tree = None;
+        }
         match hit {
             Some(id) => {
                 let ran = self.handlers.dispatch(id, &mut self.state);
                 if ran {
-                    // State changed: the retained tree is now stale.
                     self.tree = None;
                 }
                 ran
@@ -194,10 +217,55 @@ where
         }
     }
 
+    /// Deliver committed `text` to the focused element. Returns `true` if a
+    /// focused key handler consumed it.
+    pub fn type_text(&mut self, text: &str) -> bool {
+        self.send_key(KeyInput::Text(text.to_string()))
+    }
+
+    /// Deliver an editing key (backspace, arrows, …) to the focused element.
+    pub fn press_key(&mut self, input: KeyInput) -> bool {
+        self.send_key(input)
+    }
+
+    fn send_key(&mut self, input: KeyInput) -> bool {
+        self.ensure_tree();
+        let Some(id) = self.focused else { return false };
+        let ran = self.handlers.dispatch_key(id, &input, &mut self.state);
+        if ran {
+            self.tree = None;
+        }
+        ran
+    }
+
+    /// Move focus to the next focusable element in tree order (wrapping),
+    /// like pressing Tab. Returns `true` if focus changed.
+    pub fn focus_next(&mut self) -> bool {
+        self.ensure_tree();
+        let mut order = Vec::new();
+        if let Some(t) = self.tree.as_ref() {
+            collect_focusables(t, &mut order);
+        }
+        if order.is_empty() {
+            return false;
+        }
+        let next = match self.focused {
+            Some(cur) => match order.iter().position(|f| *f == cur) {
+                Some(i) => order[(i + 1) % order.len()],
+                None => order[0],
+            },
+            None => order[0],
+        };
+        let changed = self.focused != Some(next);
+        self.focused = Some(next);
+        self.tree = None;
+        changed
+    }
+
     /// Run the app. The scaffold drives the [`headless`] backend through a
     /// redraw + close cycle, presenting frames into a real [`Surface`] and
-    /// routing pointer press/release into clicks; native backends replace the
-    /// loop without changing the render or dispatch path.
+    /// routing pointer/keyboard events; native backends replace the loop
+    /// without changing the render or dispatch path.
     pub fn run(mut self) {
         let attrs = self.attrs.clone();
         let mut surface: Option<Box<dyn Surface>> = None;
@@ -228,9 +296,37 @@ where
                     position,
                     ..
                 } => {
-                    let released_on = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                    if let (Some(down), Some(up)) = (self.pressed.take(), released_on) {
-                        if down == up && self.handlers.dispatch(down, &mut self.state) {
+                    let down = self.pressed.take();
+                    let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                    if down.is_some() && down == up {
+                        self.click_at(position);
+                        window.request_redraw();
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Text(text) => {
+                    if self.type_text(&text) {
+                        window.request_redraw();
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Key {
+                    code: KeyCode::Tab,
+                    state: ButtonState::Pressed,
+                    ..
+                } => {
+                    if self.focus_next() {
+                        window.request_redraw();
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Key {
+                    code,
+                    state: ButtonState::Pressed,
+                    ..
+                } => {
+                    if let Some(input) = map_key(code) {
+                        if self.press_key(input) {
                             window.request_redraw();
                         }
                     }
@@ -243,16 +339,31 @@ where
     }
 }
 
+/// Translate a platform [`KeyCode`] into a core [`KeyInput`] editing command.
+/// Character input arrives via [`Event::Text`], so only editing/navigation keys
+/// map here.
+fn map_key(code: KeyCode) -> Option<KeyInput> {
+    Some(match code {
+        KeyCode::Backspace => KeyInput::Backspace,
+        KeyCode::ArrowLeft => KeyInput::Left,
+        KeyCode::ArrowRight => KeyInput::Right,
+        KeyCode::Enter => KeyInput::Enter,
+        KeyCode::Escape => KeyInput::Escape,
+        _ => return None,
+    })
+}
+
 /// The common imports for building a Forma app.
 pub mod prelude {
     pub use crate::App;
     pub use forma_anim::{Easing, Spring, Tween};
-    pub use forma_core::{Align, Axis, BoxStyle, Cx, Element, View};
+    pub use forma_core::{Align, Axis, BoxStyle, Cx, Element, KeyInput, View};
     pub use forma_geometry::{Insets, Point, Rect, ScaleFactor, Size};
     pub use forma_render::{Color, Font};
     pub use forma_style::Theme;
     pub use forma_widgets::{
-        button, button_labeled, column, divider, label, panel, row, setting_row, spacer, swatch,
+        button, button_labeled, column, divider, edit_string, label, panel, row, setting_row,
+        spacer, swatch, text_field,
     };
 }
 
@@ -309,5 +420,51 @@ mod tests {
             app.render_once().size(),
             forma_geometry::PhysicalSize::new(200, 80)
         );
+    }
+
+    #[derive(Default)]
+    struct Form {
+        name: String,
+    }
+
+    /// A form with a single text field filling the window.
+    fn form_app() -> App<Form, impl FnMut(&Form, &mut Cx<'_, Form>) -> Element> {
+        App::new(Form::default(), |state: &Form, cx: &mut Cx<Form>| {
+            let theme = *cx.theme();
+            forma_widgets::text_field(cx, &theme, &state.name, |s: &mut Form, k| {
+                forma_widgets::edit_string(&mut s.name, k)
+            })
+            .width(300.0)
+            .height(100.0)
+        })
+        .logical_size(Size::new(300.0, 100.0))
+    }
+
+    #[test]
+    fn focus_and_type_edits_state() {
+        let mut app = form_app();
+        // Typing with nothing focused is a no-op.
+        assert!(!app.type_text("x"));
+        assert_eq!(app.state().name, "");
+
+        // Focus the field by clicking it, then type.
+        app.click_at(Point::new(150.0, 50.0));
+        assert!(app.focused().is_some());
+        assert!(app.type_text("Ada"));
+        assert_eq!(app.state().name, "Ada");
+
+        // Backspace removes the last character.
+        assert!(app.press_key(KeyInput::Backspace));
+        assert_eq!(app.state().name, "Ad");
+    }
+
+    #[test]
+    fn tab_focuses_first_field() {
+        let mut app = form_app();
+        assert!(app.focused().is_none());
+        assert!(app.focus_next());
+        assert!(app.focused().is_some());
+        assert!(app.type_text("hi"));
+        assert_eq!(app.state().name, "hi");
     }
 }

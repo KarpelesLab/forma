@@ -31,13 +31,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Text rendering** via `oxideav-scribe`: `Font` (load + measure), glyph
   shaping → scene nodes with per-run color; `Text` element threaded through
   layout (intrinsic sizing) and paint; `label`/`button_labeled` widgets.
+- ✅ **Keyboard + focus**: `FocusId`, click-to-focus, Tab traversal, `on_key`
+  handlers, `KeyInput` routing; editable `text_field` widget (`form` example
+  types into a focused field through the real dispatch path).
 - ✅ **Widgets** (scaffold): panel, row/column, button, labeled button, label,
-  divider, swatch, spacer.
+  divider, swatch, spacer, text field.
 - 🚧 **Platform layer**: headless backend only (full vocabulary + golden-image
   probe). Native backends pending.
-- ⬜ **native Wayland/X11 backend**; ⬜ reconciliation/diffing; ⬜ focus +
-  keyboard; ⬜ multi-line/editable text; ⬜ richer widgets; ⬜ a11y;
-  ⬜ macOS/Windows; ⬜ mobile; ⬜ web; ⬜ GPU backends.
+- ⬜ **native Wayland/X11 backend**; ⬜ reconciliation/diffing; ⬜ caret +
+  multi-line/selection text editing; ⬜ richer widgets (checkbox/slider/…);
+  ⬜ a11y; ⬜ macOS/Windows; ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---
 

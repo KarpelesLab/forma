@@ -5,7 +5,7 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
-use crate::runtime::{ActionId, Cx};
+use crate::runtime::{ActionId, Cx, FocusId, KeyInput};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -78,6 +78,9 @@ pub struct Element {
     /// Handler this element routes pointer taps to, if any. Set via
     /// [`Element::on_tap`]; resolved against the [`Cx`] handler table.
     pub action: Option<ActionId>,
+    /// Focus + keyboard handle, if this element is focusable. Set via
+    /// [`Element::on_key`].
+    pub focus: Option<FocusId>,
     pub kind: ElementKind,
 }
 
@@ -88,6 +91,7 @@ impl Element {
             layout: LayoutStyle::default(),
             decoration: style,
             action: None,
+            focus: None,
             kind: ElementKind::Leaf,
         }
     }
@@ -98,6 +102,7 @@ impl Element {
             layout: LayoutStyle::default(),
             decoration: BoxStyle::default(),
             action: None,
+            focus: None,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -112,6 +117,7 @@ impl Element {
             layout: LayoutStyle::default(),
             decoration: BoxStyle::default(),
             action: None,
+            focus: None,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -138,6 +144,19 @@ impl Element {
     /// ```
     pub fn on_tap<S>(mut self, cx: &mut Cx<'_, S>, handler: impl FnMut(&mut S) + 'static) -> Self {
         self.action = Some(cx.register(handler));
+        self
+    }
+
+    /// Make this element focusable and route keyboard input to `handler`.
+    /// The handler receives a [`KeyInput`] (committed text or an editing key)
+    /// while this element holds focus. Registers in `cx` and stamps the
+    /// resulting [`FocusId`].
+    pub fn on_key<S>(
+        mut self,
+        cx: &mut Cx<'_, S>,
+        handler: impl FnMut(&mut S, &KeyInput) + 'static,
+    ) -> Self {
+        self.focus = Some(cx.register_key(handler));
         self
     }
 

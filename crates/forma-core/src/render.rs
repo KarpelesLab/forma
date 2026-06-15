@@ -77,6 +77,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         decoration: el.decoration,
         content,
         action: el.action,
+        focus: el.focus,
         children: Vec::new(),
     };
 
