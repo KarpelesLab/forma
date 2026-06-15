@@ -362,8 +362,8 @@ pub mod prelude {
     pub use forma_render::{Color, Font};
     pub use forma_style::Theme;
     pub use forma_widgets::{
-        button, button_labeled, column, divider, edit_string, label, panel, row, setting_row,
-        spacer, swatch, text_field,
+        button, button_labeled, checkbox, column, divider, edit_string, label, panel, row,
+        setting_row, spacer, swatch, switch, text_field,
     };
 }
 
@@ -456,6 +456,29 @@ mod tests {
         // Backspace removes the last character.
         assert!(app.press_key(KeyInput::Backspace));
         assert_eq!(app.state().name, "Ad");
+    }
+
+    #[derive(Default)]
+    struct Toggles {
+        on: bool,
+    }
+
+    #[test]
+    fn checkbox_toggles_on_click() {
+        let mut app = App::new(Toggles::default(), |s: &Toggles, cx: &mut Cx<Toggles>| {
+            let theme = *cx.theme();
+            // A checkbox filling the window for a predictable hit point.
+            forma_widgets::checkbox(cx, &theme, s.on, |t: &mut Toggles| t.on = !t.on)
+                .width(100.0)
+                .height(100.0)
+        })
+        .logical_size(Size::new(100.0, 100.0));
+
+        assert!(!app.state().on);
+        app.click_at(Point::new(50.0, 50.0));
+        assert!(app.state().on);
+        app.click_at(Point::new(50.0, 50.0));
+        assert!(!app.state().on);
     }
 
     #[test]

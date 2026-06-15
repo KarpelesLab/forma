@@ -115,6 +115,72 @@ pub fn text_field<S>(
     .on_key(cx, on_key)
 }
 
+/// A toggleable checkbox: a small square showing a check mark when `checked`,
+/// calling `on_toggle` when tapped.
+pub fn checkbox<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    checked: bool,
+    on_toggle: impl FnMut(&mut S) + 'static,
+) -> Element {
+    let mark = if checked {
+        vec![Element::text(
+            "✓",
+            theme.font_size,
+            theme.palette.on_primary,
+        )]
+    } else {
+        Vec::new()
+    };
+    Element::stack(Axis::Horizontal, mark)
+        .fill(if checked {
+            theme.palette.primary
+        } else {
+            theme.palette.surface
+        })
+        .border(theme.palette.border, 1.0)
+        .radius(theme.radius / 2.0)
+        .width(22.0)
+        .height(22.0)
+        .align(Align::Center, Align::Center)
+        .on_tap(cx, on_toggle)
+}
+
+/// An on/off switch: a pill track with a knob that sits right when `on`
+/// (track tinted with the primary color) and left when off. Tapping calls
+/// `on_toggle`.
+pub fn switch<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    on: bool,
+    on_toggle: impl FnMut(&mut S) + 'static,
+) -> Element {
+    let knob = Element::boxed(BoxStyle {
+        fill: Some(Color::WHITE),
+        radius: 8.0,
+        border: None,
+    })
+    .width(16.0)
+    .height(16.0);
+    let children = if on {
+        vec![spacer(), knob]
+    } else {
+        vec![knob, spacer()]
+    };
+    Element::stack(Axis::Horizontal, children)
+        .fill(if on {
+            theme.palette.primary
+        } else {
+            theme.palette.border
+        })
+        .radius(11.0)
+        .width(40.0)
+        .height(22.0)
+        .padding(Insets::uniform(3.0))
+        .align(Align::Start, Align::Center)
+        .on_tap(cx, on_toggle)
+}
+
 /// A 1px themed divider line spanning the cross axis.
 pub fn divider(theme: &Theme) -> Element {
     Element::boxed(BoxStyle {
