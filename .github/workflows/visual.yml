@@ -119,3 +119,38 @@ jobs:
           name: forma-windows-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
+
+  # Run the windowed example on the macOS runner's desktop and screenshot it
+  # with the built-in `screencapture`, confirming the native Cocoa backend
+  # creates a window and blits the framebuffer.
+  visual-macos:
+    name: Visual test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the window example
+        run: cargo build -p window
+
+      - name: Launch the Forma window and screenshot the screen
+        run: |
+          mkdir -p visual_output
+          ./target/debug/window &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          screencapture -x visual_output/forma-macos.png
+          echo "Captured:"; (sips -g pixelWidth -g pixelHeight visual_output/forma-macos.png || true)
+
+      - name: Stop the app
+        if: always()
+        run: '[ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true'
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-macos-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn

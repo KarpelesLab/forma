@@ -30,6 +30,9 @@ pub mod x11;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 /// Run `handler` against the best available native backend, falling back to a
 /// one-shot [`headless`] present when no display is reachable.
 ///
@@ -56,6 +59,15 @@ where
             Ok(()) => return,
             Err(err) => {
                 eprintln!("forma: Windows backend unavailable ({err}); falling back to headless");
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match macos::run(attrs.clone(), &mut handler) {
+            Ok(()) => return,
+            Err(err) => {
+                eprintln!("forma: macOS backend unavailable ({err}); falling back to headless");
             }
         }
     }
