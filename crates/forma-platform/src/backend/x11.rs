@@ -33,6 +33,7 @@ const OP_CREATE_WINDOW: u8 = 1;
 const OP_MAP_WINDOW: u8 = 8;
 const OP_INTERN_ATOM: u8 = 16;
 const OP_CHANGE_PROPERTY: u8 = 18;
+const OP_SET_INPUT_FOCUS: u8 = 42;
 const OP_CREATE_GC: u8 = 55;
 const OP_PUT_IMAGE: u8 = 72;
 const OP_GET_KEYBOARD_MAPPING: u8 = 101;
@@ -486,6 +487,15 @@ where
     let mut req = vec![OP_MAP_WINDOW, 0, 0, 0];
     req.extend_from_slice(&window.to_le_bytes());
     conn.send(&finish(req)).map_err(os)?;
+
+    // Grab keyboard focus so key events arrive even with no window manager
+    // (e.g. under Xvfb in CI). revert-to = PointerRoot (1), time = 0
+    // (CurrentTime). Pointer events are delivered regardless of focus.
+    let mut req = vec![OP_SET_INPUT_FOCUS, 1, 0, 0];
+    req.extend_from_slice(&window.to_le_bytes());
+    req.extend_from_slice(&0u32.to_le_bytes());
+    conn.send(&finish(req)).map_err(os)?;
+
     dbg(format_args!(
         "mapped window={window:#x} gc={gc:#x} size={}x{}",
         w, h
