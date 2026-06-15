@@ -37,10 +37,12 @@ fn main() {
 > **Status: pre-alpha.** The architecture and phased plan live in
 > [`ROADMAP.md`](./ROADMAP.md). APIs are unstable.
 
-Forma running on a real X server (rendered by the native X11 backend under Xvfb
-in CI — see the `Visual` workflow):
+The same app, rendered by Forma's native backends and screenshotted in CI (the
+`Visual` workflow) — native **X11** (under Xvfb) and native **Win32**:
 
-![Forma on X11](./docs/screenshots/forma-x11.png)
+| Linux / X11 | Windows / Win32 |
+|---|---|
+| ![Forma on X11](./docs/screenshots/forma-x11.png) | ![Forma on Windows](./docs/screenshots/forma-windows.png) |
 
 ## Design at a glance
 

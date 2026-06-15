@@ -47,11 +47,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `Visual` workflow runs the `window` example under Xvfb and screenshots the
   result (`docs/screenshots/forma-x11.png`). `App::run` selects X11 when
   `$DISPLAY` is set, else headless.
+- ✅ **Native Windows backend** over raw Win32 FFI (`user32`/`gdi32`/`kernel32`,
+  no `windows` crate): window create/show, `StretchDIBits` present. **CI-verified**
+  — the Visual workflow's Windows job runs the example on the runner's desktop
+  and screenshots it (`docs/screenshots/forma-windows.png`). Input + live resize
+  are follow-ups.
 - ✅ **Cross-OS CI**: the workspace build matrix compiles on Ubuntu, macOS, and
   Windows runners — build-verifying the platform layer on all three desktops.
-- ⬜ **Wayland backend** (needs hand-authored xdg-shell tables); ⬜ X11 keysym→
-  text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
-  selection text editing; ⬜ hover/cursor states; ⬜ a11y; ⬜ macOS/Windows;
+- 🚧 **Windows/X11 input + live resize** (present paths done; event plumbing
+  next); ⬜ **macOS backend** (Cocoa FFI; build-checked on CI, no runner display
+  for screenshots); ⬜ **Wayland backend** (hand-authored xdg-shell tables);
+  ⬜ X11 keysym→text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret +
+  multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
   ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---

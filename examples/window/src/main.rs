@@ -15,7 +15,7 @@ fn view(_state: &Demo, cx: &mut Cx<Demo>) -> Element {
     let card = panel(
         &theme,
         vec![
-            label(&theme, "Forma on X11"),
+            label(&theme, "Welcome to Forma"),
             divider(&theme),
             setting_row(&theme, Color::rgb(0xef, 0x68, 0x68)),
             setting_row(&theme, Color::rgb(0x34, 0xd3, 0x99)),
