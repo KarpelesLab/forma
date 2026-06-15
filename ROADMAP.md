@@ -102,10 +102,17 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   damaged region via the `Surface` damage seam — a state change repaints only
   what moved (expose/resize still force a full present). Unit-tested in
   `forma-core` (localized/full/none cases) and `forma` (incremental App frames).
+- ✅ **Caret-aware text editing**: a single-line `EditBuffer` with a
+  UTF-8-boundary-safe caret (insert / backspace / delete at the caret;
+  left / right / home / end motion; `apply(KeyInput)`). The `Element`/
+  `LayoutNode` IR carries an optional caret byte index; `paint_focus` draws the
+  caret bar at that index (prefix-measured), and the reconciler treats a caret
+  move as damage. `text_editor` renders it; **CI-verified** on X11 (type
+  "Forma", arrow-left ×2, insert "XY" → "ForXYma" with a mid-string caret).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ X11
   MIT-SHM fast present; ⬜ per-node state to skip unchanged subtrees on rebuild;
-  ⬜ multi-line/selection text editing; ⬜ a11y.
+  ⬜ multi-line + text selection (shift-select, mouse drag); ⬜ a11y.
 
 ---
 

@@ -46,10 +46,11 @@ and Cocoa, each from-scratch with no windowing crates:
 | ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) | ![Web](./docs/screenshots/forma-web.png) | ![GPU](./docs/screenshots/forma-gpu.png) |
 
 Input is verified too: CI synthesizes real events and screenshots the result —
-X11 via `xdotool` (clicking a counter, typing into a focused field) and macOS
+X11 via `xdotool` (clicking a counter; caret-aware editing — type "Forma",
+arrow-left twice, insert "XY" → "ForXYma" with a mid-string caret) and macOS
 via `cliclick` (clicking a counter):
 
-| X11 click | X11 type | macOS click |
+| X11 click | X11 edit (mid-string caret) | macOS click |
 |---|---|---|
 | ![clicks](./docs/screenshots/forma-x11-clicks.png) | ![typing](./docs/screenshots/forma-x11-textinput.png) | ![mac clicks](./docs/screenshots/forma-macos-clicks.png) |
 
