@@ -99,9 +99,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
 
-      - name: Build the clickdemo + textinput examples (release)
-        # Release so per-keystroke re-rasterization keeps up with input.
-        run: cargo build --release -p clickdemo -p textinput
+      - name: Build the clickdemo + textinput + hoverdemo examples (release)
+        # Release so per-event re-rasterization keeps up with input.
+        run: cargo build --release -p clickdemo -p textinput -p hoverdemo
 
       - name: Click + type, screenshotting the results
         env:
@@ -133,6 +133,15 @@ jobs:
           sleep 2
           import -window root visual_output/text-typed.png
           echo "=== textinput.log ==="; cat visual_output/textinput.log || true
+          kill "$APP_PID" 2>/dev/null || true
+
+          # --- hover: move the cursor onto the right button ---
+          ./target/release/hoverdemo > visual_output/hoverdemo.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+          xdotool mousemove 284 70  # center of the right button
+          sleep 1
+          import -window root visual_output/hover.png
 
       - name: Stop the app and Xvfb
         if: always()

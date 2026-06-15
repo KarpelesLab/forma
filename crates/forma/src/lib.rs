@@ -40,11 +40,11 @@ pub use forma_widgets as widgets;
 
 use forma_core::{
     ActionId, Cx, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode, collect_focusables,
-    drag_at, focus_at, hit_test, layout, paint, paint_focus,
+    drag_at, focus_at, hit_test, layout, paint, paint_focus, paint_hover,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend};
-use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
+use forma_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
 /// A Forma application.
@@ -73,6 +73,7 @@ where
     handlers: Handlers<S>,
     pressed: Option<ActionId>,
     focused: Option<FocusId>,
+    hovered: Option<ActionId>,
     dragging: Option<(DragId, Rect)>,
 }
 
@@ -108,6 +109,7 @@ where
             handlers: Handlers::default(),
             pressed: None,
             focused: None,
+            hovered: None,
             dragging: None,
         }
     }
@@ -166,6 +168,10 @@ where
         );
         let mut scene = Scene::new(size);
         paint(&tree, &mut scene, font);
+        // Lighten the hovered tappable element.
+        if let Some(hid) = self.hovered {
+            paint_hover(&tree, hid, &mut scene, Color::rgba(255, 255, 255, 30));
+        }
         // Overlay a focus ring + caret on the focused element.
         if let Some(fid) = self.focused {
             paint_focus(
@@ -343,8 +349,17 @@ where
                 ControlFlow::Wait
             }
             Event::PointerMoved { position } => {
-                if self.dragging.is_some() && self.drag_at_point(position) {
-                    present(&mut self, window);
+                if self.dragging.is_some() {
+                    if self.drag_at_point(position) {
+                        present(&mut self, window);
+                    }
+                } else {
+                    // Update hover; re-present when the hovered element changes.
+                    let now = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                    if now != self.hovered {
+                        self.hovered = now;
+                        present(&mut self, window);
+                    }
                 }
                 ControlFlow::Wait
             }

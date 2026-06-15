@@ -282,6 +282,14 @@ pub fn find_focus(node: &LayoutNode, id: FocusId) -> Option<&LayoutNode> {
     node.children.iter().find_map(|c| find_focus(c, id))
 }
 
+/// Find the node carrying tap-action `id`, if present (for hover highlight).
+pub fn find_action(node: &LayoutNode, id: ActionId) -> Option<&LayoutNode> {
+    if node.action == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|c| find_action(c, id))
+}
+
 /// The first text content `(text, size, bounds)` at or under `node`, in tree
 /// order. Used to position a caret inside a focused text field.
 pub fn first_text(node: &LayoutNode) -> Option<(&str, f64, Rect)> {

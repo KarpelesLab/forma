@@ -12,7 +12,9 @@
 //! 3. **paint** — walk the layout tree, drawing each node's decoration and text.
 
 use crate::element::{Align, BoxStyle, Element, ElementKind};
-use crate::runtime::{FocusId, LayoutNode, NodeContent, find_focus, first_text};
+use crate::runtime::{
+    ActionId, FocusId, LayoutNode, NodeContent, find_action, find_focus, first_text,
+};
 use forma_geometry::{Rect, Size};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
 use forma_render::{Color, Font, Scene};
@@ -168,6 +170,18 @@ pub fn paint_focus(
         let x = (bounds.min_x() + advance + 1.0).min(bounds.max_x().max(bounds.min_x() + 1.0));
         let h = bounds.height().max(size);
         scene.fill_rect(Rect::from_xywh(x, bounds.min_y(), 2.0, h), caret);
+    }
+}
+
+/// Overlay a `highlight` (typically translucent) on the hovered tappable
+/// element, matching its corner radius. No-op if `hovered` isn't in the tree.
+pub fn paint_hover(tree: &LayoutNode, hovered: ActionId, scene: &mut Scene, highlight: Color) {
+    if let Some(node) = find_action(tree, hovered) {
+        if node.decoration.radius > 0.0 {
+            scene.fill_round_rect(node.bounds, node.decoration.radius, highlight);
+        } else {
+            scene.fill_rect(node.bounds, highlight);
+        }
     }
 }
 
