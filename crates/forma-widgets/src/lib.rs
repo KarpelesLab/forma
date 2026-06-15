@@ -6,10 +6,11 @@
 //! the whole UI.
 //!
 //! Available widgets: structure (`column`, `row`, `spacer`, `panel`),
-//! content (`label`, `swatch`, `divider`), and interactive controls
-//! (`button`, `button_labeled` with [`Element::on_tap`], and `text_field` with
-//! [`Element::on_key`] + [`edit_string`]). Hover states, multi-line/caret text
-//! editing, and richer controls (checkbox, slider, …) are still to come.
+//! content (`label`, `swatch`, `divider`), and interactive controls —
+//! `button` / `button_labeled` ([`Element::on_tap`]), `text_field`
+//! ([`Element::on_key`] + [`edit_string`]), `checkbox`, and `switch`. Hover
+//! states, multi-line/caret text editing, and drag controls (slider) are still
+//! to come.
 
 #![forbid(unsafe_code)]
 
