@@ -83,6 +83,60 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Verify *real* native input: launch a "click counter" window under Xvfb,
+  # click it with xdotool, and screenshot before/after to confirm the
+  # native-event → dispatch → re-present loop works end to end.
+  interaction-x11:
+    name: Interaction test (X11 / xdotool)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, xdotool, and a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
+
+      - name: Build the clickdemo example
+        run: cargo build -p clickdemo
+
+      - name: Click the window and screenshot before/after
+        env:
+          DISPLAY: ":99"
+          FORMA_X11_DEBUG: "1"
+        run: |
+          mkdir -p visual_output
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+          ./target/debug/clickdemo > visual_output/clickdemo.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/clicks-before.png
+          # The window maps at the root origin; click its center (640x480).
+          xdotool mousemove 320 240 click 1
+          sleep 1
+          xdotool mousemove 320 240 click 1
+          sleep 1
+          import -window root visual_output/clicks-after.png
+          echo "=== clickdemo.log ==="; cat visual_output/clickdemo.log || true
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload before/after screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-x11-interaction
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Run the windowed example on a real Windows desktop (the runner has one) and
   # capture the screen to confirm the native Win32 backend creates a window and
   # blits the framebuffer.
