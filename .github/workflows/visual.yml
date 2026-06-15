@@ -124,12 +124,16 @@ jobs:
           kill "$CLICK_PID" 2>/dev/null || true
           echo "=== clickdemo.log ==="; cat visual_output/clickdemo.log || true
 
-          # --- keyboard: focus the text field (Tab) and type ---
+          # --- keyboard: focus the field (Tab), type, then move the caret and
+          # insert mid-string to exercise the caret-aware EditBuffer ---
           ./target/release/textinput > visual_output/textinput.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 3
           xdotool key Tab; sleep 1
-          xdotool type --delay 80 "Forma!"
+          xdotool type --delay 80 "Forma"
+          # Caret now after "Forma"; move left twice and insert -> "ForXYma".
+          xdotool key Left Left; sleep 0.5
+          xdotool type --delay 80 "XY"
           sleep 2
           import -window root visual_output/text-typed.png
           echo "=== textinput.log ==="; cat visual_output/textinput.log || true

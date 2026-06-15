@@ -91,8 +91,14 @@ pub fn diff_trees(old: &LayoutNode, new: &LayoutNode) -> Damage {
 }
 
 /// `true` if two nodes paint the same pixels for themselves (ignoring children).
+///
+/// `caret` is included because the focus overlay draws the caret bar from it, so
+/// a caret move (with text otherwise unchanged) must still damage the node.
 fn visuals_equal(a: &LayoutNode, b: &LayoutNode) -> bool {
-    a.bounds == b.bounds && a.decoration == b.decoration && a.content == b.content
+    a.bounds == b.bounds
+        && a.decoration == b.decoration
+        && a.content == b.content
+        && a.caret == b.caret
 }
 
 fn diff_node(old: &LayoutNode, new: &LayoutNode, out: &mut Vec<Rect>) {
@@ -163,6 +169,7 @@ mod tests {
             action: None,
             focus: None,
             drag: None,
+            caret: None,
             children,
         }
     }
@@ -179,6 +186,7 @@ mod tests {
             action: None,
             focus: None,
             drag: None,
+            caret: None,
             children: Vec::new(),
         }
     }
@@ -215,6 +223,20 @@ mod tests {
         );
         let bound = dmg.bounding().unwrap();
         assert!(bound.width() < 200.0 && bound.height() < 100.0);
+    }
+
+    #[test]
+    fn caret_move_alone_is_damage() {
+        // Text unchanged, only the caret index moves — must still repaint so the
+        // focus overlay's caret bar redraws at the new position.
+        let mut a = root(vec![text_node(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), "ab")]);
+        a.children[0].caret = Some(2);
+        let mut b = a.clone();
+        b.children[0].caret = Some(1);
+        assert_eq!(
+            diff_trees(&a, &b),
+            Damage::Regions(vec![Rect::from_xywh(0.0, 0.0, 40.0, 20.0)])
+        );
     }
 
     #[test]

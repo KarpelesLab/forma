@@ -225,6 +225,8 @@ pub struct LayoutNode {
     pub action: Option<ActionId>,
     pub focus: Option<FocusId>,
     pub drag: Option<DragId>,
+    /// Caret byte index for an editable text leaf (drawn by the focus overlay).
+    pub caret: Option<usize>,
     pub children: Vec<LayoutNode>,
 }
 
@@ -290,11 +292,12 @@ pub fn find_action(node: &LayoutNode, id: ActionId) -> Option<&LayoutNode> {
     node.children.iter().find_map(|c| find_action(c, id))
 }
 
-/// The first text content `(text, size, bounds)` at or under `node`, in tree
-/// order. Used to position a caret inside a focused text field.
-pub fn first_text(node: &LayoutNode) -> Option<(&str, f64, Rect)> {
+/// The first text content `(text, size, bounds, caret)` at or under `node`, in
+/// tree order. Used to position a caret inside a focused text field; `caret` is
+/// the byte index to draw the caret bar at, or `None` to default to the end.
+pub fn first_text(node: &LayoutNode) -> Option<(&str, f64, Rect, Option<usize>)> {
     if let NodeContent::Text { text, size, .. } = &node.content {
-        return Some((text, *size, node.bounds));
+        return Some((text, *size, node.bounds, node.caret));
     }
     node.children.iter().find_map(first_text)
 }
@@ -321,6 +324,7 @@ mod tests {
             action,
             focus,
             drag: None,
+            caret: None,
             children: Vec::new(),
         }
     }
@@ -361,6 +365,7 @@ mod tests {
             action: Some(ActionId(0)),
             focus: None,
             drag: None,
+            caret: None,
             children: vec![
                 leaf(
                     Rect::from_xywh(10.0, 10.0, 30.0, 30.0),

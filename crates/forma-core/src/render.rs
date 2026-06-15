@@ -81,6 +81,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         action: el.action,
         focus: el.focus,
         drag: el.drag,
+        caret: el.caret,
         children: Vec::new(),
     };
 
@@ -150,8 +151,8 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
 }
 
 /// Overlay focus affordances for the focused element: a `ring` around its
-/// bounds, and — if it contains text — a `caret` bar at the end of that text.
-/// No-op if `focused` isn't in the tree.
+/// bounds, and — if it contains text — a `caret` bar at the text's caret index
+/// (or its end when no caret is set). No-op if `focused` isn't in the tree.
 pub fn paint_focus(
     tree: &LayoutNode,
     focused: FocusId,
@@ -165,8 +166,21 @@ pub fn paint_focus(
     };
     scene.stroke_rect(node.bounds, ring, 2.0);
 
-    if let Some((text, size, bounds)) = first_text(node) {
-        let advance = font.map(|f| f.measure(text, size).width).unwrap_or(0.0);
+    if let Some((text, size, bounds, caret_idx)) = first_text(node) {
+        // Measure the text up to the caret (clamped to a char boundary) so the
+        // bar sits between glyphs; default to the end when no caret is set.
+        let upto = match caret_idx {
+            Some(i) => {
+                let i = i.min(text.len());
+                if text.is_char_boundary(i) {
+                    &text[..i]
+                } else {
+                    text
+                }
+            }
+            None => text,
+        };
+        let advance = font.map(|f| f.measure(upto, size).width).unwrap_or(0.0);
         let x = (bounds.min_x() + advance + 1.0).min(bounds.max_x().max(bounds.min_x() + 1.0));
         let h = bounds.height().max(size);
         scene.fill_rect(Rect::from_xywh(x, bounds.min_y(), 2.0, h), caret);

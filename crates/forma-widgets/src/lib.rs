@@ -8,10 +8,10 @@
 //! Available widgets: structure (`column`, `row`, `spacer`, `panel`), content
 //! (`label`, `heading`, `swatch`, `divider`), and interactive controls —
 //! `button_variant` (Primary/Secondary/Ghost/Danger) / `button_labeled`
-//! ([`Element::on_tap`]), `text_field` ([`Element::on_key`] + [`edit_string`]),
-//! `checkbox`, `switch`, and `slider` ([`Element::on_drag`]). All colors and
-//! metrics come from the [`Theme`], so swapping or customizing the theme
-//! reskins everything.
+//! ([`Element::on_tap`]), `text_field` / `text_editor` ([`Element::on_key`]; the
+//! latter is caret-aware via [`EditBuffer`]), `checkbox`, `switch`, and `slider`
+//! ([`Element::on_drag`]). All colors and metrics come from the [`Theme`], so
+//! swapping or customizing the theme reskins everything.
 
 #![forbid(unsafe_code)]
 
@@ -117,7 +117,8 @@ pub fn button_labeled(theme: &Theme, label: impl Into<String>) -> Element {
 
 /// Apply a [`KeyInput`] to an editable string: append committed text, or
 /// remove the last character on backspace. Navigation keys are ignored (no
-/// caret model yet). Handy as the body of a [`text_field`] handler.
+/// caret model). For caret-aware editing use an [`EditBuffer`] with
+/// [`text_editor`] instead.
 pub fn edit_string(value: &mut String, input: &KeyInput) {
     match input {
         KeyInput::Text(t) => value.push_str(t),
@@ -125,6 +126,131 @@ pub fn edit_string(value: &mut String, input: &KeyInput) {
             value.pop();
         }
         _ => {}
+    }
+}
+
+/// A single-line text buffer with a caret, for in-place editing.
+///
+/// The caret is a byte index into the text, always kept on a UTF-8 char
+/// boundary. Text is inserted and deleted at the caret; the arrow / Home / End
+/// keys move it. Drive it by feeding [`KeyInput`]s to [`EditBuffer::apply`], and
+/// render it (with a positioned caret) via [`text_editor`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EditBuffer {
+    text: String,
+    caret: usize,
+}
+
+impl EditBuffer {
+    /// An empty buffer with the caret at the start.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A buffer holding `text`, caret placed at the end.
+    pub fn from_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let caret = text.len();
+        Self { text, caret }
+    }
+
+    /// The current text.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The caret position as a byte index into [`text`](Self::text).
+    pub fn caret(&self) -> usize {
+        self.caret
+    }
+
+    /// `true` if there is no text.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Insert `s` at the caret and advance the caret past it.
+    pub fn insert(&mut self, s: &str) {
+        self.text.insert_str(self.caret, s);
+        self.caret += s.len();
+    }
+
+    /// Delete the character before the caret (Backspace); no-op at the start.
+    pub fn backspace(&mut self) {
+        if let Some(prev) = self.prev_boundary(self.caret) {
+            self.text.replace_range(prev..self.caret, "");
+            self.caret = prev;
+        }
+    }
+
+    /// Delete the character at the caret (Delete); no-op at the end.
+    pub fn delete(&mut self) {
+        if let Some(next) = self.next_boundary(self.caret) {
+            self.text.replace_range(self.caret..next, "");
+        }
+    }
+
+    /// Move the caret one character left.
+    pub fn move_left(&mut self) {
+        if let Some(prev) = self.prev_boundary(self.caret) {
+            self.caret = prev;
+        }
+    }
+
+    /// Move the caret one character right.
+    pub fn move_right(&mut self) {
+        if let Some(next) = self.next_boundary(self.caret) {
+            self.caret = next;
+        }
+    }
+
+    /// Move the caret to the start.
+    pub fn home(&mut self) {
+        self.caret = 0;
+    }
+
+    /// Move the caret to the end.
+    pub fn end(&mut self) {
+        self.caret = self.text.len();
+    }
+
+    /// Apply a [`KeyInput`]: insert text, delete at the caret, or move it.
+    /// Enter/Escape are ignored (single-line).
+    pub fn apply(&mut self, input: &KeyInput) {
+        match input {
+            KeyInput::Text(t) => self.insert(t),
+            KeyInput::Backspace => self.backspace(),
+            KeyInput::Delete => self.delete(),
+            KeyInput::Left => self.move_left(),
+            KeyInput::Right => self.move_right(),
+            KeyInput::Home => self.home(),
+            KeyInput::End => self.end(),
+            KeyInput::Enter | KeyInput::Escape => {}
+        }
+    }
+
+    /// The char boundary strictly before `i`, or `None` at the start.
+    fn prev_boundary(&self, i: usize) -> Option<usize> {
+        if i == 0 {
+            return None;
+        }
+        let mut p = i - 1;
+        while !self.text.is_char_boundary(p) {
+            p -= 1;
+        }
+        Some(p)
+    }
+
+    /// The char boundary strictly after `i`, or `None` at the end.
+    fn next_boundary(&self, i: usize) -> Option<usize> {
+        if i >= self.text.len() {
+            return None;
+        }
+        let mut n = i + 1;
+        while n < self.text.len() && !self.text.is_char_boundary(n) {
+            n += 1;
+        }
+        Some(n)
     }
 }
 
@@ -154,6 +280,35 @@ pub fn text_field<S>(
     .align(Align::Start, Align::Center)
     .width(200.0)
     .on_key(cx, on_key)
+}
+
+/// A single-line editable field backed by an [`EditBuffer`], rendering the text
+/// with the caret at the buffer's caret position (shown while focused). Route
+/// keyboard input to `on_key`, whose body typically calls
+/// [`EditBuffer::apply`]. Default width 200 logical px; override with
+/// `.width(..)` on the returned element.
+pub fn text_editor<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    buffer: &EditBuffer,
+    on_key: impl FnMut(&mut S, &KeyInput) + 'static,
+) -> Element {
+    // A leading space keeps an empty field from collapsing to zero height; the
+    // caret then sits at index 0 of that placeholder.
+    let shown = if buffer.is_empty() {
+        String::from(" ")
+    } else {
+        buffer.text().to_string()
+    };
+    let text = Element::text(shown, theme.font_size, theme.palette.text).caret(buffer.caret());
+    Element::stack(Axis::Horizontal, vec![text])
+        .fill(theme.palette.surface)
+        .radius(theme.radius)
+        .border(theme.palette.border, 1.0)
+        .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
+        .align(Align::Start, Align::Center)
+        .width(200.0)
+        .on_key(cx, on_key)
 }
 
 /// A toggleable checkbox: a small square showing a check mark when `checked`,
@@ -316,5 +471,76 @@ mod tests {
             None,
         );
         assert_eq!(scene.len(), 2);
+    }
+
+    #[test]
+    fn edit_buffer_inserts_and_moves_caret() {
+        let mut b = EditBuffer::new();
+        b.insert("ab");
+        assert_eq!((b.text(), b.caret()), ("ab", 2));
+        b.move_left();
+        assert_eq!(b.caret(), 1);
+        b.insert("X"); // insert mid-string at the caret
+        assert_eq!((b.text(), b.caret()), ("aXb", 2));
+        b.home();
+        assert_eq!(b.caret(), 0);
+        b.end();
+        assert_eq!(b.caret(), 3);
+    }
+
+    #[test]
+    fn edit_buffer_backspace_and_delete_at_caret() {
+        let mut b = EditBuffer::from_text("abc");
+        assert_eq!(b.caret(), 3); // from_text places caret at end
+        b.backspace();
+        assert_eq!((b.text(), b.caret()), ("ab", 2));
+        b.home();
+        b.delete();
+        assert_eq!((b.text(), b.caret()), ("b", 0));
+        // Deletes/backspaces at the edges are no-ops.
+        b.backspace();
+        assert_eq!(b.text(), "b");
+        b.end();
+        b.delete();
+        assert_eq!(b.text(), "b");
+    }
+
+    #[test]
+    fn edit_buffer_respects_utf8_boundaries() {
+        // "é" and "🦀" are multi-byte; caret motion must land on boundaries.
+        let mut b = EditBuffer::from_text("é🦀");
+        assert_eq!(b.caret(), "é🦀".len());
+        b.move_left(); // skip the whole crab
+        assert_eq!(b.caret(), "é".len());
+        b.move_left();
+        assert_eq!(b.caret(), 0);
+        b.delete(); // removes "é", not a partial byte
+        assert_eq!(b.text(), "🦀");
+    }
+
+    #[test]
+    fn edit_buffer_apply_dispatches_keys() {
+        let mut b = EditBuffer::new();
+        for k in [
+            KeyInput::Text("hi".into()),
+            KeyInput::Left,
+            KeyInput::Text("X".into()),
+        ] {
+            b.apply(&k);
+        }
+        assert_eq!((b.text(), b.caret()), ("hXi", 2));
+    }
+
+    #[test]
+    fn text_editor_carries_caret_on_its_text_leaf() {
+        let theme = Theme::light();
+        let mut cx = Cx::new(&theme);
+        let buf = EditBuffer::from_text("hello");
+        let field = text_editor(&mut cx, &theme, &buf, |_: &mut (), _| {});
+        // The inner text leaf carries the caret byte index for the focus overlay.
+        let ElementKind::Stack { children, .. } = &field.kind else {
+            panic!("text_editor should be a stack");
+        };
+        assert_eq!(children[0].caret, Some(5));
     }
 }

@@ -89,6 +89,10 @@ pub struct Element {
     /// Drag handle, if this element responds to pointer drags. Set via
     /// [`Element::on_drag`].
     pub drag: Option<DragId>,
+    /// Caret position as a byte index into this element's text, for an editable
+    /// text leaf. `None` for non-editable text and non-text elements. Set via
+    /// [`Element::caret`]; the focus overlay draws the caret bar there.
+    pub caret: Option<usize>,
     pub kind: ElementKind,
 }
 
@@ -101,6 +105,7 @@ impl Element {
             action: None,
             focus: None,
             drag: None,
+            caret: None,
             kind: ElementKind::Leaf,
         }
     }
@@ -113,6 +118,7 @@ impl Element {
             action: None,
             focus: None,
             drag: None,
+            caret: None,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -129,6 +135,7 @@ impl Element {
             action: None,
             focus: None,
             drag: None,
+            caret: None,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -219,6 +226,14 @@ impl Element {
 
     pub fn grow(mut self, grow: f64) -> Self {
         self.layout.grow = grow;
+        self
+    }
+
+    /// Mark this text element's caret position (a byte index into its text), so
+    /// the focus overlay draws the caret bar there instead of at the end. No
+    /// effect on non-text elements.
+    pub fn caret(mut self, byte_index: usize) -> Self {
+        self.caret = Some(byte_index);
         self
     }
 

@@ -504,8 +504,9 @@ pub mod prelude {
     pub use forma_style::Theme;
     pub use forma_style::{Palette, Spacing, Typography};
     pub use forma_widgets::{
-        Variant, button, button_labeled, button_variant, checkbox, column, divider, edit_string,
-        heading, label, panel, row, setting_row, slider, spacer, swatch, switch, text_field,
+        EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
+        edit_string, heading, label, panel, row, setting_row, slider, spacer, swatch, switch,
+        text_editor, text_field,
     };
 }
 
