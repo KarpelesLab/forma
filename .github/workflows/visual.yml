@@ -245,6 +245,44 @@ jobs:
           path: visual_output/*.png
           if-no-files-found: warn
 
+  # Route a Forma frame through the GPU (forma-gpu: EGL + GLES2) on Mesa's
+  # software GL and screenshot the read-back, proving the GPU present path.
+  visual-gpu:
+    name: Visual test (GPU / GLES via Mesa)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Mesa (software GL/EGL), ImageMagick, font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1 \
+            imagemagick fonts-dejavu-core
+
+      - name: Build gpudemo with the GL feature
+        run: cargo build --release -p gpudemo --features forma-gpu/gl
+
+      - name: Render through the GPU and convert the readback to PNG
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          mkdir -p visual_output
+          ./target/release/gpudemo
+          convert -size 420x300 -depth 8 rgba:gpu-out.raw visual_output/forma-gpu.png
+          echo "Captured:"; identify visual_output/forma-gpu.png
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-gpu-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn
+
   # Verify macOS input: click the centered clickdemo window with `cliclick`
   # and screenshot before/after. (Synthetic input on a CI runner can be blocked
   # by the accessibility permission model; treated as best-effort.)

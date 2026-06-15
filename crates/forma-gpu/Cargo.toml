@@ -1,0 +1,23 @@
+[package]
+name = "forma-gpu"
+description = "Experimental GPU present path for Forma: a raw EGL + OpenGL ES 2 offscreen blitter (no ash/glutin) that routes a software Pixmap through the GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+# Off by default so `cargo build --workspace` needs no GL/EGL dev libs; the
+# GPU CI job enables it (and installs Mesa). Without it, present_offscreen
+# returns an error.
+gl = []
+
+[dependencies]
+forma-geometry.workspace = true
+forma-render.workspace = true
+
+[lints]
+workspace = true

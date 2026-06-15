@@ -1,0 +1,382 @@
+//! Raw EGL (surfaceless) + OpenGL ES 2 offscreen blitter. Linux-only.
+#![allow(unsafe_code)]
+#![allow(non_snake_case, non_upper_case_globals)]
+
+use core::ffi::{c_char, c_void};
+use forma_geometry::PhysicalSize;
+use forma_render::Pixmap;
+
+// ---- EGL / GL scalar types --------------------------------------------------
+
+type EGLDisplay = *mut c_void;
+type EGLConfig = *mut c_void;
+type EGLContext = *mut c_void;
+type EGLSurface = *mut c_void;
+type EGLint = i32;
+type EGLBoolean = u32;
+type EGLenum = u32;
+type EGLAttrib = isize;
+
+type GLenum = u32;
+type GLuint = u32;
+type GLint = i32;
+type GLsizei = i32;
+type GLbitfield = u32;
+
+const EGL_PLATFORM_SURFACELESS_MESA: EGLenum = 0x31DD;
+const EGL_OPENGL_ES_API: EGLenum = 0x30A0;
+const EGL_CONTEXT_CLIENT_VERSION: EGLint = 0x3098;
+const EGL_NONE: EGLint = 0x3038;
+const EGL_SURFACE_TYPE: EGLint = 0x3033;
+const EGL_PBUFFER_BIT: EGLint = 0x0001;
+const EGL_RENDERABLE_TYPE: EGLint = 0x3040;
+const EGL_OPENGL_ES2_BIT: EGLint = 0x0004;
+const EGL_RED_SIZE: EGLint = 0x3024;
+const EGL_GREEN_SIZE: EGLint = 0x3023;
+const EGL_BLUE_SIZE: EGLint = 0x3022;
+
+const GL_TEXTURE_2D: GLenum = 0x0DE1;
+const GL_TEXTURE0: GLenum = 0x84C0;
+const GL_RGBA: GLenum = 0x1908;
+const GL_UNSIGNED_BYTE: GLenum = 0x1401;
+const GL_TEXTURE_MIN_FILTER: GLenum = 0x2801;
+const GL_TEXTURE_MAG_FILTER: GLenum = 0x2800;
+const GL_TEXTURE_WRAP_S: GLenum = 0x2802;
+const GL_TEXTURE_WRAP_T: GLenum = 0x2803;
+const GL_LINEAR: GLint = 0x2601;
+const GL_CLAMP_TO_EDGE: GLint = 0x812F;
+const GL_FRAMEBUFFER: GLenum = 0x8D40;
+const GL_COLOR_ATTACHMENT0: GLenum = 0x8CE0;
+const GL_FRAMEBUFFER_COMPLETE: GLenum = 0x8CD5;
+const GL_ARRAY_BUFFER: GLenum = 0x8892;
+const GL_STATIC_DRAW: GLenum = 0x88E4;
+const GL_FLOAT: GLenum = 0x1406;
+const GL_FALSE: u8 = 0;
+const GL_VERTEX_SHADER: GLenum = 0x8B31;
+const GL_FRAGMENT_SHADER: GLenum = 0x8B30;
+const GL_COMPILE_STATUS: GLenum = 0x8B81;
+const GL_LINK_STATUS: GLenum = 0x8B82;
+const GL_TRIANGLE_STRIP: GLenum = 0x0005;
+const GL_COLOR_BUFFER_BIT: GLbitfield = 0x4000;
+
+#[link(name = "EGL")]
+unsafe extern "C" {
+    fn eglGetPlatformDisplay(
+        platform: EGLenum,
+        native_display: *mut c_void,
+        attrib_list: *const EGLAttrib,
+    ) -> EGLDisplay;
+    fn eglInitialize(dpy: EGLDisplay, major: *mut EGLint, minor: *mut EGLint) -> EGLBoolean;
+    fn eglChooseConfig(
+        dpy: EGLDisplay,
+        attrib_list: *const EGLint,
+        configs: *mut EGLConfig,
+        config_size: EGLint,
+        num_config: *mut EGLint,
+    ) -> EGLBoolean;
+    fn eglBindAPI(api: EGLenum) -> EGLBoolean;
+    fn eglCreateContext(
+        dpy: EGLDisplay,
+        config: EGLConfig,
+        share: EGLContext,
+        attrib_list: *const EGLint,
+    ) -> EGLContext;
+    fn eglMakeCurrent(
+        dpy: EGLDisplay,
+        draw: EGLSurface,
+        read: EGLSurface,
+        ctx: EGLContext,
+    ) -> EGLBoolean;
+    fn eglGetError() -> EGLint;
+}
+
+#[link(name = "GLESv2")]
+unsafe extern "C" {
+    fn glGenTextures(n: GLsizei, textures: *mut GLuint);
+    fn glBindTexture(target: GLenum, texture: GLuint);
+    fn glTexParameteri(target: GLenum, pname: GLenum, param: GLint);
+    fn glTexImage2D(
+        target: GLenum,
+        level: GLint,
+        internalformat: GLint,
+        width: GLsizei,
+        height: GLsizei,
+        border: GLint,
+        format: GLenum,
+        ty: GLenum,
+        pixels: *const c_void,
+    );
+    fn glActiveTexture(texture: GLenum);
+    fn glGenFramebuffers(n: GLsizei, framebuffers: *mut GLuint);
+    fn glBindFramebuffer(target: GLenum, framebuffer: GLuint);
+    fn glFramebufferTexture2D(
+        target: GLenum,
+        attachment: GLenum,
+        textarget: GLenum,
+        texture: GLuint,
+        level: GLint,
+    );
+    fn glCheckFramebufferStatus(target: GLenum) -> GLenum;
+    fn glViewport(x: GLint, y: GLint, width: GLsizei, height: GLsizei);
+    fn glClearColor(r: f32, g: f32, b: f32, a: f32);
+    fn glClear(mask: GLbitfield);
+    fn glCreateShader(ty: GLenum) -> GLuint;
+    fn glShaderSource(
+        shader: GLuint,
+        count: GLsizei,
+        string: *const *const c_char,
+        length: *const GLint,
+    );
+    fn glCompileShader(shader: GLuint);
+    fn glGetShaderiv(shader: GLuint, pname: GLenum, params: *mut GLint);
+    fn glCreateProgram() -> GLuint;
+    fn glAttachShader(program: GLuint, shader: GLuint);
+    fn glLinkProgram(program: GLuint);
+    fn glGetProgramiv(program: GLuint, pname: GLenum, params: *mut GLint);
+    fn glUseProgram(program: GLuint);
+    fn glGenBuffers(n: GLsizei, buffers: *mut GLuint);
+    fn glBindBuffer(target: GLenum, buffer: GLuint);
+    fn glBufferData(target: GLenum, size: isize, data: *const c_void, usage: GLenum);
+    fn glGetAttribLocation(program: GLuint, name: *const c_char) -> GLint;
+    fn glEnableVertexAttribArray(index: GLuint);
+    fn glVertexAttribPointer(
+        index: GLuint,
+        size: GLint,
+        ty: GLenum,
+        normalized: u8,
+        stride: GLsizei,
+        pointer: *const c_void,
+    );
+    fn glGetUniformLocation(program: GLuint, name: *const c_char) -> GLint;
+    fn glUniform1i(location: GLint, v0: GLint);
+    fn glDrawArrays(mode: GLenum, first: GLint, count: GLsizei);
+    fn glReadPixels(
+        x: GLint,
+        y: GLint,
+        width: GLsizei,
+        height: GLsizei,
+        format: GLenum,
+        ty: GLenum,
+        pixels: *mut c_void,
+    );
+    fn glFinish();
+}
+
+const VERTEX_SRC: &[u8] = b"attribute vec2 pos;\nattribute vec2 uv;\nvarying vec2 v_uv;\nvoid main() {\n  v_uv = uv;\n  gl_Position = vec4(pos, 0.0, 1.0);\n}\n\0";
+const FRAGMENT_SRC: &[u8] = b"precision mediump float;\nvarying vec2 v_uv;\nuniform sampler2D tex;\nvoid main() {\n  gl_FragColor = texture2D(tex, v_uv);\n}\n\0";
+
+unsafe fn compile(kind: GLenum, src: &[u8]) -> Result<GLuint, String> {
+    unsafe {
+        let sh = glCreateShader(kind);
+        let ptr = src.as_ptr() as *const c_char;
+        glShaderSource(sh, 1, &ptr, core::ptr::null());
+        glCompileShader(sh);
+        let mut ok: GLint = 0;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &mut ok);
+        if ok == 0 {
+            return Err(format!("shader compile failed (kind {kind:#x})"));
+        }
+        Ok(sh)
+    }
+}
+
+/// Upload `input` to a texture, draw it to an offscreen framebuffer with a
+/// pass-through shader, and read the result back as a new [`Pixmap`].
+pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
+    let size = input.size();
+    let (w, h) = (size.width as GLsizei, size.height as GLsizei);
+    if w == 0 || h == 0 {
+        return Err("empty pixmap".into());
+    }
+
+    unsafe {
+        // --- EGL surfaceless context ---
+        let dpy = eglGetPlatformDisplay(
+            EGL_PLATFORM_SURFACELESS_MESA,
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        );
+        if dpy.is_null() {
+            return Err("eglGetPlatformDisplay failed (no surfaceless EGL?)".into());
+        }
+        if eglInitialize(dpy, core::ptr::null_mut(), core::ptr::null_mut()) == 0 {
+            return Err(format!("eglInitialize failed: {:#x}", eglGetError()));
+        }
+        eglBindAPI(EGL_OPENGL_ES_API);
+        let cfg_attribs: [EGLint; 11] = [
+            EGL_SURFACE_TYPE,
+            EGL_PBUFFER_BIT,
+            EGL_RENDERABLE_TYPE,
+            EGL_OPENGL_ES2_BIT,
+            EGL_RED_SIZE,
+            8,
+            EGL_GREEN_SIZE,
+            8,
+            EGL_BLUE_SIZE,
+            8,
+            EGL_NONE,
+        ];
+        // (alpha omitted from the attrib list above for brevity; 8-bit RGB is
+        // enough for the offscreen target.)
+        let mut config: EGLConfig = core::ptr::null_mut();
+        let mut num: EGLint = 0;
+        if eglChooseConfig(dpy, cfg_attribs.as_ptr(), &mut config, 1, &mut num) == 0 || num == 0 {
+            return Err(format!(
+                "eglChooseConfig found no config: {:#x}",
+                eglGetError()
+            ));
+        }
+        let ctx_attribs: [EGLint; 3] = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
+        let ctx = eglCreateContext(dpy, config, core::ptr::null_mut(), ctx_attribs.as_ptr());
+        if ctx.is_null() {
+            return Err(format!("eglCreateContext failed: {:#x}", eglGetError()));
+        }
+        if eglMakeCurrent(dpy, core::ptr::null_mut(), core::ptr::null_mut(), ctx) == 0 {
+            return Err(format!(
+                "eglMakeCurrent (surfaceless) failed: {:#x}",
+                eglGetError()
+            ));
+        }
+
+        // --- input texture ---
+        let mut src_tex: GLuint = 0;
+        glGenTextures(1, &mut src_tex);
+        glBindTexture(GL_TEXTURE_2D, src_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA as GLint,
+            w,
+            h,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            input.as_bytes().as_ptr() as *const c_void,
+        );
+
+        // --- offscreen color target + FBO ---
+        let mut dst_tex: GLuint = 0;
+        glGenTextures(1, &mut dst_tex);
+        glBindTexture(GL_TEXTURE_2D, dst_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA as GLint,
+            w,
+            h,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            core::ptr::null(),
+        );
+        let mut fbo: GLuint = 0;
+        glGenFramebuffers(1, &mut fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D,
+            dst_tex,
+            0,
+        );
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
+            return Err("framebuffer incomplete".into());
+        }
+        glViewport(0, 0, w, h);
+
+        // --- program ---
+        let vs = compile(GL_VERTEX_SHADER, VERTEX_SRC)?;
+        let fs = compile(GL_FRAGMENT_SHADER, FRAGMENT_SRC)?;
+        let prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        let mut linked: GLint = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &mut linked);
+        if linked == 0 {
+            return Err("program link failed".into());
+        }
+        glUseProgram(prog);
+
+        // --- fullscreen quad (pos.xy, uv.xy); uv row 0 = texture top ---
+        #[rustfmt::skip]
+        let verts: [f32; 16] = [
+            -1.0, -1.0, 0.0, 1.0,
+             1.0, -1.0, 1.0, 1.0,
+            -1.0,  1.0, 0.0, 0.0,
+             1.0,  1.0, 1.0, 0.0,
+        ];
+        let mut vbo: GLuint = 0;
+        glGenBuffers(1, &mut vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            std::mem::size_of_val(&verts) as isize,
+            verts.as_ptr() as *const c_void,
+            GL_STATIC_DRAW,
+        );
+        let stride = 4 * std::mem::size_of::<f32>() as GLsizei;
+        let pos_loc = glGetAttribLocation(prog, c"pos".as_ptr());
+        let uv_loc = glGetAttribLocation(prog, c"uv".as_ptr());
+        if pos_loc < 0 || uv_loc < 0 {
+            return Err("attribute location not found".into());
+        }
+        glEnableVertexAttribArray(pos_loc as GLuint);
+        glVertexAttribPointer(
+            pos_loc as GLuint,
+            2,
+            GL_FLOAT,
+            GL_FALSE,
+            stride,
+            core::ptr::null(),
+        );
+        glEnableVertexAttribArray(uv_loc as GLuint);
+        glVertexAttribPointer(
+            uv_loc as GLuint,
+            2,
+            GL_FLOAT,
+            GL_FALSE,
+            stride,
+            (2 * std::mem::size_of::<f32>()) as *const c_void,
+        );
+
+        // --- draw the textured quad ---
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, src_tex);
+        let tex_loc = glGetUniformLocation(prog, c"tex".as_ptr());
+        glUniform1i(tex_loc, 0);
+        glClearColor(0.0, 0.0, 0.0, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glFinish();
+
+        // --- read back (GL is bottom-up; flip rows to top-first) ---
+        let row = (w as usize) * 4;
+        let mut raw = vec![0u8; row * h as usize];
+        glReadPixels(
+            0,
+            0,
+            w,
+            h,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            raw.as_mut_ptr() as *mut c_void,
+        );
+        let mut out = vec![0u8; raw.len()];
+        for y in 0..h as usize {
+            let src = &raw[y * row..(y + 1) * row];
+            let dst_y = h as usize - 1 - y;
+            out[dst_y * row..(dst_y + 1) * row].copy_from_slice(src);
+        }
+        Ok(Pixmap::from_rgba8(
+            PhysicalSize::new(w as u32, h as u32),
+            out,
+        ))
+    }
+}

@@ -22,6 +22,7 @@ forma-core = { version = "0.0.1", path = "crates/forma-core" }
 forma-anim = { version = "0.0.1", path = "crates/forma-anim" }
 forma-style = { version = "0.0.1", path = "crates/forma-style" }
 forma-widgets = { version = "0.0.1", path = "crates/forma-widgets" }
+forma-gpu = { version = "0.0.1", path = "crates/forma-gpu" }
 forma = { version = "0.0.1", path = "crates/forma" }
 
 # --- oxideav media stack (the one sanctioned heavy dependency) ---
