@@ -185,6 +185,46 @@ jobs:
           path: visual_output/*.png
           if-no-files-found: warn
 
+  # Verify macOS input: click the centered clickdemo window with `cliclick`
+  # and screenshot before/after. (Synthetic input on a CI runner can be blocked
+  # by the accessibility permission model; treated as best-effort.)
+  interaction-macos:
+    name: Interaction test (macOS / cliclick)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cliclick
+        run: brew install cliclick
+      - name: Build the clickdemo example (release)
+        run: cargo build --release -p clickdemo
+      - name: Click the window and screenshot before/after
+        run: |
+          mkdir -p visual_output
+          ./target/release/clickdemo > visual_output/clickdemo-macos.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          screencapture -x visual_output/mac-clicks-before.png
+          bounds=$(osascript -e 'tell application "Finder" to get bounds of window of desktop')
+          w=$(echo "$bounds" | awk -F', ' '{print $3}')
+          h=$(echo "$bounds" | awk -F', ' '{print $4}')
+          echo "screen ${w}x${h}; clicking center"
+          cliclick "c:$((w/2)),$((h/2))"; sleep 1
+          cliclick "c:$((w/2)),$((h/2))"; sleep 1
+          screencapture -x visual_output/mac-clicks-after.png
+          echo "=== clickdemo-macos.log ==="; cat visual_output/clickdemo-macos.log || true
+      - name: Stop the app
+        if: always()
+        run: '[ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true'
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-macos-interaction
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Run the windowed example on the macOS runner's desktop and screenshot it
   # with the built-in `screencapture`, confirming the native Cocoa backend
   # creates a window and blits the framebuffer.
