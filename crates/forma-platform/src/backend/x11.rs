@@ -65,6 +65,14 @@ pub fn available() -> bool {
     std::env::var_os("DISPLAY").is_some()
 }
 
+/// Emit a diagnostic line to stderr when `FORMA_X11_DEBUG` is set. Used to
+/// trace the live socket path (which CI exercises) without spamming normal use.
+fn dbg(args: std::fmt::Arguments<'_>) {
+    if std::env::var_os("FORMA_X11_DEBUG").is_some() {
+        eprintln!("forma x11: {args}");
+    }
+}
+
 /// Parsed `$DISPLAY` (the local/unix-socket case).
 #[derive(Debug, PartialEq, Eq)]
 struct DisplayAddr {
@@ -106,9 +114,10 @@ fn parse_setup(data: &[u8]) -> Option<Setup> {
     let vendor_len = rd_u16(data, 16)? as usize;
     let num_formats = *data.get(21)? as usize;
 
-    // Skip: fixed 40 bytes, vendor (padded to 4), pixmap-formats (8 each).
+    // Skip the 32-byte fixed block, then vendor (padded to 4), then the
+    // pixmap-formats list (8 bytes each), to reach the first SCREEN.
     let vendor_pad = (vendor_len + 3) & !3;
-    let screens_off = 40 + vendor_pad + num_formats * 8;
+    let screens_off = 32 + vendor_pad + num_formats * 8;
 
     let root = rd_u32(data, screens_off)?;
     let root_visual = rd_u32(data, screens_off + 32)?;
@@ -241,6 +250,10 @@ impl Conn {
         stream.read_exact(&mut rest).map_err(os)?;
         let setup = parse_setup(&rest).ok_or(PlatformError::Os("malformed setup reply".into()))?;
 
+        dbg(format_args!(
+            "connected: root={:#x} visual={:#x} depth={} max_req={}",
+            setup.root, setup.root_visual, setup.root_depth, setup.max_request_len
+        ));
         let id_step = setup.resource_id_mask & setup.resource_id_mask.wrapping_neg();
         Ok(Self {
             stream,
@@ -356,6 +369,10 @@ impl Surface for X11Surface {
         if size.width == 0 || size.height == 0 {
             return;
         }
+        dbg(format_args!(
+            "present {}x{} to window={:#x}",
+            size.width, size.height, self.window
+        ));
         let mut conn = self.conn.lock().unwrap();
         // PutImage may exceed the server's max request length; send in row
         // bands that each fit. Header is 24 bytes; budget the rest for pixels.
@@ -453,6 +470,10 @@ where
     let mut req = vec![OP_MAP_WINDOW, 0, 0, 0];
     req.extend_from_slice(&window.to_le_bytes());
     conn.send(&finish(req)).map_err(os)?;
+    dbg(format_args!(
+        "mapped window={window:#x} gc={gc:#x} size={}x{}",
+        w, h
+    ));
 
     let shared: SharedConn = Arc::new(Mutex::new(conn));
     let win = X11Window {
@@ -469,8 +490,22 @@ where
             let mut conn = shared.lock().unwrap();
             conn.stream.read_exact(&mut buf).map_err(os)?;
         }
+        // An error reply (first byte 0) is not an event; log and skip it.
+        if buf[0] == 0 {
+            dbg(format_args!(
+                "X error code={} major={} minor={} bad_resource={:#x}",
+                buf[1],
+                buf[10],
+                u16::from_le_bytes([buf[8], buf[9]]),
+                rd_u32(&buf, 4).unwrap_or(0)
+            ));
+            continue;
+        }
         let flow = match buf[0] & 0x7f {
-            X_EXPOSE => handler(Event::RedrawRequested, &win),
+            X_EXPOSE => {
+                dbg(format_args!("expose"));
+                handler(Event::RedrawRequested, &win)
+            }
             X_CONFIGURE_NOTIFY => {
                 let nw = u16::from_le_bytes([buf[20], buf[21]]) as u32;
                 let nh = u16::from_le_bytes([buf[22], buf[23]]) as u32;
@@ -649,9 +684,10 @@ mod tests {
 
     #[test]
     fn parse_setup_reads_screen_fields() {
-        // Build a minimal additional-data buffer: 40-byte fixed header, no
-        // vendor, one pixmap format (8 bytes), then a screen.
-        let mut d = vec![0u8; 40];
+        // Build a minimal additional-data buffer: 32-byte fixed block, no
+        // vendor, one pixmap format (8 bytes), then a screen — matching the
+        // X11 connection-setup reply layout.
+        let mut d = vec![0u8; 32];
         d[4..8].copy_from_slice(&0x0040_0000u32.to_le_bytes()); // resource-id-base
         d[8..12].copy_from_slice(&0x001f_ffffu32.to_le_bytes()); // resource-id-mask
         d[16..18].copy_from_slice(&0u16.to_le_bytes()); // vendor-length
