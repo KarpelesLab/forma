@@ -60,6 +60,34 @@ fn main() {
 | `forma-widgets` | Standard widget library |
 | `forma` | Umbrella crate: `App`, prelude, re-exports |
 
+## Examples
+
+```sh
+cargo run -p gallery            # renders a themed settings panel to forma-gallery.png
+```
+
+The `gallery` example exercises the whole scaffolded stack — widgets →
+`forma-core` layout/paint → `forma-render` scene → `oxideav-raster` → pixel
+buffer — and encodes the result with `oxideav-png`. It renders off-screen (no
+window yet; the native event loop is a later roadmap phase) via
+`App::render_once`.
+
+## Status & MSRV
+
+Pre-alpha scaffolding. The library crates build on **Rust 1.86** (edition
+2024); the `gallery` example pulls a newer transitive dependency through
+`oxideav-png` and is excluded from the MSRV check. What works today:
+
+- the full **build → layout → paint → rasterize → present** path, end to end,
+  verified against the headless backend;
+- self-drawn, themeable, anti-aliased surfaces (panels, rows/columns, buttons,
+  dividers, swatches) with flex layout and DPI scaling.
+
+Next milestones (see `ROADMAP.md`): the `forma-core` reactive runtime (state,
+reconcile, event dispatch, hit-testing), the `oxideav-scribe` text-rendering
+bridge, and the native Wayland/X11 platform backend.
+
 ## License
 
 MIT
+

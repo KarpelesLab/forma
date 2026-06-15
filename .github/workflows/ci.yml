@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.86
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -24,3 +24,20 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+
+  msrv:
+    name: MSRV 1.86 (library crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.86
+      - uses: Swatinem/rust-cache@v2
+      # The library crates guarantee rust 1.86. The gallery example is excluded:
+      # it depends on oxideav-png, whose transitive deps require a newer
+      # toolchain. Example/dev dependencies are not bound by the library MSRV.
+      - name: cargo check (libs only)
+        run: >
+          cargo check
+          -p forma-geometry -p forma-render -p forma-platform
+          -p forma-layout -p forma-core -p forma-anim
+          -p forma-style -p forma-widgets -p forma

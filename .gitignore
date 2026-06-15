@@ -2,3 +2,8 @@
 **/*.rs.bk
 Cargo.lock
 .DS_Store
+
+# Example output artifacts
+/forma-gallery.png
+*.png
+!docs/**/*.png
