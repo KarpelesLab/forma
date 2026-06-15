@@ -17,7 +17,8 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 
 > Living checklist — updated as work lands. ✅ done · 🚧 in progress · ⬜ not started.
 
-- ✅ **Workspace + 9 crates** scaffolded (edition 2024, rust 1.86), CI (lint +
+- ✅ **Workspace + 10 crates** scaffolded (edition 2024, rust 1.88 — floor set
+  by the oxideav stack via `oxideav-png` → `compcol`), CI (lint +
   MSRV), `forma-geometry`.
 - ✅ **Rendering seam** (`forma-render`): `Scene` → oxideav `VectorFrame` →
   `oxideav-raster` → `Pixmap`; `Surface` GPU-ready boundary.
@@ -121,7 +122,8 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 ## 2. Architecture
 
 Layered, bottom-up. Each layer is a crate (or a small crate group) in a single
-Cargo workspace. Forma targets **edition 2024, rust 1.86**, `version = 0.0.x`,
+Cargo workspace. Forma targets **edition 2024, rust 1.88** (the floor imposed
+by the oxideav dependency chain), `version = 0.0.x`,
 pure-Rust. (oxideav itself is edition 2021 / rust 1.80; Forma consumes it as a
 dependency but builds on the newer toolchain.)
 

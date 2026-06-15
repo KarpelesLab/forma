@@ -5,7 +5,9 @@ members = ["crates/*", "examples/*"]
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.86"
+# Floor is set by the oxideav stack: oxideav-scribe → oxideav-png → compcol
+# requires rustc 1.88. (We'd happily target 1.86 otherwise.)
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/KarpelesLab/forma"
 authors = ["Karpelès Lab Inc."]

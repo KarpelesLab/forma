@@ -90,7 +90,7 @@ lives in `crates/forma-web` (built for `wasm32`; see the `Visual` workflow).
 
 ## Status & MSRV
 
-Pre-alpha. The whole workspace builds on **Rust 1.86** (edition 2024).
+Pre-alpha. The whole workspace builds on **Rust 1.88** (edition 2024).
 
 Working today: the full reactive toolkit (render, layout, state, tap/keyboard/
 focus/drag, text, 12 widgets, theming) and **four rendering targets** — native
