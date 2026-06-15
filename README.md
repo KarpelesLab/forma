@@ -45,12 +45,13 @@ and Cocoa, each from-scratch with no windowing crates:
 |---|---|---|
 | ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) |
 
-Input is verified too: CI drives the X11 backend with `xdotool` — clicking a
-counter and typing into a focused text field — and screenshots the result:
+Input is verified too: CI synthesizes real events and screenshots the result —
+X11 via `xdotool` (clicking a counter, typing into a focused field) and macOS
+via `cliclick` (clicking a counter):
 
-| Click (pointer) | Type (keyboard) |
-|---|---|
-| ![clicks](./docs/screenshots/forma-x11-clicks.png) | ![typing](./docs/screenshots/forma-x11-textinput.png) |
+| X11 click | X11 type | macOS click |
+|---|---|---|
+| ![clicks](./docs/screenshots/forma-x11-clicks.png) | ![typing](./docs/screenshots/forma-x11-textinput.png) | ![mac clicks](./docs/screenshots/forma-macos-clicks.png) |
 
 ## Design at a glance
 

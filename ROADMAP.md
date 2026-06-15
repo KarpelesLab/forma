@@ -64,8 +64,12 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   focus so it works WM-less. The App re-renders + presents on every input.
   **Interaction CI-verified**: `xdotool` clicks a counter `0 → 2` and types
   `Forma!` into a focused field, both screenshot-confirmed.
-- 🚧 **Cocoa input + live resize** (present done + screenshot-verified; NSEvent
-  plumbing next); ⬜ **Wayland backend** (hand-authored xdg-shell tables);
+- ✅ **Cocoa input + live resize**: a manual `nextEventMatchingMask:` loop
+  routes `NSEvent`s (mouse y-flipped, keys) and polls view bounds for resize.
+  **Input CI-verified** — `cliclick` drives the counter `0 → 2`
+  (`docs/screenshots/forma-macos-clicks.png`). Desktop trio is now interactive
+  (X11 + macOS pointer/keyboard screenshot-verified; Win32 build-verified).
+- ⬜ **Wayland backend** (hand-authored xdg-shell tables);
   ⬜ X11 keysym→text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret +
   multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
   ⬜ mobile; ⬜ web; ⬜ GPU backends.
