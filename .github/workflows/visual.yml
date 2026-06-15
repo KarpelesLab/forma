@@ -185,6 +185,51 @@ jobs:
           path: visual_output/*.png
           if-no-files-found: warn
 
+  # Build the web (wasm) target and screenshot it rendering in headless Chrome,
+  # proving the canvas present path (putImageData of the RGBA framebuffer).
+  visual-web:
+    name: Visual test (Web / wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the wasm module
+        run: cargo build -p forma-web --target wasm32-unknown-unknown --release
+
+      - name: Assemble the web bundle
+        run: |
+          mkdir -p web visual_output
+          cp crates/forma-web/web/index.html web/
+          cp target/wasm32-unknown-unknown/release/forma_web.wasm web/
+          ls -l web/
+
+      - name: Serve + screenshot with headless Chrome
+        run: |
+          python3 -m http.server 8000 --directory web &
+          echo "SRV_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
+            --window-size=700,460 --virtual-time-budget=10000 \
+            --screenshot="$PWD/visual_output/forma-web.png" \
+            http://localhost:8000/index.html
+          echo "Captured:"; identify visual_output/forma-web.png || true
+
+      - name: Stop server
+        if: always()
+        run: '[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true'
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-web-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn
+
   # Verify macOS input: click the centered clickdemo window with `cliclick`
   # and screenshot before/after. (Synthetic input on a CI runner can be blocked
   # by the accessibility permission model; treated as best-effort.)

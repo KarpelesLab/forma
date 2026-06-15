@@ -1,0 +1,19 @@
+[package]
+name = "forma-web"
+description = "Forma web target: a wasm module that renders a Forma UI and exposes the RGBA framebuffer for a <canvas> to blit (no wasm-bindgen)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true

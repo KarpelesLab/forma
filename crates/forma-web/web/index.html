@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Forma on the web</title>
+    <style>
+      html, body { margin: 0; background: #0a0b0d; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="forma" width="640" height="400"></canvas>
+    <script type="module">
+      // Hand-written glue: instantiate the wasm, render, and blit the RGBA
+      // framebuffer to the canvas via putImageData. No wasm-bindgen.
+      const canvas = document.getElementById("forma");
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+
+      const { instance } = await WebAssembly.instantiateStreaming(
+        fetch("forma_web.wasm"),
+        {},
+      ).catch(async () => {
+        // Fallback for servers without application/wasm MIME.
+        const bytes = await (await fetch("forma_web.wasm")).arrayBuffer();
+        return WebAssembly.instantiate(bytes, {});
+      });
+
+      const e = instance.exports;
+      e.forma_render(W, H);
+      const ptr = e.forma_frame_ptr();
+      const len = e.forma_frame_len();
+      const w = e.forma_width();
+      const h = e.forma_height();
+
+      // Copy out of wasm memory (putImageData needs its own buffer).
+      const src = new Uint8ClampedArray(e.memory.buffer, ptr, len).slice();
+      const img = new ImageData(src, w, h);
+      canvas.width = w;
+      canvas.height = h;
+      ctx.putImageData(img, 0, 0);
+
+      // Signal readiness for screenshot tooling.
+      document.title = "Forma ready " + w + "x" + h;
+    </script>
+  </body>
+</html>
