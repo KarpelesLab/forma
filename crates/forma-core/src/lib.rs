@@ -14,16 +14,22 @@
 //! - [`paint`] draws that tree into a [`Scene`], and [`hit_test`] routes
 //!   pointer taps to the registered [`Handlers`].
 //!
-//! Still ahead (ROADMAP.md Phase 1+): fine-grained state and tree-diff
-//! reconciliation between frames (today a frame rebuilds the whole tree),
-//! keyboard focus traversal, and richer gesture recognition.
+//! Between frames, [`diff_trees`] reconciles the previously-presented
+//! [`LayoutNode`] tree against the freshly built one to compute the changed
+//! [`Damage`] region, so the platform re-presents only what moved rather than
+//! the whole window.
+//!
+//! Still ahead (ROADMAP.md Phase 1+): fine-grained per-node state so a rebuild
+//! can skip unchanged subtrees entirely, and richer gesture recognition.
 
 #![forbid(unsafe_code)]
 
+mod diff;
 mod element;
 mod render;
 pub mod runtime;
 
+pub use diff::{Damage, diff_trees};
 pub use element::{Align, BoxStyle, Element, ElementKind, LayoutStyle, SizeOverride};
 pub use render::{layout, measure, paint, paint_focus, paint_hover};
 pub use runtime::{

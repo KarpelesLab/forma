@@ -200,7 +200,7 @@ impl<S> core::fmt::Debug for Handlers<S> {
 }
 
 /// Paintable leaf content carried by a [`LayoutNode`] beyond its decoration.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum NodeContent {
     /// Decoration only (the common case).
     #[default]

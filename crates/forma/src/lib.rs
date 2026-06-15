@@ -39,8 +39,8 @@ pub use forma_style as style;
 pub use forma_widgets as widgets;
 
 use forma_core::{
-    ActionId, Cx, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode, collect_focusables,
-    drag_at, focus_at, hit_test, layout, paint, paint_focus, paint_hover,
+    ActionId, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode,
+    collect_focusables, drag_at, focus_at, hit_test, layout, paint, paint_focus, paint_hover,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend};
@@ -75,6 +75,13 @@ where
     focused: Option<FocusId>,
     hovered: Option<ActionId>,
     dragging: Option<(DragId, Rect)>,
+    // Set when state/focus/hover changed so the next build rebuilds the tree.
+    dirty: bool,
+    // The tree + overlay state that is currently on screen, used as the diff
+    // baseline so a present can be limited to the region that actually changed.
+    presented: Option<LayoutNode>,
+    painted_hovered: Option<ActionId>,
+    painted_focused: Option<FocusId>,
 }
 
 impl<S, F> std::fmt::Debug for App<S, F>
@@ -111,6 +118,10 @@ where
             focused: None,
             hovered: None,
             dragging: None,
+            dirty: true,
+            presented: None,
+            painted_hovered: None,
+            painted_focused: None,
         }
     }
 
@@ -184,16 +195,48 @@ where
             );
         }
         self.tree = Some(tree);
+        self.dirty = false;
         scene
+    }
+
+    /// Compute the [`Damage`] of the frame just built (in `self.tree`) relative
+    /// to what is currently on screen (`self.presented`), then adopt the new
+    /// frame as the on-screen baseline.
+    ///
+    /// Hover/focus overlays are painted outside the [`LayoutNode`] tree, so a
+    /// change to either can't be localized by the tree diff — those frames, plus
+    /// the first frame and any root-size (resize) change, report [`Damage::Full`].
+    fn take_damage(&mut self) -> Damage {
+        let overlay_changed =
+            self.hovered != self.painted_hovered || self.focused != self.painted_focused;
+        let damage = match (&self.presented, &self.tree) {
+            (Some(old), Some(new)) if !overlay_changed && old.bounds == new.bounds => {
+                forma_core::diff_trees(old, new)
+            }
+            _ => Damage::Full,
+        };
+        self.presented = self.tree.clone();
+        self.painted_hovered = self.hovered;
+        self.painted_focused = self.focused;
+        damage
+    }
+
+    /// Build, paint, and rasterize the next frame, returning the [`Pixmap`] and
+    /// the [`Damage`] (changed region, in logical pixels) relative to the
+    /// previously returned frame. The first call always reports [`Damage::Full`].
+    pub fn render_frame(&mut self) -> (Pixmap, Damage) {
+        let scene = self.build_frame();
+        let pixmap = SoftwareRenderer::new()
+            .with_background(self.theme.palette.background)
+            .render(scene, self.scale);
+        let damage = self.take_damage();
+        (pixmap, damage)
     }
 
     /// Render a single frame off-screen and return it as a [`Pixmap`]. Needs no
     /// window — used for tests, thumbnails, and golden-image comparisons.
     pub fn render_once(&mut self) -> Pixmap {
-        let scene = self.build_frame();
-        SoftwareRenderer::new()
-            .with_background(self.theme.palette.background)
-            .render(scene, self.scale)
+        self.render_frame().0
     }
 
     /// The currently focused element, if any.
@@ -202,7 +245,7 @@ where
     }
 
     fn ensure_tree(&mut self) {
-        if self.tree.is_none() {
+        if self.tree.is_none() || self.dirty {
             let _ = self.build_frame();
         }
     }
@@ -221,13 +264,13 @@ where
         // Clicking moves focus (to the focusable under the cursor, or away).
         if foc != self.focused {
             self.focused = foc;
-            self.tree = None;
+            self.dirty = true;
         }
         match hit {
             Some(id) => {
                 let ran = self.handlers.dispatch(id, &mut self.state);
                 if ran {
-                    self.tree = None;
+                    self.dirty = true;
                 }
                 ran
             }
@@ -251,7 +294,7 @@ where
         let Some(id) = self.focused else { return false };
         let ran = self.handlers.dispatch_key(id, &input, &mut self.state);
         if ran {
-            self.tree = None;
+            self.dirty = true;
         }
         ran
     }
@@ -276,7 +319,7 @@ where
         };
         let changed = self.focused != Some(next);
         self.focused = Some(next);
-        self.tree = None;
+        self.dirty = true;
         changed
     }
 
@@ -299,7 +342,7 @@ where
         };
         let ran = self.handlers.dispatch_drag(id, fraction, &mut self.state);
         if ran {
-            self.tree = None;
+            self.dirty = true;
         }
         ran
     }
@@ -326,24 +369,43 @@ where
     pub fn run(mut self) {
         let attrs = self.attrs.clone();
         let mut surface: Option<Box<dyn Surface>> = None;
-        let mut present = |app: &mut Self, window: &dyn forma_platform::Window| {
+        // `force` presents the whole frame regardless of computed damage — used
+        // for expose/resize, where the window's pixels were lost and a partial
+        // update would leave stale or blank regions.
+        let mut present = |app: &mut Self, window: &dyn forma_platform::Window, force: bool| {
             let scene = app.build_frame();
             let pixmap = SoftwareRenderer::new()
                 .with_background(app.theme.palette.background)
                 .render(scene, window.scale_factor());
+            let damage = app.take_damage();
+            if !force && damage.is_empty() {
+                return; // Nothing changed since the last present.
+            }
             let surface = surface.get_or_insert_with(|| window.create_surface());
             surface.resize(window.inner_size());
-            surface.present(&pixmap, &[]);
+            // Limit the present to the changed region (empty slice = full frame).
+            let regions = if force {
+                Vec::new()
+            } else {
+                let bounds = Rect::from_xywh(
+                    0.0,
+                    0.0,
+                    pixmap.size().width as f64,
+                    pixmap.size().height as f64,
+                );
+                damage.to_physical(window.scale_factor(), bounds)
+            };
+            surface.present(&pixmap, &regions);
         };
         backend::run(attrs, |event, window| match event {
             Event::RedrawRequested => {
-                present(&mut self, window);
+                present(&mut self, window, true);
                 ControlFlow::Wait
             }
             Event::Resized(size) => {
                 self.attrs.logical_size = window.scale_factor().to_logical(size);
-                self.tree = None;
-                present(&mut self, window);
+                self.dirty = true;
+                present(&mut self, window, true);
                 ControlFlow::Wait
             }
             Event::PointerButton {
@@ -354,17 +416,17 @@ where
                 self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
                 // Latch a drag if a draggable sits under the cursor.
                 if self.drag_at_point(position) {
-                    present(&mut self, window);
+                    present(&mut self, window, false);
                 }
                 ControlFlow::Wait
             }
             Event::PointerMoved { position } => {
                 if self.dragging.is_some() {
                     if self.drag_at_point(position) {
-                        present(&mut self, window);
+                        present(&mut self, window, false);
                     }
                 } else if self.hover_at(position) {
-                    present(&mut self, window);
+                    present(&mut self, window, false);
                 }
                 ControlFlow::Wait
             }
@@ -379,14 +441,14 @@ where
                     let down = self.pressed.take();
                     let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
                     if down.is_some() && down == up && self.click_at(position) {
-                        present(&mut self, window);
+                        present(&mut self, window, false);
                     }
                 }
                 ControlFlow::Wait
             }
             Event::Text(text) => {
                 if self.type_text(&text) {
-                    present(&mut self, window);
+                    present(&mut self, window, false);
                 }
                 ControlFlow::Wait
             }
@@ -396,7 +458,7 @@ where
                 ..
             } => {
                 if self.focus_next() {
-                    present(&mut self, window);
+                    present(&mut self, window, false);
                 }
                 ControlFlow::Wait
             }
@@ -408,7 +470,7 @@ where
                 if let Some(input) = map_key(code)
                     && self.press_key(input)
                 {
-                    present(&mut self, window);
+                    present(&mut self, window, false);
                 }
                 ControlFlow::Wait
             }
@@ -500,6 +562,69 @@ mod tests {
             app.render_once().size(),
             forma_geometry::PhysicalSize::new(200, 80)
         );
+    }
+
+    /// Two stacked 200×40 boxes; tapping the top one flips a flag that only
+    /// recolors the *bottom* box. The layout never moves, so a state change
+    /// should damage just the bottom box — not the whole window.
+    fn damage_app() -> App<bool, impl FnMut(&bool, &mut Cx<'_, bool>) -> Element> {
+        use forma_core::BoxStyle;
+        use forma_render::Color;
+        App::new(false, |flipped: &bool, cx: &mut Cx<bool>| {
+            let bottom = if *flipped {
+                Color::rgb(200, 0, 0)
+            } else {
+                Color::rgb(0, 0, 200)
+            };
+            column(vec![
+                Element::boxed(BoxStyle {
+                    fill: Some(Color::rgb(20, 20, 20)),
+                    radius: 0.0,
+                    border: None,
+                })
+                .width(200.0)
+                .height(40.0)
+                .on_tap(cx, |f: &mut bool| *f = !*f),
+                Element::boxed(BoxStyle {
+                    fill: Some(bottom),
+                    radius: 0.0,
+                    border: None,
+                })
+                .width(200.0)
+                .height(40.0),
+            ])
+        })
+        .logical_size(Size::new(200.0, 80.0))
+    }
+
+    #[test]
+    fn first_frame_is_full_then_unchanged_is_none() {
+        let mut app = damage_app();
+        let (_p, d0) = app.render_frame();
+        assert_eq!(d0, Damage::Full, "first frame must repaint everything");
+        // No state change between frames → nothing to repaint.
+        let (_p, d1) = app.render_frame();
+        assert_eq!(d1, Damage::None);
+        assert!(d1.is_empty());
+    }
+
+    #[test]
+    fn state_change_damages_only_the_changed_box() {
+        let mut app = damage_app();
+        let _ = app.render_frame(); // prime the baseline (Full)
+
+        // Tap the top box; only the bottom box's color changes.
+        assert!(app.click_at(Point::new(100.0, 20.0)));
+        let (_p, d) = app.render_frame();
+
+        let bound = match d {
+            Damage::Regions(_) => d.bounding().expect("some region"),
+            other => panic!("expected localized regions, got {other:?}"),
+        };
+        // Damage is confined to the bottom box (y in 40..80), not the full 80px.
+        assert!(bound.min_y() >= 40.0, "damage strayed above the bottom box");
+        assert!(bound.height() <= 40.0, "damage taller than the bottom box");
+        assert!(bound.width() <= 200.0);
     }
 
     #[derive(Default)]

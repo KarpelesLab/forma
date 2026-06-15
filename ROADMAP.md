@@ -95,10 +95,17 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   and hover overlay read theme tokens. **CI-verified**: the `themegallery`
   example renders one card under four themes, montaged into
   `docs/screenshots/forma-themes.png`.
+- ✅ **Frame reconciliation (damage diffing)**: `forma-core::diff_trees`
+  compares the previously-presented `LayoutNode` tree against the freshly built
+  one and returns a `Damage` region (changed rectangles, coalesced). The `App`
+  retains the on-screen frame as a baseline and limits each present to the
+  damaged region via the `Surface` damage seam — a state change repaints only
+  what moved (expose/resize still force a full present). Unit-tested in
+  `forma-core` (localized/full/none cases) and `forma` (incremental App frames).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ X11
-  MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ multi-line/selection
-  text editing; ⬜ a11y.
+  MIT-SHM fast present; ⬜ per-node state to skip unchanged subtrees on rebuild;
+  ⬜ multi-line/selection text editing; ⬜ a11y.
 
 ---
 
