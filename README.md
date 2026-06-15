@@ -41,9 +41,9 @@ The same app, rendered by Forma's **native backends** and screenshotted in CI
 (the `Visual` workflow) on all three desktop OSes — X11 (under Xvfb), Win32,
 and Cocoa, each from-scratch with no windowing crates:
 
-| Linux / X11 | Windows / Win32 | macOS / Cocoa |
-|---|---|---|
-| ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) |
+| Linux / X11 | Windows / Win32 | macOS / Cocoa | Web / wasm + canvas |
+|---|---|---|---|
+| ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) | ![Web](./docs/screenshots/forma-web.png) |
 
 Input is verified too: CI synthesizes real events and screenshots the result —
 X11 via `xdotool` (clicking a counter, typing into a focused field) and macOS
@@ -100,11 +100,12 @@ Pre-alpha scaffolding. The library crates build on **Rust 1.86** (edition
   dividers, swatches) with flex layout and DPI scaling.
 
 Working today: the full reactive toolkit (render, layout, state, tap/keyboard/
-focus/drag, text, 12 widgets, theming) and **native X11, Win32, and Cocoa
-backends** — each verified by a CI screenshot on its OS.
+focus/drag, text, 12 widgets, theming) and **four rendering targets** — native
+X11, Win32, and Cocoa (window + input + resize) plus **web** (wasm + canvas) —
+each verified by a CI screenshot on its platform.
 
-Next milestones (see `ROADMAP.md`): input + live resize on the Win32/Cocoa
-backends, then Wayland, mobile, web, and GPU backends.
+Next milestones (see `ROADMAP.md`): Wayland, mobile (Android/iOS), and GPU
+backends; web font + canvas input.
 
 ## License
 

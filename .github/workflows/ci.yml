@@ -32,12 +32,14 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.86
       - uses: Swatinem/rust-cache@v2
-      # The library crates guarantee rust 1.86. The gallery example is excluded:
-      # it depends on oxideav-png, whose transitive deps require a newer
-      # toolchain. Example/dev dependencies are not bound by the library MSRV.
+      # The library crates guarantee rust 1.86. `--ignore-rust-version` skips
+      # the resolver's rust-version *gate* (the examples pull oxideav-png →
+      # compcol, which declares a newer rust-version) — but the selected library
+      # crates are still actually compiled with 1.86, so a real incompatibility
+      # would still surface as a compile error.
       - name: cargo check (libs only)
         run: >
-          cargo check
+          cargo check --ignore-rust-version
           -p forma-geometry -p forma-render -p forma-platform
           -p forma-layout -p forma-core -p forma-anim
           -p forma-style -p forma-widgets -p forma

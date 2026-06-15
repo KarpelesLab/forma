@@ -69,10 +69,14 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   **Input CI-verified** — `cliclick` drives the counter `0 → 2`
   (`docs/screenshots/forma-macos-clicks.png`). Desktop trio is now interactive
   (X11 + macOS pointer/keyboard screenshot-verified; Win32 build-verified).
-- ⬜ **Wayland backend** (hand-authored xdg-shell tables);
-  ⬜ X11 keysym→text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret +
-  multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
-  ⬜ mobile; ⬜ web; ⬜ GPU backends.
+- ✅ **Web target (Phase 5)**: `forma-web` compiles to `wasm32`, renders to a
+  software `Pixmap`, and a hand-written JS shim (no wasm-bindgen) blits it to a
+  `<canvas>` via `putImageData`. **CI-verified** — headless-Chrome screenshot
+  (`docs/screenshots/forma-web.png`). Web font + canvas input are follow-ups.
+- ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
+  (Android/iOS); ⬜ **GPU backends**; ⬜ web font + canvas input; ⬜ X11
+  MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
+  selection text editing; ⬜ hover/cursor states; ⬜ a11y.
 
 ---
 
