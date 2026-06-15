@@ -22,6 +22,9 @@ use forma_style::Theme;
 type TapFn<S> = Box<dyn FnMut(&mut S)>;
 /// A boxed keyboard handler: receives the [`KeyInput`] for the focused element.
 type KeyFn<S> = Box<dyn FnMut(&mut S, &KeyInput)>;
+/// A boxed drag handler: receives the pointer position as a fraction (0..=1)
+/// along the element's width.
+type DragFn<S> = Box<dyn FnMut(&mut S, f64)>;
 
 /// An opaque handle to a registered tap handler, stamped onto the element that
 /// owns it and resolved against the [`Cx`] tap table on dispatch.
@@ -31,6 +34,10 @@ pub struct ActionId(pub(crate) u32);
 /// An opaque handle to a focusable element with a registered key handler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FocusId(pub(crate) u32);
+
+/// An opaque handle to an element with a registered drag handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DragId(pub(crate) u32);
 
 /// A platform-neutral keyboard input, delivered to the focused element. The
 /// app/platform layer translates raw key events into these.
@@ -58,6 +65,7 @@ pub struct Cx<'a, S> {
     theme: &'a Theme,
     taps: Vec<TapFn<S>>,
     keys: Vec<KeyFn<S>>,
+    drags: Vec<DragFn<S>>,
 }
 
 impl<'a, S> Cx<'a, S> {
@@ -67,6 +75,7 @@ impl<'a, S> Cx<'a, S> {
             theme,
             taps: Vec::new(),
             keys: Vec::new(),
+            drags: Vec::new(),
         }
     }
 
@@ -90,11 +99,20 @@ impl<'a, S> Cx<'a, S> {
         id
     }
 
+    /// Register a drag handler, returning its [`DragId`]. The handler receives
+    /// the pointer's fractional x position (0..=1) across the element.
+    pub fn register_drag(&mut self, handler: impl FnMut(&mut S, f64) + 'static) -> DragId {
+        let id = DragId(self.drags.len() as u32);
+        self.drags.push(Box::new(handler));
+        id
+    }
+
     /// Consume the context, yielding the accumulated [`Handlers`] table.
     pub fn into_handlers(self) -> Handlers<S> {
         Handlers {
             taps: self.taps,
             keys: self.keys,
+            drags: self.drags,
         }
     }
 }
@@ -104,6 +122,7 @@ impl<S> core::fmt::Debug for Cx<'_, S> {
         f.debug_struct("Cx")
             .field("taps", &self.taps.len())
             .field("keys", &self.keys.len())
+            .field("drags", &self.drags.len())
             .finish_non_exhaustive()
     }
 }
@@ -114,6 +133,7 @@ impl<S> core::fmt::Debug for Cx<'_, S> {
 pub struct Handlers<S> {
     taps: Vec<TapFn<S>>,
     keys: Vec<KeyFn<S>>,
+    drags: Vec<DragFn<S>>,
 }
 
 impl<S> Handlers<S> {
@@ -138,13 +158,24 @@ impl<S> Handlers<S> {
         }
     }
 
-    /// Total number of registered handlers (taps + keys).
+    /// Invoke the drag handler for `id` with `fraction` (0..=1 across the
+    /// element width). Returns `true` if one existed and ran.
+    pub fn dispatch_drag(&mut self, id: DragId, fraction: f64, state: &mut S) -> bool {
+        if let Some(handler) = self.drags.get_mut(id.0 as usize) {
+            handler(state, fraction);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Total number of registered handlers (taps + keys + drags).
     pub fn len(&self) -> usize {
-        self.taps.len() + self.keys.len()
+        self.taps.len() + self.keys.len() + self.drags.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.taps.is_empty() && self.keys.is_empty()
+        self.taps.is_empty() && self.keys.is_empty() && self.drags.is_empty()
     }
 }
 
@@ -153,6 +184,7 @@ impl<S> Default for Handlers<S> {
         Self {
             taps: Vec::new(),
             keys: Vec::new(),
+            drags: Vec::new(),
         }
     }
 }
@@ -162,6 +194,7 @@ impl<S> core::fmt::Debug for Handlers<S> {
         f.debug_struct("Handlers")
             .field("taps", &self.taps.len())
             .field("keys", &self.keys.len())
+            .field("drags", &self.drags.len())
             .finish()
     }
 }
@@ -191,6 +224,7 @@ pub struct LayoutNode {
     pub content: NodeContent,
     pub action: Option<ActionId>,
     pub focus: Option<FocusId>,
+    pub drag: Option<DragId>,
     pub children: Vec<LayoutNode>,
 }
 
@@ -226,6 +260,20 @@ pub fn focus_at(node: &LayoutNode, point: Point) -> Option<FocusId> {
     }
 }
 
+/// Find the top-most draggable node containing `point`, returning its
+/// [`DragId`] and bounds (so the caller can compute the drag fraction).
+pub fn drag_at(node: &LayoutNode, point: Point) -> Option<(DragId, Rect)> {
+    for child in node.children.iter().rev() {
+        if let Some(hit) = drag_at(child, point) {
+            return Some(hit);
+        }
+    }
+    match node.drag {
+        Some(id) if node.bounds.contains(point) => Some((id, node.bounds)),
+        _ => None,
+    }
+}
+
 /// Collect every focusable [`FocusId`] in paint/tree order, for Tab traversal.
 pub fn collect_focusables(node: &LayoutNode, out: &mut Vec<FocusId>) {
     if let Some(id) = node.focus {
@@ -247,6 +295,7 @@ mod tests {
             content: NodeContent::None,
             action,
             focus,
+            drag: None,
             children: Vec::new(),
         }
     }
@@ -286,6 +335,7 @@ mod tests {
             content: NodeContent::None,
             action: Some(ActionId(0)),
             focus: None,
+            drag: None,
             children: vec![
                 leaf(
                     Rect::from_xywh(10.0, 10.0, 30.0, 30.0),

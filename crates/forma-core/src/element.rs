@@ -5,7 +5,7 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
-use crate::runtime::{ActionId, Cx, FocusId, KeyInput};
+use crate::runtime::{ActionId, Cx, DragId, FocusId, KeyInput};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -81,6 +81,9 @@ pub struct Element {
     /// Focus + keyboard handle, if this element is focusable. Set via
     /// [`Element::on_key`].
     pub focus: Option<FocusId>,
+    /// Drag handle, if this element responds to pointer drags. Set via
+    /// [`Element::on_drag`].
+    pub drag: Option<DragId>,
     pub kind: ElementKind,
 }
 
@@ -92,6 +95,7 @@ impl Element {
             decoration: style,
             action: None,
             focus: None,
+            drag: None,
             kind: ElementKind::Leaf,
         }
     }
@@ -103,6 +107,7 @@ impl Element {
             decoration: BoxStyle::default(),
             action: None,
             focus: None,
+            drag: None,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -118,6 +123,7 @@ impl Element {
             decoration: BoxStyle::default(),
             action: None,
             focus: None,
+            drag: None,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -157,6 +163,18 @@ impl Element {
         handler: impl FnMut(&mut S, &KeyInput) + 'static,
     ) -> Self {
         self.focus = Some(cx.register_key(handler));
+        self
+    }
+
+    /// Make this element respond to pointer drags. The `handler` receives the
+    /// pointer's fractional x position (0..=1) across the element on press and
+    /// while dragging. Registers in `cx` and stamps the resulting [`DragId`].
+    pub fn on_drag<S>(
+        mut self,
+        cx: &mut Cx<'_, S>,
+        handler: impl FnMut(&mut S, f64) + 'static,
+    ) -> Self {
+        self.drag = Some(cx.register_drag(handler));
         self
     }
 

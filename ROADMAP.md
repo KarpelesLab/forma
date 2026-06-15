@@ -34,8 +34,10 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Keyboard + focus**: `FocusId`, click-to-focus, Tab traversal, `on_key`
   handlers, `KeyInput` routing; editable `text_field` widget (`form` example
   types into a focused field through the real dispatch path).
+- ✅ **Pointer drag**: `DragId` + `on_drag` handlers, press/move/release routing
+  with fractional position; `slider` widget driven by drag.
 - ✅ **Widgets** (scaffold): panel, row/column, button, labeled button, label,
-  divider, swatch, spacer, text field, checkbox, switch.
+  divider, swatch, spacer, text field, checkbox, switch, slider.
 - ✅ **Golden-pixel conformance** tests (font-free, deterministic) over the
   headless path — the cross-platform "pixel-identical" guarantee, enforced in
   CI; native backends must match the same samples.
@@ -43,7 +45,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   probe). Native backends pending — these need a real display/OS to develop
   against and can't be built blind.
 - ⬜ **native Wayland/X11 backend**; ⬜ reconciliation/diffing; ⬜ caret +
-  multi-line/selection text editing; ⬜ drag controls (slider); ⬜ a11y;
+  multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
   ⬜ macOS/Windows; ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---

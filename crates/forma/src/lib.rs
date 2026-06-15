@@ -39,8 +39,8 @@ pub use forma_style as style;
 pub use forma_widgets as widgets;
 
 use forma_core::{
-    ActionId, Cx, Element, FocusId, Handlers, KeyInput, LayoutNode, collect_focusables, focus_at,
-    hit_test, layout, paint,
+    ActionId, Cx, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode, collect_focusables,
+    drag_at, focus_at, hit_test, layout, paint,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{
@@ -74,6 +74,7 @@ where
     handlers: Handlers<S>,
     pressed: Option<ActionId>,
     focused: Option<FocusId>,
+    dragging: Option<(DragId, Rect)>,
 }
 
 impl<S, F> std::fmt::Debug for App<S, F>
@@ -108,6 +109,7 @@ where
             handlers: Handlers::default(),
             pressed: None,
             focused: None,
+            dragging: None,
         }
     }
 
@@ -262,6 +264,35 @@ where
         changed
     }
 
+    /// Begin or continue a pointer drag at `pos` (logical pixels). On the first
+    /// call it latches onto the draggable element under the cursor; subsequent
+    /// calls feed it the pointer's fractional x position until [`App::end_drag`].
+    /// Returns `true` if a drag handler ran.
+    pub fn drag_at_point(&mut self, pos: Point) -> bool {
+        self.ensure_tree();
+        if self.dragging.is_none() {
+            self.dragging = self.tree.as_ref().and_then(|t| drag_at(t, pos));
+        }
+        let Some((id, bounds)) = self.dragging else {
+            return false;
+        };
+        let fraction = if bounds.width() > 0.0 {
+            ((pos.x - bounds.min_x()) / bounds.width()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let ran = self.handlers.dispatch_drag(id, fraction, &mut self.state);
+        if ran {
+            self.tree = None;
+        }
+        ran
+    }
+
+    /// End the current drag (pointer released).
+    pub fn end_drag(&mut self) {
+        self.dragging = None;
+    }
+
     /// Run the app. The scaffold drives the [`headless`] backend through a
     /// redraw + close cycle, presenting frames into a real [`Surface`] and
     /// routing pointer/keyboard events; native backends replace the loop
@@ -289,6 +320,16 @@ where
                     ..
                 } => {
                     self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                    // Latch a drag if a draggable sits under the cursor.
+                    if self.drag_at_point(position) {
+                        window.request_redraw();
+                    }
+                    ControlFlow::Wait
+                }
+                Event::PointerMoved { position } => {
+                    if self.dragging.is_some() && self.drag_at_point(position) {
+                        window.request_redraw();
+                    }
                     ControlFlow::Wait
                 }
                 Event::PointerButton {
@@ -296,11 +337,15 @@ where
                     position,
                     ..
                 } => {
-                    let down = self.pressed.take();
-                    let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                    if down.is_some() && down == up {
-                        self.click_at(position);
-                        window.request_redraw();
+                    if self.dragging.is_some() {
+                        self.end_drag();
+                    } else {
+                        let down = self.pressed.take();
+                        let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                        if down.is_some() && down == up {
+                            self.click_at(position);
+                            window.request_redraw();
+                        }
                     }
                     ControlFlow::Wait
                 }
@@ -363,7 +408,7 @@ pub mod prelude {
     pub use forma_style::Theme;
     pub use forma_widgets::{
         button, button_labeled, checkbox, column, divider, edit_string, label, panel, row,
-        setting_row, spacer, swatch, switch, text_field,
+        setting_row, slider, spacer, swatch, switch, text_field,
     };
 }
 
@@ -479,6 +524,32 @@ mod tests {
         assert!(app.state().on);
         app.click_at(Point::new(50.0, 50.0));
         assert!(!app.state().on);
+    }
+
+    #[derive(Default)]
+    struct Volume {
+        level: f64,
+    }
+
+    #[test]
+    fn slider_drag_sets_value_from_position() {
+        let mut app = App::new(Volume::default(), |s: &Volume, cx: &mut Cx<Volume>| {
+            let theme = *cx.theme();
+            forma_widgets::slider(cx, &theme, s.level, |v: &mut Volume, f| v.level = f).width(200.0)
+        })
+        .logical_size(Size::new(200.0, 40.0));
+
+        // Press at x=150 of a 200-wide slider -> fraction 0.75.
+        app.drag_at_point(Point::new(150.0, 20.0));
+        assert!(
+            (app.state().level - 0.75).abs() < 1e-9,
+            "got {}",
+            app.state().level
+        );
+        // Drag to x=50 -> 0.25.
+        app.drag_at_point(Point::new(50.0, 20.0));
+        assert!((app.state().level - 0.25).abs() < 1e-9);
+        app.end_drag();
     }
 
     #[test]

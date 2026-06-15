@@ -8,9 +8,9 @@
 //! Available widgets: structure (`column`, `row`, `spacer`, `panel`),
 //! content (`label`, `swatch`, `divider`), and interactive controls —
 //! `button` / `button_labeled` ([`Element::on_tap`]), `text_field`
-//! ([`Element::on_key`] + [`edit_string`]), `checkbox`, and `switch`. Hover
-//! states, multi-line/caret text editing, and drag controls (slider) are still
-//! to come.
+//! ([`Element::on_key`] + [`edit_string`]), `checkbox`, `switch`, and `slider`
+//! ([`Element::on_drag`]). Hover states and multi-line/caret text editing are
+//! still to come.
 
 #![forbid(unsafe_code)]
 
@@ -180,6 +180,36 @@ pub fn switch<S>(
         .padding(Insets::uniform(3.0))
         .align(Align::Start, Align::Center)
         .on_tap(cx, on_toggle)
+}
+
+/// A horizontal slider with `value` in 0..=1. Dragging anywhere on the track
+/// calls `on_change` with the new fractional position. Default width 160 px;
+/// override with `.width(..)`.
+pub fn slider<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    value: f64,
+    on_change: impl FnMut(&mut S, f64) + 'static,
+) -> Element {
+    let v = value.clamp(0.0, 1.0);
+    let knob = Element::boxed(BoxStyle {
+        fill: Some(theme.palette.primary),
+        radius: 8.0,
+        border: None,
+    })
+    .width(16.0)
+    .height(16.0);
+    Element::stack(
+        Axis::Horizontal,
+        vec![spacer().grow(v), knob, spacer().grow(1.0 - v)],
+    )
+    .fill(theme.palette.border)
+    .radius(11.0)
+    .width(160.0)
+    .height(22.0)
+    .padding(Insets::symmetric(3.0, 3.0))
+    .align(Align::Start, Align::Center)
+    .on_drag(cx, on_change)
 }
 
 /// A 1px themed divider line spanning the cross axis.
