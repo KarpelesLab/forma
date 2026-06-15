@@ -88,6 +88,10 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn CGImageRelease(image: *mut c_void);
     fn CGContextDrawImage(ctx: *mut c_void, rect: CgRect, image: *mut c_void);
+    fn CGContextSaveGState(ctx: *mut c_void);
+    fn CGContextRestoreGState(ctx: *mut c_void);
+    fn CGContextTranslateCTM(ctx: *mut c_void, tx: f64, ty: f64);
+    fn CGContextScaleCTM(ctx: *mut c_void, sx: f64, sy: f64);
 }
 
 const NS_WINDOW_STYLE_TITLED: u64 = 1;
@@ -198,7 +202,15 @@ extern "C" fn draw_rect(_this: Id, _cmd: Sel, _dirty: CgRect) {
                     height: c.h as f64,
                 },
             };
+            // The view is `isFlipped` (top-left origin), but CGContextDrawImage
+            // interprets image data as Y=0-at-bottom, so without compensation
+            // the framebuffer lands upside down. Flip the CTM around the draw —
+            // the same fix the x11anywhere macOS backend uses.
+            CGContextSaveGState(cg);
+            CGContextTranslateCTM(cg, 0.0, c.h as f64);
+            CGContextScaleCTM(cg, 1.0, -1.0);
             CGContextDrawImage(cg, rect, image);
+            CGContextRestoreGState(cg);
             CGImageRelease(image);
             CGDataProviderRelease(provider);
             CGColorSpaceRelease(space);
