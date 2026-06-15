@@ -45,6 +45,13 @@ and Cocoa, each from-scratch with no windowing crates:
 |---|---|---|
 | ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) |
 
+Input is verified too: CI drives the X11 backend with `xdotool` — clicking a
+counter and typing into a focused text field — and screenshots the result:
+
+| Click (pointer) | Type (keyboard) |
+|---|---|
+| ![clicks](./docs/screenshots/forma-x11-clicks.png) | ![typing](./docs/screenshots/forma-x11-textinput.png) |
+
 ## Design at a glance
 
 - **Software-first rendering** behind a GPU-ready `Surface` seam (raw

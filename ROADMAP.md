@@ -59,10 +59,11 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Desktop trio native + CI-screenshot-verified**: X11, Win32, and Cocoa
   backends each render the demo on their own OS runner. The build matrix also
   compiles the whole workspace on all three.
-- ✅ **Input wired on X11 + Win32** (pointer move/buttons, keys, text, resize);
-  the App re-renders + presents on every input. **Interaction CI-verified**:
-  an `xdotool` job clicks the `clickdemo` window under Xvfb and the count goes
-  `0 → 2` across before/after screenshots.
+- ✅ **Input on X11 + Win32** (pointer move/buttons/wheel, keys, text, resize);
+  X11 resolves keysyms (`GetKeyboardMapping`) to text + editing keys and grabs
+  focus so it works WM-less. The App re-renders + presents on every input.
+  **Interaction CI-verified**: `xdotool` clicks a counter `0 → 2` and types
+  `Forma!` into a focused field, both screenshot-confirmed.
 - 🚧 **Cocoa input + live resize** (present done + screenshot-verified; NSEvent
   plumbing next); ⬜ **Wayland backend** (hand-authored xdg-shell tables);
   ⬜ X11 keysym→text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret +
