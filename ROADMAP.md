@@ -28,11 +28,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `Cx` handler registry, `on_tap` dispatch → state mutation (the `counter`
   example drives clicks through the real path).
 - ✅ **Theming** (`forma-style`) and **animation primitives** (`forma-anim`).
-- ✅ **Widgets** (scaffold): panel, row/column, button, divider, swatch, spacer.
+- ✅ **Text rendering** via `oxideav-scribe`: `Font` (load + measure), glyph
+  shaping → scene nodes with per-run color; `Text` element threaded through
+  layout (intrinsic sizing) and paint; `label`/`button_labeled` widgets.
+- ✅ **Widgets** (scaffold): panel, row/column, button, labeled button, label,
+  divider, swatch, spacer.
 - 🚧 **Platform layer**: headless backend only (full vocabulary + golden-image
   probe). Native backends pending.
-- ⬜ **Text rendering** via `oxideav-scribe`; ⬜ **native Wayland/X11 backend**;
-  ⬜ reconciliation/diffing; ⬜ focus + keyboard; ⬜ richer widgets; ⬜ a11y;
+- ⬜ **native Wayland/X11 backend**; ⬜ reconciliation/diffing; ⬜ focus +
+  keyboard; ⬜ multi-line/editable text; ⬜ richer widgets; ⬜ a11y;
   ⬜ macOS/Windows; ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---

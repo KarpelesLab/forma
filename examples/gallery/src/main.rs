@@ -25,13 +25,8 @@ fn view(_state: &Gallery, cx: &mut Cx<Gallery>) -> Element {
     let card = panel(
         theme,
         vec![
-            // Header bar.
-            Element::boxed(BoxStyle {
-                fill: Some(theme.palette.primary),
-                radius: theme.radius / 2.0,
-                border: None,
-            })
-            .height(28.0),
+            // Heading.
+            label(theme, "Settings"),
             divider(theme),
             setting_row(theme, Color::rgb(0xef, 0x68, 0x68)),
             setting_row(theme, Color::rgb(0x34, 0xd3, 0x99)),
@@ -56,6 +51,9 @@ fn main() {
         .theme(Theme::dark())
         .logical_size(Size::new(380.0, 260.0))
         .scale(ScaleFactor::new(2.0)); // render @2x for crisp output
+    if let Some(font) = Font::system_default() {
+        app = app.font(font);
+    }
 
     let frame = app.render_once();
     write_png(&frame, &out).expect("encode + write PNG");

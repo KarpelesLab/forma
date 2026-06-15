@@ -26,7 +26,11 @@ pub mod runtime;
 
 pub use element::{Align, BoxStyle, Element, ElementKind, LayoutStyle, SizeOverride};
 pub use render::{layout, measure, paint};
-pub use runtime::{ActionId, Cx, Handlers, LayoutNode, hit_test};
+pub use runtime::{ActionId, Cx, Handlers, LayoutNode, NodeContent, hit_test};
+
+// The font type lives in forma-render; re-export so callers of the layout/paint
+// passes have one import path for the active font.
+pub use forma_render::Font;
 
 // Re-export the layout axis so widget crates speak one vocabulary.
 pub use forma_layout::Axis;
@@ -53,13 +57,18 @@ impl View for Element {
 }
 
 /// Build `view`, lay it out to fill `size` logical pixels, and paint it into a
-/// fresh [`Scene`]. Interaction handles on the elements are ignored (use
-/// [`layout`] + [`hit_test`] directly to route events).
-pub fn render_view(view: &impl View, size: Size, theme: &Theme) -> Scene {
+/// fresh [`Scene`]. Text is rendered with `font` (pass `None` to skip text).
+/// Interaction handles on the elements are ignored (use [`layout`] +
+/// [`hit_test`] directly to route events).
+pub fn render_view(view: &impl View, size: Size, theme: &Theme, font: Option<&Font>) -> Scene {
     let element = view.build(theme);
-    let tree = layout(&element, Rect::from_xywh(0.0, 0.0, size.width, size.height));
+    let tree = layout(
+        &element,
+        Rect::from_xywh(0.0, 0.0, size.width, size.height),
+        font,
+    );
     let mut scene = Scene::new(size);
-    paint(&tree, &mut scene);
+    paint(&tree, &mut scene, font);
     scene
 }
 
@@ -73,7 +82,7 @@ mod tests {
         let root = Element::stack(Axis::Vertical, vec![])
             .fill(Color::rgb(10, 20, 30))
             .padding(forma_geometry::Insets::uniform(8.0));
-        let scene = render_view(&root, Size::new(100.0, 100.0), &Theme::light());
+        let scene = render_view(&root, Size::new(100.0, 100.0), &Theme::light(), None);
         assert_eq!(scene.len(), 1);
         assert_eq!(scene.logical_size(), Size::new(100.0, 100.0));
     }

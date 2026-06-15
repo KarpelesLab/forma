@@ -118,13 +118,22 @@ fn parse_face(bytes: Vec<u8>) -> Result<Face, FontError> {
     result.map_err(|e| FontError(format!("{e:?}")))
 }
 
-/// Recolor an outline glyph node to `color`; non-outline nodes (e.g. color
-/// bitmap emoji) are left untouched.
+/// Recolor an outline glyph to `color`, recursing into groups (the shaper
+/// wraps each glyph's path in a cache-keyed `Group`). Non-outline leaves (e.g.
+/// color-bitmap emoji `Node::Image`) are left untouched.
 fn recolor(node: Node, color: Color) -> Node {
     match node {
         Node::Path(mut path) => {
             path.fill = Some(Paint::Solid(color.to_oxideav()));
             Node::Path(path)
+        }
+        Node::Group(mut group) => {
+            group.children = group
+                .children
+                .into_iter()
+                .map(|c| recolor(c, color))
+                .collect();
+            Node::Group(group)
         }
         other => other,
     }
@@ -214,6 +223,40 @@ mod tests {
         assert!(
             darkened > 20,
             "expected glyph coverage, got {darkened} dark pixels"
+        );
+    }
+
+    #[test]
+    fn text_uses_requested_color() {
+        let Some(font) = Font::system_default() else {
+            eprintln!("skipping: no system font found");
+            return;
+        };
+        let mut scene = Scene::new(Size::new(160.0, 50.0));
+        scene.fill_rect(Rect::from_xywh(0.0, 0.0, 160.0, 50.0), Color::WHITE);
+        // Pure red text: glyph interiors must be red, not the default black.
+        scene.fill_text(
+            &font,
+            "RED",
+            Point::new(8.0, 8.0),
+            32.0,
+            Color::rgb(255, 0, 0),
+        );
+
+        let pm = SoftwareRenderer::new().render(scene, ScaleFactor::IDENTITY);
+        let mut reddish = 0;
+        for y in 0..pm.size().height {
+            for x in 0..pm.size().width {
+                if let Some([r, g, b, _]) = pm.pixel(x, y) {
+                    if r > 180 && g < 80 && b < 80 {
+                        reddish += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            reddish > 20,
+            "expected red glyph coverage, got {reddish} red pixels"
         );
     }
 }

@@ -3,27 +3,31 @@
 //!
 //! Three phases:
 //! 1. **measure** — bottom-up natural sizing (content + padding, honoring fixed
-//!    overrides).
+//!    overrides; text measures via the active [`Font`]).
 //! 2. **layout** — top-down assignment of absolute bounds, using
 //!    [`forma_layout::solve_main_axis`] to distribute the main axis and
 //!    [`Align`] to position children on the cross axis. Produces a
 //!    [`LayoutNode`] tree that survives the frame so pointer events can be
 //!    routed against it (see [`crate::hit_test`]).
-//! 3. **paint** — walk the layout tree, drawing each node's decoration.
+//! 3. **paint** — walk the layout tree, drawing each node's decoration and text.
 
 use crate::element::{Align, BoxStyle, Element, ElementKind};
-use crate::runtime::LayoutNode;
+use crate::runtime::{LayoutNode, NodeContent};
 use forma_geometry::{Rect, Size};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
-use forma_render::Scene;
+use forma_render::{Font, Scene};
 
-/// Natural (desired) size of `el` given the `avail` space.
-pub fn measure(el: &Element, avail: Size) -> Size {
+/// Natural (desired) size of `el` given the `avail` space and active `font`.
+pub fn measure(el: &Element, avail: Size, font: Option<&Font>) -> Size {
     let pad = el.layout.padding;
     let inner = avail.deflate(pad);
 
     let content = match &el.kind {
         ElementKind::Leaf => Size::ZERO,
+        ElementKind::Text { text, size, .. } => match font {
+            Some(f) => f.measure(text, *size),
+            None => Size::ZERO,
+        },
         ElementKind::Stack {
             axis,
             gap,
@@ -33,7 +37,7 @@ pub fn measure(el: &Element, avail: Size) -> Size {
             let mut main = 0.0;
             let mut cross: f64 = 0.0;
             for c in children {
-                let cs = measure(c, inner);
+                let cs = measure(c, inner, font);
                 main += axis.main(cs);
                 cross = cross.max(axis.cross(cs));
             }
@@ -58,11 +62,20 @@ pub fn measure(el: &Element, avail: Size) -> Size {
 }
 
 /// Lay `el` out within `bounds`, producing a retained [`LayoutNode`] tree with
-/// absolute bounds, decorations, and action handles.
-pub fn layout(el: &Element, bounds: Rect) -> LayoutNode {
+/// absolute bounds, decorations, text content, and action handles.
+pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
+    let content = match &el.kind {
+        ElementKind::Text { text, size, color } => NodeContent::Text {
+            text: text.clone(),
+            size: *size,
+            color: *color,
+        },
+        _ => NodeContent::None,
+    };
     let mut node = LayoutNode {
         bounds,
         decoration: el.decoration,
+        content,
         action: el.action,
         children: Vec::new(),
     };
@@ -81,12 +94,12 @@ pub fn layout(el: &Element, bounds: Rect) -> LayoutNode {
         return node;
     }
 
-    let content = bounds.inset(el.layout.padding);
-    let avail = content.size;
+    let inner = bounds.inset(el.layout.padding);
+    let avail = inner.size;
     let axis = *axis;
 
     // Main-axis distribution.
-    let measured: Vec<Size> = children.iter().map(|c| measure(c, avail)).collect();
+    let measured: Vec<Size> = children.iter().map(|c| measure(c, avail, font)).collect();
     let items: Vec<FlexItem> = children
         .iter()
         .zip(&measured)
@@ -121,22 +134,27 @@ pub fn layout(el: &Element, bounds: Rect) -> LayoutNode {
         };
         let child_bounds = child_rect(
             axis,
-            content,
+            inner,
             span.offset + main_shift,
             span.length,
             cross_off,
             cross_len,
         );
-        node.children.push(layout(child, child_bounds));
+        node.children.push(layout(child, child_bounds, font));
     }
     node
 }
 
 /// Paint a laid-out tree into `scene`, parents before children.
-pub fn paint(node: &LayoutNode, scene: &mut Scene) {
+pub fn paint(node: &LayoutNode, scene: &mut Scene, font: Option<&Font>) {
     paint_decoration(&node.decoration, node.bounds, scene);
+    if let NodeContent::Text { text, size, color } = &node.content {
+        if let Some(f) = font {
+            scene.fill_text(f, text, node.bounds.origin, *size, *color);
+        }
+    }
     for child in &node.children {
-        paint(child, scene);
+        paint(child, scene, font);
     }
 }
 
@@ -190,7 +208,7 @@ mod tests {
             .gap(5.0)
             .padding(forma_geometry::Insets::uniform(4.0));
         // main (vertical): 3*10 + 2*5 + 2*4 = 48; cross (width): 20 + 2*4 = 28
-        let size = measure(&stack, Size::new(1000.0, 1000.0));
+        let size = measure(&stack, Size::new(1000.0, 1000.0), None);
         assert_eq!(size, Size::new(28.0, 48.0));
     }
 
@@ -206,7 +224,7 @@ mod tests {
         let row =
             Element::stack(Axis::Horizontal, vec![fixed, flex]).align(Align::Start, Align::Stretch);
 
-        let tree = layout(&row, Rect::from_xywh(0.0, 0.0, 200.0, 20.0));
+        let tree = layout(&row, Rect::from_xywh(0.0, 0.0, 200.0, 20.0), None);
         // The flex child occupies the leftover: 200 - 40 = 160px, at x=40,
         // stretched to the full 20px cross height.
         assert_eq!(
@@ -215,7 +233,7 @@ mod tests {
         );
 
         let mut scene = Scene::new(Size::new(200.0, 20.0));
-        paint(&tree, &mut scene);
+        paint(&tree, &mut scene, None);
         assert_eq!(scene.len(), 1); // only the filled flex box paints
     }
 }

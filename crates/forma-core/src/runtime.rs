@@ -14,6 +14,7 @@
 
 use crate::element::BoxStyle;
 use forma_geometry::{Point, Rect};
+use forma_render::Color;
 use forma_style::Theme;
 
 /// A boxed event handler that mutates the app state `S`.
@@ -111,13 +112,28 @@ impl<S> core::fmt::Debug for Handlers<S> {
     }
 }
 
-/// A laid-out, retained node: absolute bounds, paint decoration, the optional
-/// action it routes to, and laid-out children. Produced by
-/// [`layout`](crate::layout) and consumed by paint and [`hit_test`].
+/// Paintable leaf content carried by a [`LayoutNode`] beyond its decoration.
+#[derive(Clone, Debug, Default)]
+pub enum NodeContent {
+    /// Decoration only (the common case).
+    #[default]
+    None,
+    /// A single line of text, painted at the node's bounds origin.
+    Text {
+        text: String,
+        size: f64,
+        color: Color,
+    },
+}
+
+/// A laid-out, retained node: absolute bounds, paint decoration, optional text
+/// content, the optional action it routes to, and laid-out children. Produced
+/// by [`layout`](crate::layout) and consumed by paint and [`hit_test`].
 #[derive(Clone, Debug)]
 pub struct LayoutNode {
     pub bounds: Rect,
     pub decoration: BoxStyle,
+    pub content: NodeContent,
     pub action: Option<ActionId>,
     pub children: Vec<LayoutNode>,
 }
@@ -148,6 +164,7 @@ mod tests {
         LayoutNode {
             bounds,
             decoration: BoxStyle::default(),
+            content: NodeContent::None,
             action,
             children: Vec::new(),
         }
@@ -170,6 +187,7 @@ mod tests {
         let root = LayoutNode {
             bounds: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
             decoration: BoxStyle::default(),
+            content: NodeContent::None,
             action: Some(ActionId(0)),
             children: vec![
                 leaf(Rect::from_xywh(10.0, 10.0, 30.0, 30.0), Some(ActionId(1))),

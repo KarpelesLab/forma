@@ -47,11 +47,18 @@ pub struct BoxStyle {
     pub border: Option<(Color, f64)>,
 }
 
-/// What an element arranges; both kinds share [`Element::decoration`].
+/// What an element arranges; all kinds share [`Element::decoration`].
 #[derive(Clone, Debug)]
 pub enum ElementKind {
     /// A leaf with no children.
     Leaf,
+    /// A single line of text. Sizes to the shaped run (via the active font);
+    /// painted with [`Scene::fill_text`](forma_render::Scene::fill_text).
+    Text {
+        text: String,
+        size: f64,
+        color: Color,
+    },
     /// A linear container that lays children along `axis`.
     Stack {
         axis: Axis,
@@ -82,6 +89,20 @@ impl Element {
             decoration: style,
             action: None,
             kind: ElementKind::Leaf,
+        }
+    }
+
+    /// A single line of text in `color` at `size` logical pixels.
+    pub fn text(text: impl Into<String>, size: f64, color: Color) -> Self {
+        Self {
+            layout: LayoutStyle::default(),
+            decoration: BoxStyle::default(),
+            action: None,
+            kind: ElementKind::Text {
+                text: text.into(),
+                size,
+                color,
+            },
         }
     }
 

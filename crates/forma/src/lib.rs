@@ -41,7 +41,7 @@ pub use forma_widgets as widgets;
 use forma_core::{ActionId, Cx, Element, Handlers, LayoutNode, hit_test, layout, paint};
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{ButtonState, ControlFlow, Event, WindowAttributes, backend::headless};
-use forma_render::{Pixmap, Scene, SoftwareRenderer, Surface};
+use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
 /// A Forma application.
@@ -63,6 +63,7 @@ where
     theme: Theme,
     attrs: WindowAttributes,
     scale: ScaleFactor,
+    font: Option<Font>,
     // Retained from the last frame build, for routing pointer events.
     tree: Option<LayoutNode>,
     handlers: Handlers<S>,
@@ -96,10 +97,18 @@ where
             theme: Theme::light(),
             attrs: WindowAttributes::new(),
             scale: ScaleFactor::IDENTITY,
+            font: None,
             tree: None,
             handlers: Handlers::default(),
             pressed: None,
         }
+    }
+
+    /// Set the font used to render text. Without one, text elements are laid
+    /// out as zero-size and not painted.
+    pub fn font(mut self, font: Font) -> Self {
+        self.font = Some(font);
+        self
     }
 
     /// Set the window title.
@@ -141,9 +150,14 @@ where
         self.handlers = cx.into_handlers();
 
         let size = self.attrs.logical_size;
-        let tree = layout(&element, Rect::from_xywh(0.0, 0.0, size.width, size.height));
+        let font = self.font.as_ref();
+        let tree = layout(
+            &element,
+            Rect::from_xywh(0.0, 0.0, size.width, size.height),
+            font,
+        );
         let mut scene = Scene::new(size);
-        paint(&tree, &mut scene);
+        paint(&tree, &mut scene, font);
         self.tree = Some(tree);
         scene
     }
@@ -235,9 +249,11 @@ pub mod prelude {
     pub use forma_anim::{Easing, Spring, Tween};
     pub use forma_core::{Align, Axis, BoxStyle, Cx, Element, View};
     pub use forma_geometry::{Insets, Point, Rect, ScaleFactor, Size};
-    pub use forma_render::Color;
+    pub use forma_render::{Color, Font};
     pub use forma_style::Theme;
-    pub use forma_widgets::{button, column, divider, panel, row, setting_row, spacer, swatch};
+    pub use forma_widgets::{
+        button, button_labeled, column, divider, label, panel, row, setting_row, spacer, swatch,
+    };
 }
 
 #[cfg(test)]

@@ -47,8 +47,8 @@ pub fn panel(theme: &Theme, children: Vec<Element>) -> Element {
         .align(Align::Start, Align::Stretch)
 }
 
-/// A primary action surface (the visual basis of a button). Fixed size for
-/// now; intrinsic sizing arrives with text layout.
+/// A primary action surface (the visual basis of an icon-only button). Fixed
+/// size; for a text button use [`button_labeled`].
 pub fn button(theme: &Theme) -> Element {
     Element::boxed(BoxStyle {
         fill: Some(theme.palette.primary),
@@ -57,6 +57,22 @@ pub fn button(theme: &Theme) -> Element {
     })
     .width(96.0)
     .height(36.0)
+}
+
+/// A single line of text in the theme's default text color and base size.
+pub fn label(theme: &Theme, text: impl Into<String>) -> Element {
+    Element::text(text, theme.font_size, theme.palette.text)
+}
+
+/// A primary button with a centered text `label`. Sizes to the label plus
+/// padding (intrinsic sizing via the active font's measurement).
+pub fn button_labeled(theme: &Theme, label: impl Into<String>) -> Element {
+    let text = Element::text(label, theme.font_size, theme.palette.on_primary);
+    Element::stack(Axis::Horizontal, vec![text])
+        .fill(theme.palette.primary)
+        .radius(theme.radius)
+        .padding(Insets::symmetric(theme.spacing.lg, theme.spacing.sm))
+        .align(Align::Center, Align::Center)
 }
 
 /// A 1px themed divider line spanning the cross axis.
@@ -120,6 +136,7 @@ mod tests {
             &setting_row(&theme, Color::rgb(200, 80, 80)),
             Size::new(300.0, 40.0),
             &theme,
+            None,
         );
         assert_eq!(scene.len(), 2);
     }
