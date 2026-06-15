@@ -12,6 +12,7 @@ authors.workspace = true
 forma-geometry.workspace = true
 oxideav-core.workspace = true
 oxideav-raster.workspace = true
+oxideav-scribe.workspace = true
 
 [lints]
 workspace = true

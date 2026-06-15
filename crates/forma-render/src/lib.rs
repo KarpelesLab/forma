@@ -28,11 +28,13 @@ mod convert;
 mod scene;
 mod software;
 mod surface;
+mod text;
 
 pub use color::Color;
 pub use scene::Scene;
 pub use software::SoftwareRenderer;
 pub use surface::{Pixmap, Surface};
+pub use text::{Font, FontError};
 
 /// Low-level conversions to `oxideav-core` coordinate types. Exposed for
 /// crates that build scene-graph nodes directly (e.g. the future text-run
