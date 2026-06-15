@@ -59,11 +59,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Desktop trio native + CI-screenshot-verified**: X11, Win32, and Cocoa
   backends each render the demo on their own OS runner. The build matrix also
   compiles the whole workspace on all three.
-- 🚧 **Win32/Cocoa input + live resize** (present paths done + screenshot-
-  verified; event plumbing next — X11 already routes input); ⬜ **Wayland
-  backend** (hand-authored xdg-shell tables); ⬜ X11 keysym→text mapping +
-  MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret + multi-line/selection text
-  editing; ⬜ hover/cursor states; ⬜ a11y; ⬜ mobile; ⬜ web; ⬜ GPU backends.
+- ✅ **Input wired on X11 + Win32** (pointer move/buttons, keys, text, resize);
+  the App re-renders + presents on every input. **Interaction CI-verified**:
+  an `xdotool` job clicks the `clickdemo` window under Xvfb and the count goes
+  `0 → 2` across before/after screenshots.
+- 🚧 **Cocoa input + live resize** (present done + screenshot-verified; NSEvent
+  plumbing next); ⬜ **Wayland backend** (hand-authored xdg-shell tables);
+  ⬜ X11 keysym→text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret +
+  multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
+  ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---
 
