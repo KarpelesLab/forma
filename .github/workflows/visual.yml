@@ -99,8 +99,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
 
-      - name: Build the clickdemo + textinput examples
-        run: cargo build -p clickdemo -p textinput
+      - name: Build the clickdemo + textinput examples (release)
+        # Release so per-keystroke re-rasterization keeps up with input.
+        run: cargo build --release -p clickdemo -p textinput
 
       - name: Click + type, screenshotting the results
         env:
@@ -113,9 +114,9 @@ jobs:
           sleep 2
 
           # --- pointer: click a counting button ---
-          ./target/debug/clickdemo > visual_output/clickdemo.log 2>&1 &
+          ./target/release/clickdemo > visual_output/clickdemo.log 2>&1 &
           CLICK_PID=$!
-          sleep 4
+          sleep 3
           import -window root visual_output/clicks-before.png
           xdotool mousemove 320 240 click 1; sleep 1
           xdotool mousemove 320 240 click 1; sleep 1
@@ -124,14 +125,12 @@ jobs:
           echo "=== clickdemo.log ==="; cat visual_output/clickdemo.log || true
 
           # --- keyboard: focus the text field (Tab) and type ---
-          ./target/debug/textinput > visual_output/textinput.log 2>&1 &
+          ./target/release/textinput > visual_output/textinput.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
-          sleep 4
-          xdotool key Tab; sleep 1
-          # Type slowly so each keystroke is processed + presented, then let the
-          # window settle before capturing.
-          xdotool type --delay 120 "Forma!"
           sleep 3
+          xdotool key Tab; sleep 1
+          xdotool type --delay 80 "Forma!"
+          sleep 2
           import -window root visual_output/text-typed.png
           echo "=== textinput.log ==="; cat visual_output/textinput.log || true
 
