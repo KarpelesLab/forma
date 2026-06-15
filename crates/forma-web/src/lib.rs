@@ -42,7 +42,9 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
         ],
     )
     .width(360.0);
-    column(vec![card]).grow(1.0).align(Align::Center, Align::Center)
+    column(vec![card])
+        .grow(1.0)
+        .align(Align::Center, Align::Center)
 }
 
 /// Render the UI at `width` × `height` logical pixels (scale 1) and store the
