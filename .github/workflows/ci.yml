@@ -32,14 +32,17 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.86
       - uses: Swatinem/rust-cache@v2
-      # The library crates guarantee rust 1.86. `--ignore-rust-version` skips
-      # the resolver's rust-version *gate* (the examples pull oxideav-png →
-      # compcol, which declares a newer rust-version) — but the selected library
-      # crates are still actually compiled with 1.86, so a real incompatibility
-      # would still surface as a compile error.
+      # The library crates guarantee rust 1.86. The examples pull oxideav-png →
+      # compcol (rust-version 1.88), so the MSRV-aware resolver would refuse to
+      # resolve the workspace on 1.86. `incompatible-rust-versions=allow` lets it
+      # resolve anyway; the selected library crates are still compiled on 1.86
+      # (compcol isn't among their deps), so a real incompatibility would still
+      # surface as a compile error.
       - name: cargo check (libs only)
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: allow
         run: >
-          cargo check --ignore-rust-version
+          cargo check
           -p forma-geometry -p forma-render -p forma-platform
           -p forma-layout -p forma-core -p forma-anim
           -p forma-style -p forma-widgets -p forma
