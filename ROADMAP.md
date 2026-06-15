@@ -82,9 +82,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Hover highlight**: the App tracks the hovered tappable element and
   overlays a translucent highlight matching its shape, re-presenting on change
   (CI-verified — `xdotool` hovers one of two buttons, which lights up).
+- ✅ **GPU present path (Phase 6 seam)**: `forma-gpu` routes the software
+  `Pixmap` through raw EGL + OpenGL ES 2 (texture upload → fullscreen-quad
+  shader → offscreen FBO → readback). **CI-verified** on Mesa software GL
+  (`docs/screenshots/forma-gpu.png`). v1 composites the CPU frame on the GPU;
+  GPU-native scene tessellation and Vulkan/Metal/D3D/WebGPU are future work.
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
-  (Android/iOS); ⬜ **GPU backends**; ⬜ X11 MIT-SHM fast present;
-  ⬜ reconciliation/diffing; ⬜ multi-line/selection text editing; ⬜ a11y.
+  (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ X11
+  MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ multi-line/selection
+  text editing; ⬜ a11y.
 
 ---
 

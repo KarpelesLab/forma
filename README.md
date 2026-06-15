@@ -41,9 +41,9 @@ The same app, rendered by Forma's **native backends** and screenshotted in CI
 (the `Visual` workflow) on all three desktop OSes — X11 (under Xvfb), Win32,
 and Cocoa, each from-scratch with no windowing crates:
 
-| Linux / X11 | Windows / Win32 | macOS / Cocoa | Web / wasm + canvas |
-|---|---|---|---|
-| ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) | ![Web](./docs/screenshots/forma-web.png) |
+| Linux / X11 | Windows / Win32 | macOS / Cocoa | Web / wasm + canvas | GPU / GLES (offscreen) |
+|---|---|---|---|---|
+| ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) | ![Web](./docs/screenshots/forma-web.png) | ![GPU](./docs/screenshots/forma-gpu.png) |
 
 Input is verified too: CI synthesizes real events and screenshots the result —
 X11 via `xdotool` (clicking a counter, typing into a focused field) and macOS
