@@ -9,9 +9,13 @@
 //! Backends live under [`backend`] and are selected by `cfg`. The
 //! [`backend::headless`] backend is always available and implements the full
 //! contract without touching any OS API — it powers tests and the
-//! golden-image conformance suite. Native backends are roadmap Phases 1–4.
+//! golden-image conformance suite. The native **X11** backend is pure-socket
+//! and safe; native backends that require OS FFI (e.g. Win32) opt into
+//! `unsafe` per-module via `#[allow(unsafe_code)]`.
 
-#![forbid(unsafe_code)]
+// Unsafe is denied crate-wide and re-allowed only on the FFI backend modules
+// that genuinely need it (the X11 and headless backends stay safe).
+#![deny(unsafe_code)]
 
 pub mod backend;
 mod error;

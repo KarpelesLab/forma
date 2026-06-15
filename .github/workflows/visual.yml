@@ -82,3 +82,40 @@ jobs:
           name: forma-x11-screenshot
           path: visual_output/*
           if-no-files-found: warn
+
+  # Run the windowed example on a real Windows desktop (the runner has one) and
+  # capture the screen to confirm the native Win32 backend creates a window and
+  # blits the framebuffer.
+  visual-windows:
+    name: Visual test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the window example
+        run: cargo build -p window
+
+      - name: Launch the Forma window and screenshot the desktop
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path visual_output | Out-Null
+          $proc = Start-Process -FilePath ".\target\debug\window.exe" -PassThru
+          Start-Sleep -Seconds 5
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+          $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+          $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bmp.Save("$PWD\visual_output\forma-windows.png")
+          Write-Host "Saved screenshot ($($bounds.Width)x$($bounds.Height))"
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-windows-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn

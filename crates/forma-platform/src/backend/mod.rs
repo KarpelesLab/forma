@@ -27,6 +27,9 @@ pub mod headless;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
+#[cfg(target_os = "windows")]
+pub mod windows;
+
 /// Run `handler` against the best available native backend, falling back to a
 /// one-shot [`headless`] present when no display is reachable.
 ///
@@ -44,6 +47,15 @@ where
                 Err(err) => {
                     eprintln!("forma: X11 backend unavailable ({err}); falling back to headless");
                 }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        match windows::run(attrs.clone(), &mut handler) {
+            Ok(()) => return,
+            Err(err) => {
+                eprintln!("forma: Windows backend unavailable ({err}); falling back to headless");
             }
         }
     }
