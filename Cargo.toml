@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.86"
+license = "MIT"
+repository = "https://github.com/KarpelesLab/forma"
+authors = ["Karpelès Lab Inc."]
+
+[workspace.dependencies]
+# --- Forma internal crates ---
+forma-geometry = { version = "0.0.1", path = "crates/forma-geometry" }
+forma-render = { version = "0.0.1", path = "crates/forma-render" }
+forma-platform = { version = "0.0.1", path = "crates/forma-platform" }
+forma-layout = { version = "0.0.1", path = "crates/forma-layout" }
+forma-core = { version = "0.0.1", path = "crates/forma-core" }
+forma-anim = { version = "0.0.1", path = "crates/forma-anim" }
+forma-style = { version = "0.0.1", path = "crates/forma-style" }
+forma-widgets = { version = "0.0.1", path = "crates/forma-widgets" }
+forma = { version = "0.0.1", path = "crates/forma" }
+
+# --- oxideav media stack (the one sanctioned heavy dependency) ---
+# Pure-Rust content rendering: scene graph, CPU rasterizer, font shaping,
+# image decode, SVG. See ROADMAP.md §1 for the dependency policy.
+oxideav-core = "0.1.27"
+oxideav-raster = "0.1.2"
+oxideav-scribe = "0.1.8"
+oxideav-ttf = "0.1.6"
+oxideav-otf = "0.1.2"
+oxideav-svg = "0.1.5"
+oxideav-png = "0.1.7"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
