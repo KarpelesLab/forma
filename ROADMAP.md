@@ -41,12 +41,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Golden-pixel conformance** tests (font-free, deterministic) over the
   headless path — the cross-platform "pixel-identical" guarantee, enforced in
   CI; native backends must match the same samples.
-- 🚧 **Platform layer**: headless backend only (full vocabulary + golden-image
-  probe). Native backends pending — these need a real display/OS to develop
-  against and can't be built blind.
-- ⬜ **native Wayland/X11 backend**; ⬜ reconciliation/diffing; ⬜ caret +
-  multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
-  ⬜ macOS/Windows; ⬜ mobile; ⬜ web; ⬜ GPU backends.
+- 🚧 **Platform layer**: headless backend + a native **X11** backend written
+  directly against the wire protocol (pure sockets, no deps, no `unsafe`):
+  window create/map/resize/close, `PutImage` present, pointer + raw key events.
+  Its pure codec (setup-reply / `$DISPLAY` / `.Xauthority` parsing, RGBA→X11
+  conversion) is unit-tested; the live socket path needs an X server to verify.
+  `App::run` selects X11 when `$DISPLAY` is set, else headless.
+- ⬜ **Wayland backend** (needs hand-authored xdg-shell tables); ⬜ X11 keysym→
+  text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
+  selection text editing; ⬜ hover/cursor states; ⬜ a11y; ⬜ macOS/Windows;
+  ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---
 

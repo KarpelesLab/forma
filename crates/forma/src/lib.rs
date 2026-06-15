@@ -43,9 +43,7 @@ use forma_core::{
     drag_at, focus_at, hit_test, layout, paint,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
-use forma_platform::{
-    ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend::headless,
-};
+use forma_platform::{ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend};
 use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
@@ -56,9 +54,10 @@ use forma_style::Theme;
 /// and window attributes. Pointer taps are routed through the laid-out tree
 /// back to the `on_tap` handlers the build closure registered.
 ///
-/// [`App::run`] drives the headless backend through a present cycle so the full
-/// build → layout → paint → rasterize → present path is wired end to end; the
-/// native windowed event loop swaps in at that same seam (ROADMAP Phases 1–2).
+/// [`App::run`] drives the platform backend (native X11 when `$DISPLAY` is set,
+/// else a one-shot headless present) through the full build → layout → paint →
+/// rasterize → present path, routing pointer and keyboard events back to the
+/// registered handlers.
 pub struct App<S, F>
 where
     F: FnMut(&S, &mut Cx<'_, S>) -> Element,
@@ -293,94 +292,99 @@ where
         self.dragging = None;
     }
 
-    /// Run the app. The scaffold drives the [`headless`] backend through a
-    /// redraw + close cycle, presenting frames into a real [`Surface`] and
-    /// routing pointer/keyboard events; native backends replace the loop
-    /// without changing the render or dispatch path.
+    /// Run the app against the platform backend ([`backend::run`]): native X11
+    /// when `$DISPLAY` is set, else a one-shot headless present. Frames are
+    /// rendered into the window's [`Surface`]; pointer/keyboard events route
+    /// through the same dispatch path used by the headless tests.
     pub fn run(mut self) {
         let attrs = self.attrs.clone();
         let mut surface: Option<Box<dyn Surface>> = None;
-        headless::run(
-            attrs,
-            [Event::RedrawRequested, Event::CloseRequested],
-            |event, window| match event {
-                Event::RedrawRequested => {
-                    let scene = self.build_frame();
-                    let pixmap = SoftwareRenderer::new()
-                        .with_background(self.theme.palette.background)
-                        .render(scene, window.scale_factor());
-                    let surface = surface.get_or_insert_with(|| window.create_surface());
-                    surface.resize(window.inner_size());
-                    surface.present(&pixmap, &[]);
-                    ControlFlow::Wait
+        let mut present = |app: &mut Self, window: &dyn forma_platform::Window| {
+            let scene = app.build_frame();
+            let pixmap = SoftwareRenderer::new()
+                .with_background(app.theme.palette.background)
+                .render(scene, window.scale_factor());
+            let surface = surface.get_or_insert_with(|| window.create_surface());
+            surface.resize(window.inner_size());
+            surface.present(&pixmap, &[]);
+        };
+        backend::run(attrs, |event, window| match event {
+            Event::RedrawRequested => {
+                present(&mut self, window);
+                ControlFlow::Wait
+            }
+            Event::Resized(size) => {
+                self.attrs.logical_size = window.scale_factor().to_logical(size);
+                self.tree = None;
+                present(&mut self, window);
+                ControlFlow::Wait
+            }
+            Event::PointerButton {
+                state: ButtonState::Pressed,
+                position,
+                ..
+            } => {
+                self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                // Latch a drag if a draggable sits under the cursor.
+                if self.drag_at_point(position) {
+                    window.request_redraw();
                 }
-                Event::PointerButton {
-                    state: ButtonState::Pressed,
-                    position,
-                    ..
-                } => {
-                    self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                    // Latch a drag if a draggable sits under the cursor.
-                    if self.drag_at_point(position) {
+                ControlFlow::Wait
+            }
+            Event::PointerMoved { position } => {
+                if self.dragging.is_some() && self.drag_at_point(position) {
+                    window.request_redraw();
+                }
+                ControlFlow::Wait
+            }
+            Event::PointerButton {
+                state: ButtonState::Released,
+                position,
+                ..
+            } => {
+                if self.dragging.is_some() {
+                    self.end_drag();
+                } else {
+                    let down = self.pressed.take();
+                    let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                    if down.is_some() && down == up {
+                        self.click_at(position);
                         window.request_redraw();
                     }
-                    ControlFlow::Wait
                 }
-                Event::PointerMoved { position } => {
-                    if self.dragging.is_some() && self.drag_at_point(position) {
+                ControlFlow::Wait
+            }
+            Event::Text(text) => {
+                if self.type_text(&text) {
+                    window.request_redraw();
+                }
+                ControlFlow::Wait
+            }
+            Event::Key {
+                code: KeyCode::Tab,
+                state: ButtonState::Pressed,
+                ..
+            } => {
+                if self.focus_next() {
+                    window.request_redraw();
+                }
+                ControlFlow::Wait
+            }
+            Event::Key {
+                code,
+                state: ButtonState::Pressed,
+                ..
+            } => {
+                if let Some(input) = map_key(code) {
+                    if self.press_key(input) {
                         window.request_redraw();
                     }
-                    ControlFlow::Wait
                 }
-                Event::PointerButton {
-                    state: ButtonState::Released,
-                    position,
-                    ..
-                } => {
-                    if self.dragging.is_some() {
-                        self.end_drag();
-                    } else {
-                        let down = self.pressed.take();
-                        let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                        if down.is_some() && down == up {
-                            self.click_at(position);
-                            window.request_redraw();
-                        }
-                    }
-                    ControlFlow::Wait
-                }
-                Event::Text(text) => {
-                    if self.type_text(&text) {
-                        window.request_redraw();
-                    }
-                    ControlFlow::Wait
-                }
-                Event::Key {
-                    code: KeyCode::Tab,
-                    state: ButtonState::Pressed,
-                    ..
-                } => {
-                    if self.focus_next() {
-                        window.request_redraw();
-                    }
-                    ControlFlow::Wait
-                }
-                Event::Key {
-                    code,
-                    state: ButtonState::Pressed,
-                    ..
-                } => {
-                    if let Some(input) = map_key(code) {
-                        if self.press_key(input) {
-                            window.request_redraw();
-                        }
-                    }
-                    ControlFlow::Wait
-                }
-                Event::CloseRequested => ControlFlow::Exit,
-                _ => ControlFlow::Wait,
-            },
-        );
+                ControlFlow::Wait
+            }
+            Event::CloseRequested => ControlFlow::Exit,
+            _ => ControlFlow::Wait,
+        });
     }
 }
 
