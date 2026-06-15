@@ -274,6 +274,23 @@ pub fn drag_at(node: &LayoutNode, point: Point) -> Option<(DragId, Rect)> {
     }
 }
 
+/// Find the node carrying focus `id`, if present.
+pub fn find_focus(node: &LayoutNode, id: FocusId) -> Option<&LayoutNode> {
+    if node.focus == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|c| find_focus(c, id))
+}
+
+/// The first text content `(text, size, bounds)` at or under `node`, in tree
+/// order. Used to position a caret inside a focused text field.
+pub fn first_text(node: &LayoutNode) -> Option<(&str, f64, Rect)> {
+    if let NodeContent::Text { text, size, .. } = &node.content {
+        return Some((text, *size, node.bounds));
+    }
+    node.children.iter().find_map(first_text)
+}
+
 /// Collect every focusable [`FocusId`] in paint/tree order, for Tab traversal.
 pub fn collect_focusables(node: &LayoutNode, out: &mut Vec<FocusId>) {
     if let Some(id) = node.focus {

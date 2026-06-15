@@ -12,10 +12,10 @@
 //! 3. **paint** — walk the layout tree, drawing each node's decoration and text.
 
 use crate::element::{Align, BoxStyle, Element, ElementKind};
-use crate::runtime::{LayoutNode, NodeContent};
+use crate::runtime::{FocusId, LayoutNode, NodeContent, find_focus, first_text};
 use forma_geometry::{Rect, Size};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
-use forma_render::{Font, Scene};
+use forma_render::{Color, Font, Scene};
 
 /// Natural (desired) size of `el` given the `avail` space and active `font`.
 pub fn measure(el: &Element, avail: Size, font: Option<&Font>) -> Size {
@@ -145,6 +145,30 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         node.children.push(layout(child, child_bounds, font));
     }
     node
+}
+
+/// Overlay focus affordances for the focused element: a `ring` around its
+/// bounds, and — if it contains text — a `caret` bar at the end of that text.
+/// No-op if `focused` isn't in the tree.
+pub fn paint_focus(
+    tree: &LayoutNode,
+    focused: FocusId,
+    scene: &mut Scene,
+    font: Option<&Font>,
+    ring: Color,
+    caret: Color,
+) {
+    let Some(node) = find_focus(tree, focused) else {
+        return;
+    };
+    scene.stroke_rect(node.bounds, ring, 2.0);
+
+    if let Some((text, size, bounds)) = first_text(node) {
+        let advance = font.map(|f| f.measure(text, size).width).unwrap_or(0.0);
+        let x = (bounds.min_x() + advance + 1.0).min(bounds.max_x().max(bounds.min_x() + 1.0));
+        let h = bounds.height().max(size);
+        scene.fill_rect(Rect::from_xywh(x, bounds.min_y(), 2.0, h), caret);
+    }
 }
 
 /// Paint a laid-out tree into `scene`, parents before children.

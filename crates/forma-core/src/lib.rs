@@ -25,10 +25,10 @@ mod render;
 pub mod runtime;
 
 pub use element::{Align, BoxStyle, Element, ElementKind, LayoutStyle, SizeOverride};
-pub use render::{layout, measure, paint};
+pub use render::{layout, measure, paint, paint_focus};
 pub use runtime::{
     ActionId, Cx, DragId, FocusId, Handlers, KeyInput, LayoutNode, NodeContent, collect_focusables,
-    drag_at, focus_at, hit_test,
+    drag_at, find_focus, first_text, focus_at, hit_test,
 };
 
 // The font type lives in forma-render; re-export so callers of the layout/paint

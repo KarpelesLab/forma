@@ -40,7 +40,7 @@ pub use forma_widgets as widgets;
 
 use forma_core::{
     ActionId, Cx, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode, collect_focusables,
-    drag_at, focus_at, hit_test, layout, paint,
+    drag_at, focus_at, hit_test, layout, paint, paint_focus,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend};
@@ -166,6 +166,17 @@ where
         );
         let mut scene = Scene::new(size);
         paint(&tree, &mut scene, font);
+        // Overlay a focus ring + caret on the focused element.
+        if let Some(fid) = self.focused {
+            paint_focus(
+                &tree,
+                fid,
+                &mut scene,
+                font,
+                self.theme.palette.primary,
+                self.theme.palette.text,
+            );
+        }
         self.tree = Some(tree);
         scene
     }
