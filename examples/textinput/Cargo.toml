@@ -1,0 +1,16 @@
+[package]
+name = "textinput"
+description = "Forma example: an interactive text field (run loop) — used by CI to verify keyboard text input."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true

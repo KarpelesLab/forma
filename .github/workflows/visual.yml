@@ -99,8 +99,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
 
-      - name: Build the clickdemo + form examples
-        run: cargo build -p clickdemo -p form
+      - name: Build the clickdemo + textinput examples
+        run: cargo build -p clickdemo -p textinput
 
       - name: Click + type, screenshotting the results
         env:
@@ -124,13 +124,13 @@ jobs:
           echo "=== clickdemo.log ==="; cat visual_output/clickdemo.log || true
 
           # --- keyboard: focus the text field (Tab) and type ---
-          ./target/debug/form > visual_output/form.log 2>&1 &
+          ./target/debug/textinput > visual_output/textinput.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 4
           xdotool key Tab; sleep 1
           xdotool type "Forma!"; sleep 1
-          import -window root visual_output/form-typed.png
-          echo "=== form.log ==="; cat visual_output/form.log || true
+          import -window root visual_output/text-typed.png
+          echo "=== textinput.log ==="; cat visual_output/textinput.log || true
 
       - name: Stop the app and Xvfb
         if: always()
