@@ -1,0 +1,16 @@
+[package]
+name = "forma-platform"
+description = "Forma's platform layer: native windowing, input, IME, clipboard, and surface acquisition. The only crate with per-OS code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+forma-geometry.workspace = true
+forma-render.workspace = true
+
+[lints]
+workspace = true
