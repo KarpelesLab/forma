@@ -1,0 +1,15 @@
+[package]
+name = "forma-style"
+description = "Forma's design tokens and themes — colors, spacing, radius, and typography scales for the self-drawn widget set."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+forma-render.workspace = true
+
+[lints]
+workspace = true

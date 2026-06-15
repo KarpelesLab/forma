@@ -1,0 +1,15 @@
+[package]
+name = "forma-layout"
+description = "Forma's self-contained flex/box layout solver — constraints, axes, and main-axis flex distribution. No taffy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+forma-geometry.workspace = true
+
+[lints]
+workspace = true
