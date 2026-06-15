@@ -74,6 +74,9 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   software `Pixmap`, and a hand-written JS shim (no wasm-bindgen) blits it to a
   `<canvas>` via `putImageData`. **CI-verified** — headless-Chrome screenshot
   (`docs/screenshots/forma-web.png`). Web font + canvas input are follow-ups.
+- ✅ **Focus ring + text caret**: the App overlays a primary-colored ring on
+  the focused element and a caret at the end of a focused text field's text
+  (CI-screenshot-verified via the X11 textinput job).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ **GPU backends**; ⬜ web font + canvas input; ⬜ X11
   MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
