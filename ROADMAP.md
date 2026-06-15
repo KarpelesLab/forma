@@ -77,6 +77,9 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - ✅ **Focus ring + text caret**: the App overlays a primary-colored ring on
   the focused element and a caret at the end of a focused text field's text
   (CI-screenshot-verified via the X11 textinput job).
+- ✅ **Hover highlight**: the App tracks the hovered tappable element and
+  overlays a translucent highlight matching its shape, re-presenting on change
+  (CI-verified — `xdotool` hovers one of two buttons, which lights up).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ **GPU backends**; ⬜ web font + canvas input; ⬜ X11
   MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
