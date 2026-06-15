@@ -128,7 +128,10 @@ jobs:
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 4
           xdotool key Tab; sleep 1
-          xdotool type "Forma!"; sleep 1
+          # Type slowly so each keystroke is processed + presented, then let the
+          # window settle before capturing.
+          xdotool type --delay 120 "Forma!"
+          sleep 3
           import -window root visual_output/text-typed.png
           echo "=== textinput.log ==="; cat visual_output/textinput.log || true
 

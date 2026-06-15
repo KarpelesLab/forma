@@ -15,8 +15,7 @@ struct Form {
 fn view(state: &Form, cx: &mut Cx<Form>) -> Element {
     let theme = *cx.theme();
     let field = text_field(cx, &theme, &state.text, |s: &mut Form, k| {
-        edit_string(&mut s.text, k);
-        eprintln!("textinput: field = {:?}", s.text);
+        edit_string(&mut s.text, k)
     })
     .width(560.0)
     .height(64.0);
