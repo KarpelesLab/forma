@@ -4,9 +4,10 @@
 //! framework links, so the only "dependency" is the OS (workspace policy in
 //! `ROADMAP.md` §1). This module opts into `unsafe` for the crate.
 //!
-//! Scope (v1): create an `NSWindow` with a custom `NSView` subclass whose
-//! `drawRect:` blits the software [`Pixmap`] as a `CGImage`. Input + live
-//! resize are follow-ups; the first milestone is a CI-screenshotable window.
+//! An `NSWindow` hosts a custom `NSView` whose `drawRect:` blits the software
+//! [`Pixmap`] as a `CGImage`. A manual `nextEventMatchingMask:` loop translates
+//! `NSEvent`s into Forma pointer/keyboard events (y-flipped to top-left origin)
+//! and polls the view bounds for live resize.
 //!
 //! **Verification:** build-checked on the `macos-latest` CI runner via the
 //! build matrix; runtime-screenshotted by the Visual workflow's macOS job
@@ -18,9 +19,9 @@ use std::ffi::{CString, c_void};
 
 use crate::ControlFlow;
 use crate::error::PlatformError;
-use crate::event::{Event, WindowId};
+use crate::event::{ButtonState, Event, KeyCode, PointerButton, WindowId};
 use crate::window::{Window, WindowAttributes};
-use forma_geometry::{PhysicalSize, ScaleFactor};
+use forma_geometry::{PhysicalSize, Point, ScaleFactor};
 use forma_render::{Pixmap, Surface};
 
 // ---- Objective-C runtime + framework FFI ------------------------------------
@@ -139,6 +140,114 @@ unsafe fn msg_void_i64(obj: Id, s: Sel, a: i64) {
     let f: unsafe extern "C" fn(Id, Sel, i64) =
         unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
     unsafe { f(obj, s, a) }
+}
+unsafe fn msg_u64(obj: Id, s: Sel) -> u64 {
+    let f: unsafe extern "C" fn(Id, Sel) -> u64 =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    unsafe { f(obj, s) }
+}
+unsafe fn msg_u16(obj: Id, s: Sel) -> u16 {
+    let f: unsafe extern "C" fn(Id, Sel) -> u16 =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    unsafe { f(obj, s) }
+}
+// NSPoint / NSRect are 2 / 4 doubles. On arm64 (macos-latest) these are
+// returned through plain `objc_msgSend` (no `_stret`), so the transmute is ABI-
+// correct there.
+unsafe fn msg_point(obj: Id, s: Sel) -> CgPoint {
+    let f: unsafe extern "C" fn(Id, Sel) -> CgPoint =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    unsafe { f(obj, s) }
+}
+unsafe fn msg_rect(obj: Id, s: Sel) -> CgRect {
+    let f: unsafe extern "C" fn(Id, Sel) -> CgRect =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    unsafe { f(obj, s) }
+}
+
+/// `[NSString stringWithUTF8String:s]` — an autoreleased NSString.
+fn nsstring(s: &str) -> Id {
+    let c = CString::new(s).unwrap();
+    let f: unsafe extern "C" fn(Id, Sel, *const i8) -> Id =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    unsafe { f(class("NSString"), sel("stringWithUTF8String:"), c.as_ptr()) }
+}
+
+// NSEventType values we care about.
+const NS_LEFT_MOUSE_DOWN: u64 = 1;
+const NS_LEFT_MOUSE_UP: u64 = 2;
+const NS_RIGHT_MOUSE_DOWN: u64 = 3;
+const NS_RIGHT_MOUSE_UP: u64 = 4;
+const NS_MOUSE_MOVED: u64 = 5;
+const NS_LEFT_MOUSE_DRAGGED: u64 = 6;
+const NS_KEY_DOWN: u64 = 10;
+
+// macOS virtual key codes for editing/navigation keys.
+fn map_keycode(kc: u16) -> Option<KeyCode> {
+    Some(match kc {
+        36 => KeyCode::Enter,
+        48 => KeyCode::Tab,
+        51 => KeyCode::Backspace,
+        53 => KeyCode::Escape,
+        123 => KeyCode::ArrowLeft,
+        124 => KeyCode::ArrowRight,
+        125 => KeyCode::ArrowDown,
+        126 => KeyCode::ArrowUp,
+        _ => return None,
+    })
+}
+
+/// Translate an `NSEvent` into a Forma event. `view_h` is the content height,
+/// used to flip the y axis (Cocoa's window origin is bottom-left).
+unsafe fn translate_event(etype: u64, ev: Id, view_h: f64) -> Option<Event> {
+    let pointer = |button: PointerButton, state: ButtonState| {
+        let p = unsafe { msg_point(ev, sel("locationInWindow")) };
+        Event::PointerButton {
+            button,
+            state,
+            position: Point::new(p.x, view_h - p.y),
+        }
+    };
+    match etype {
+        NS_LEFT_MOUSE_DOWN => Some(pointer(PointerButton::Left, ButtonState::Pressed)),
+        NS_LEFT_MOUSE_UP => Some(pointer(PointerButton::Left, ButtonState::Released)),
+        NS_RIGHT_MOUSE_DOWN => Some(pointer(PointerButton::Right, ButtonState::Pressed)),
+        NS_RIGHT_MOUSE_UP => Some(pointer(PointerButton::Right, ButtonState::Released)),
+        NS_MOUSE_MOVED | NS_LEFT_MOUSE_DRAGGED => {
+            let p = unsafe { msg_point(ev, sel("locationInWindow")) };
+            Some(Event::PointerMoved {
+                position: Point::new(p.x, view_h - p.y),
+            })
+        }
+        NS_KEY_DOWN => {
+            let kc = unsafe { msg_u16(ev, sel("keyCode")) };
+            if let Some(code) = map_keycode(kc) {
+                return Some(Event::Key {
+                    code,
+                    state: ButtonState::Pressed,
+                    modifiers: Default::default(),
+                });
+            }
+            // Otherwise deliver the typed characters as text.
+            let chars = unsafe { msg_id(ev, sel("characters")) };
+            if chars.is_null() {
+                return None;
+            }
+            let utf8 = unsafe { msg_id(chars, sel("UTF8String")) } as *const i8;
+            if utf8.is_null() {
+                return None;
+            }
+            let s = unsafe { std::ffi::CStr::from_ptr(utf8) }
+                .to_string_lossy()
+                .into_owned();
+            if s.chars().all(|c| c.is_control()) {
+                None
+            } else {
+                Some(Event::Text(s))
+            }
+        }
+        _ => None,
+    }
 }
 
 // ---- Shared framebuffer -----------------------------------------------------
@@ -359,15 +468,45 @@ where
         msg_void_id(window, sel("setContentView:"), view);
         CTX.with(|c| c.borrow_mut().view = view);
 
-        let win = MacWindow { size };
+        let mut win = MacWindow { size };
         handler(Event::RedrawRequested, &win); // populate the framebuffer
 
         msg_void_id(window, sel("center"), std::ptr::null_mut());
         msg_void_id(window, sel("makeKeyAndOrderFront:"), std::ptr::null_mut());
         msg_void_bool(app, sel("activateIgnoringOtherApps:"), true);
+        // Needed for nextEventMatchingMask to dequeue events.
+        msg_void(app, sel("finishLaunching"));
 
-        // Blocks until the app terminates (CI runs it backgrounded + kills it).
-        msg_void(app, sel("run"));
+        // Manual event loop: pull each NSEvent, translate it to a Forma event
+        // for the handler, then forward it to AppKit (drawing, window controls).
+        // Poll the content view's bounds for live-resize.
+        let distant_future = msg_id(class("NSDate"), sel("distantFuture"));
+        let mode = nsstring("kCFRunLoopDefaultMode");
+        let next_sel = sel("nextEventMatchingMask:untilDate:inMode:dequeue:");
+        let next: unsafe extern "C" fn(Id, Sel, u64, Id, Id, bool) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        let mut last = win.size;
+        loop {
+            let ev = next(app, next_sel, u64::MAX, distant_future, mode, true);
+            if !ev.is_null() {
+                let etype = msg_u64(ev, sel("type"));
+                if let Some(event) = translate_event(etype, ev, last.height as f64) {
+                    if handler(event, &win) == ControlFlow::Exit {
+                        break;
+                    }
+                }
+                msg_void_id(app, sel("sendEvent:"), ev);
+            }
+            // Detect live-resize by polling the view bounds.
+            let b = msg_rect(view, sel("bounds"));
+            let now =
+                PhysicalSize::new(b.size.width.max(1.0) as u32, b.size.height.max(1.0) as u32);
+            if now != last {
+                last = now;
+                win.size = now;
+                handler(Event::Resized(now), &win);
+            }
+        }
     }
     Ok(())
 }
