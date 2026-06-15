@@ -1,0 +1,16 @@
+[package]
+name = "themegallery"
+description = "Forma example: the same UI rendered under several themes, to show the theme engine + customization."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true

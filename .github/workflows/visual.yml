@@ -194,6 +194,37 @@ jobs:
           path: visual_output/*.png
           if-no-files-found: warn
 
+  # Render the same UI under several themes and montage them into one image,
+  # showing the theme engine + customization builder.
+  visual-themes:
+    name: Visual test (Themes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ImageMagick + font
+        run: sudo apt-get update && sudo apt-get install -y imagemagick fonts-dejavu-core
+      - name: Build the themegallery example
+        run: cargo build --release -p themegallery
+      - name: Render themes and montage them
+        run: |
+          mkdir -p visual_output
+          ./target/release/themegallery
+          for i in 0 1 2 3; do
+            convert -size 360x300 -depth 8 "rgba:theme$i.raw" "t$i.png"
+          done
+          montage t0.png t1.png t2.png t3.png -tile 2x2 -geometry +6+6 -background '#222' \
+            visual_output/forma-themes.png
+          identify visual_output/forma-themes.png
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-themes-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn
+
   # Build the web (wasm) target and screenshot it rendering in headless Chrome,
   # proving the canvas present path (putImageData of the RGBA framebuffer).
   visual-web:

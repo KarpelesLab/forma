@@ -5,12 +5,13 @@
 //! their colors and metrics from a [`Theme`], so a single theme swap re-skins
 //! the whole UI.
 //!
-//! Available widgets: structure (`column`, `row`, `spacer`, `panel`),
-//! content (`label`, `swatch`, `divider`), and interactive controls —
-//! `button` / `button_labeled` ([`Element::on_tap`]), `text_field`
-//! ([`Element::on_key`] + [`edit_string`]), `checkbox`, `switch`, and `slider`
-//! ([`Element::on_drag`]). Hover states and multi-line/caret text editing are
-//! still to come.
+//! Available widgets: structure (`column`, `row`, `spacer`, `panel`), content
+//! (`label`, `heading`, `swatch`, `divider`), and interactive controls —
+//! `button_variant` (Primary/Secondary/Ghost/Danger) / `button_labeled`
+//! ([`Element::on_tap`]), `text_field` ([`Element::on_key`] + [`edit_string`]),
+//! `checkbox`, `switch`, and `slider` ([`Element::on_drag`]). All colors and
+//! metrics come from the [`Theme`], so swapping or customizing the theme
+//! reskins everything.
 
 #![forbid(unsafe_code)]
 
@@ -59,20 +60,59 @@ pub fn button(theme: &Theme) -> Element {
     .height(36.0)
 }
 
-/// A single line of text in the theme's default text color and base size.
+/// A single line of text in the theme's default text color and body size.
 pub fn label(theme: &Theme, text: impl Into<String>) -> Element {
-    Element::text(text, theme.font_size, theme.palette.text)
+    Element::text(text, theme.typography.body, theme.palette.text)
 }
 
-/// A primary button with a centered text `label`. Sizes to the label plus
+/// A larger heading in the theme's heading size.
+pub fn heading(theme: &Theme, text: impl Into<String>) -> Element {
+    Element::text(text, theme.typography.heading, theme.palette.text)
+}
+
+/// Visual emphasis level for a button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    /// Filled accent — the primary action.
+    Primary,
+    /// Outlined surface — a secondary action.
+    Secondary,
+    /// Text-only, no fill — a low-emphasis action.
+    Ghost,
+    /// Filled danger color — a destructive action.
+    Danger,
+}
+
+/// A text button styled per [`Variant`], reading colors from the theme.
+pub fn button_variant(theme: &Theme, label: impl Into<String>, variant: Variant) -> Element {
+    let p = &theme.palette;
+    let (fill, ink, border): (Option<Color>, Color, Option<Color>) = match variant {
+        Variant::Primary => (Some(p.primary), p.on_primary, None),
+        Variant::Secondary => (Some(p.surface), p.text, Some(p.border)),
+        Variant::Ghost => (None, p.primary, None),
+        Variant::Danger => (Some(p.danger), p.danger.on_color(), None),
+    };
+    let mut el = Element::stack(
+        Axis::Horizontal,
+        vec![Element::text(label, theme.typography.body, ink)],
+    )
+    .radius(theme.radius)
+    .padding(Insets::symmetric(theme.spacing.lg, theme.spacing.sm))
+    .align(Align::Center, Align::Center);
+    if let Some(fill) = fill {
+        el = el.fill(fill);
+    }
+    if let Some(border) = border {
+        el = el.border(border, 1.0);
+    }
+    el
+}
+
+/// A primary button with a centered text `label` (shorthand for
+/// [`button_variant`] with [`Variant::Primary`]). Sizes to the label plus
 /// padding (intrinsic sizing via the active font's measurement).
 pub fn button_labeled(theme: &Theme, label: impl Into<String>) -> Element {
-    let text = Element::text(label, theme.font_size, theme.palette.on_primary);
-    Element::stack(Axis::Horizontal, vec![text])
-        .fill(theme.palette.primary)
-        .radius(theme.radius)
-        .padding(Insets::symmetric(theme.spacing.lg, theme.spacing.sm))
-        .align(Align::Center, Align::Center)
+    button_variant(theme, label, Variant::Primary)
 }
 
 /// Apply a [`KeyInput`] to an editable string: append committed text, or

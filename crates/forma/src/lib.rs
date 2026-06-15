@@ -44,7 +44,7 @@ use forma_core::{
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend};
-use forma_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
+use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
 /// A Forma application.
@@ -168,9 +168,9 @@ where
         );
         let mut scene = Scene::new(size);
         paint(&tree, &mut scene, font);
-        // Lighten the hovered tappable element.
+        // Lighten the hovered tappable element with the theme's overlay.
         if let Some(hid) = self.hovered {
-            paint_hover(&tree, hid, &mut scene, Color::rgba(255, 255, 255, 30));
+            paint_hover(&tree, hid, &mut scene, self.theme.palette.hover_overlay);
         }
         // Overlay a focus ring + caret on the focused element.
         if let Some(fid) = self.focused {
@@ -179,7 +179,7 @@ where
                 fid,
                 &mut scene,
                 font,
-                self.theme.palette.primary,
+                self.theme.palette.focus_ring,
                 self.theme.palette.text,
             );
         }
@@ -440,9 +440,10 @@ pub mod prelude {
     pub use forma_geometry::{Insets, Point, Rect, ScaleFactor, Size};
     pub use forma_render::{Color, Font};
     pub use forma_style::Theme;
+    pub use forma_style::{Palette, Spacing, Typography};
     pub use forma_widgets::{
-        button, button_labeled, checkbox, column, divider, edit_string, label, panel, row,
-        setting_row, slider, spacer, swatch, switch, text_field,
+        Variant, button, button_labeled, button_variant, checkbox, column, divider, edit_string,
+        heading, label, panel, row, setting_row, slider, spacer, swatch, switch, text_field,
     };
 }
 
