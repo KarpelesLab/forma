@@ -31,7 +31,6 @@ oxideav-scribe = "0.1.8"
 oxideav-ttf = "0.1.6"
 oxideav-otf = "0.1.2"
 oxideav-svg = "0.1.5"
-oxideav-png = "0.1.7"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

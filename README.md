@@ -79,25 +79,18 @@ via `cliclick` (clicking a counter):
 ## Examples
 
 ```sh
-cargo run -p gallery            # renders a themed settings panel to forma-gallery.png
+cargo run -p window       # a settings panel in a native window
+cargo run -p clickdemo    # a click-counting button
+cargo run -p textinput    # an editable text field (Tab to focus, then type)
 ```
 
-The `gallery` example exercises the whole scaffolded stack — widgets →
-`forma-core` layout/paint → `forma-render` scene → `oxideav-raster` → pixel
-buffer — and encodes the result with `oxideav-png`. It renders off-screen (no
-window yet; the native event loop is a later roadmap phase) via
-`App::render_once`.
+Each opens a real native window (X11/Win32/Cocoa) via `App::run`, or falls back
+to a one-shot headless render where no display is available. The web target
+lives in `crates/forma-web` (built for `wasm32`; see the `Visual` workflow).
 
 ## Status & MSRV
 
-Pre-alpha scaffolding. The library crates build on **Rust 1.86** (edition
-2024); the `gallery` example pulls a newer transitive dependency through
-`oxideav-png` and is excluded from the MSRV check. What works today:
-
-- the full **build → layout → paint → rasterize → present** path, end to end,
-  verified against the headless backend;
-- self-drawn, themeable, anti-aliased surfaces (panels, rows/columns, buttons,
-  dividers, swatches) with flex layout and DPI scaling.
+Pre-alpha. The whole workspace builds on **Rust 1.86** (edition 2024).
 
 Working today: the full reactive toolkit (render, layout, state, tap/keyboard/
 focus/drag, text, 12 widgets, theming) and **four rendering targets** — native
