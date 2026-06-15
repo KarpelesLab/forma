@@ -327,13 +327,13 @@ where
                 self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
                 // Latch a drag if a draggable sits under the cursor.
                 if self.drag_at_point(position) {
-                    window.request_redraw();
+                    present(&mut self, window);
                 }
                 ControlFlow::Wait
             }
             Event::PointerMoved { position } => {
                 if self.dragging.is_some() && self.drag_at_point(position) {
-                    window.request_redraw();
+                    present(&mut self, window);
                 }
                 ControlFlow::Wait
             }
@@ -347,16 +347,15 @@ where
                 } else {
                     let down = self.pressed.take();
                     let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                    if down.is_some() && down == up {
-                        self.click_at(position);
-                        window.request_redraw();
+                    if down.is_some() && down == up && self.click_at(position) {
+                        present(&mut self, window);
                     }
                 }
                 ControlFlow::Wait
             }
             Event::Text(text) => {
                 if self.type_text(&text) {
-                    window.request_redraw();
+                    present(&mut self, window);
                 }
                 ControlFlow::Wait
             }
@@ -366,7 +365,7 @@ where
                 ..
             } => {
                 if self.focus_next() {
-                    window.request_redraw();
+                    present(&mut self, window);
                 }
                 ControlFlow::Wait
             }
@@ -377,7 +376,7 @@ where
             } => {
                 if let Some(input) = map_key(code) {
                     if self.press_key(input) {
-                        window.request_redraw();
+                        present(&mut self, window);
                     }
                 }
                 ControlFlow::Wait

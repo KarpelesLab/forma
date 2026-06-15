@@ -19,7 +19,7 @@ use std::ffi::c_void;
 
 use crate::ControlFlow;
 use crate::error::PlatformError;
-use crate::event::{Event, WindowId};
+use crate::event::{ButtonState, Event, KeyCode, PointerButton, WindowId};
 use crate::window::{Window, WindowAttributes};
 use forma_geometry::{PhysicalSize, ScaleFactor};
 use forma_render::{Pixmap, Surface};
@@ -37,8 +37,27 @@ const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 const CW_USEDEFAULT: i32 = -2147483648; // 0x80000000
 const SW_SHOW: i32 = 5;
 const WM_DESTROY: u32 = 0x0002;
-const WM_CLOSE: u32 = 0x0010;
+const WM_SIZE: u32 = 0x0005;
 const WM_PAINT: u32 = 0x000F;
+const WM_CLOSE: u32 = 0x0010;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_CHAR: u32 = 0x0102;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_RBUTTONDOWN: u32 = 0x0204;
+const WM_RBUTTONUP: u32 = 0x0205;
+const WM_MBUTTONDOWN: u32 = 0x0207;
+const WM_MBUTTONUP: u32 = 0x0208;
+
+const VK_BACK: usize = 0x08;
+const VK_TAB: usize = 0x09;
+const VK_RETURN: usize = 0x0D;
+const VK_ESCAPE: usize = 0x1B;
+const VK_LEFT: usize = 0x25;
+const VK_UP: usize = 0x26;
+const VK_RIGHT: usize = 0x27;
+const VK_DOWN: usize = 0x28;
 const BI_RGB: u32 = 0;
 const DIB_RGB_COLORS: u32 = 0;
 const SRCCOPY: u32 = 0x00CC_0020;
@@ -180,6 +199,34 @@ struct WinCtx {
     fb: Vec<u8>,
     fb_w: i32,
     fb_h: i32,
+    /// Events pushed by the [`WndProc`], drained by the message loop.
+    queue: Vec<Event>,
+}
+
+fn push_event(ev: Event) {
+    CTX.with(|c| c.borrow_mut().queue.push(ev));
+}
+
+/// Extract the signed `(x, y)` from a mouse-message `lParam` (LOWORD/HIWORD).
+/// Returns a Forma logical-pixel point (distinct from the local Win32 `Point`).
+fn mouse_xy(lp: Lparam) -> forma_geometry::Point {
+    let x = (lp & 0xffff) as u16 as i16 as f64;
+    let y = ((lp >> 16) & 0xffff) as u16 as i16 as f64;
+    forma_geometry::Point::new(x, y)
+}
+
+fn map_vk(vk: usize) -> Option<KeyCode> {
+    Some(match vk {
+        VK_BACK => KeyCode::Backspace,
+        VK_TAB => KeyCode::Tab,
+        VK_RETURN => KeyCode::Enter,
+        VK_ESCAPE => KeyCode::Escape,
+        VK_LEFT => KeyCode::ArrowLeft,
+        VK_RIGHT => KeyCode::ArrowRight,
+        VK_UP => KeyCode::ArrowUp,
+        VK_DOWN => KeyCode::ArrowDown,
+        _ => return None,
+    })
 }
 
 thread_local! {
@@ -237,8 +284,60 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wp: Wparam, lp: Lparam)
             unsafe { EndPaint(hwnd, &ps) };
             0
         }
+        WM_SIZE => {
+            // lParam LOWORD/HIWORD = new client width/height.
+            let w = (lp & 0xffff) as u32;
+            let h = ((lp >> 16) & 0xffff) as u32;
+            if w > 0 && h > 0 {
+                push_event(Event::Resized(PhysicalSize::new(w, h)));
+            }
+            0
+        }
+        WM_MOUSEMOVE => {
+            push_event(Event::PointerMoved {
+                position: mouse_xy(lp),
+            });
+            0
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONUP
+        | WM_MBUTTONUP => {
+            let button = match msg {
+                WM_LBUTTONDOWN | WM_LBUTTONUP => PointerButton::Left,
+                WM_RBUTTONDOWN | WM_RBUTTONUP => PointerButton::Right,
+                _ => PointerButton::Middle,
+            };
+            let state = match msg {
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => ButtonState::Pressed,
+                _ => ButtonState::Released,
+            };
+            push_event(Event::PointerButton {
+                button,
+                state,
+                position: mouse_xy(lp),
+            });
+            0
+        }
+        WM_KEYDOWN => {
+            if let Some(code) = map_vk(wp) {
+                push_event(Event::Key {
+                    code,
+                    state: ButtonState::Pressed,
+                    modifiers: Default::default(),
+                });
+            }
+            0
+        }
+        WM_CHAR => {
+            // wParam is a UTF-16 code unit; emit printable characters as text.
+            if wp >= 0x20 {
+                if let Some(ch) = char::from_u32(wp as u32) {
+                    push_event(Event::Text(ch.to_string()));
+                }
+            }
+            0
+        }
         WM_CLOSE => {
-            unsafe { DestroyWindow(hwnd) };
+            push_event(Event::CloseRequested);
             0
         }
         WM_DESTROY => {
@@ -384,7 +483,9 @@ where
         UpdateWindow(hwnd);
     }
 
-    // Message loop.
+    // Message loop. The WndProc translates native messages into Forma events
+    // and queues them (it can't see the generic `handler`); we drain and
+    // dispatch the queue after each message.
     let mut msg: Msg = unsafe { std::mem::zeroed() };
     loop {
         let r = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
@@ -396,8 +497,11 @@ where
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        if msg.message == WM_CLOSE && handler(Event::CloseRequested, &win) == ControlFlow::Exit {
-            unsafe { DestroyWindow(hwnd) };
+        let events: Vec<Event> = CTX.with(|c| std::mem::take(&mut c.borrow_mut().queue));
+        for event in events {
+            if handler(event, &win) == ControlFlow::Exit {
+                unsafe { DestroyWindow(hwnd) };
+            }
         }
     }
     Ok(())
