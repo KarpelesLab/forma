@@ -70,10 +70,12 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   **Input CI-verified** — `cliclick` drives the counter `0 → 2`
   (`docs/screenshots/forma-macos-clicks.png`). Desktop trio is now interactive
   (X11 + macOS pointer/keyboard screenshot-verified; Win32 build-verified).
-- ✅ **Web target (Phase 5)**: `forma-web` compiles to `wasm32`, renders to a
-  software `Pixmap`, and a hand-written JS shim (no wasm-bindgen) blits it to a
-  `<canvas>` via `putImageData`. **CI-verified** — headless-Chrome screenshot
-  (`docs/screenshots/forma-web.png`). Web font + canvas input are follow-ups.
+- ✅ **Web target (Phase 5), interactive**: `forma-web` (wasm32) holds a
+  persistent `App` and a small C ABI; a hand-written JS shim (no wasm-bindgen)
+  uploads a font, blits the `Pixmap` to a `<canvas>` via `putImageData`, and
+  forwards canvas mouse/text events. **CI-verified** — headless Chrome loads
+  the font, self-drives two clicks, and the screenshot shows "Clicks: 2"
+  (`docs/screenshots/forma-web.png`): text + input both work on web.
 - ✅ **Focus ring + text caret**: the App overlays a primary-colored ring on
   the focused element and a caret at the end of a focused text field's text
   (CI-screenshot-verified via the X11 textinput job).
@@ -81,9 +83,8 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   overlays a translucent highlight matching its shape, re-presenting on change
   (CI-verified — `xdotool` hovers one of two buttons, which lights up).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
-  (Android/iOS); ⬜ **GPU backends**; ⬜ web font + canvas input; ⬜ X11
-  MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ caret + multi-line/
-  selection text editing; ⬜ hover/cursor states; ⬜ a11y.
+  (Android/iOS); ⬜ **GPU backends**; ⬜ X11 MIT-SHM fast present;
+  ⬜ reconciliation/diffing; ⬜ multi-line/selection text editing; ⬜ a11y.
 
 ---
 
