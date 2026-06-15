@@ -150,10 +150,10 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
 /// Paint a laid-out tree into `scene`, parents before children.
 pub fn paint(node: &LayoutNode, scene: &mut Scene, font: Option<&Font>) {
     paint_decoration(&node.decoration, node.bounds, scene);
-    if let NodeContent::Text { text, size, color } = &node.content {
-        if let Some(f) = font {
-            scene.fill_text(f, text, node.bounds.origin, *size, *color);
-        }
+    if let NodeContent::Text { text, size, color } = &node.content
+        && let Some(f) = font
+    {
+        scene.fill_text(f, text, node.bounds.origin, *size, *color);
     }
     for child in &node.children {
         paint(child, scene, font);

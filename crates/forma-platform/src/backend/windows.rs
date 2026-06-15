@@ -329,10 +329,10 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wp: Wparam, lp: Lparam)
         }
         WM_CHAR => {
             // wParam is a UTF-16 code unit; emit printable characters as text.
-            if wp >= 0x20 {
-                if let Some(ch) = char::from_u32(wp as u32) {
-                    push_event(Event::Text(ch.to_string()));
-                }
+            if wp >= 0x20
+                && let Some(ch) = char::from_u32(wp as u32)
+            {
+                push_event(Event::Text(ch.to_string()));
             }
             0
         }

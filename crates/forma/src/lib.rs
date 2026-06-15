@@ -374,10 +374,10 @@ where
                 state: ButtonState::Pressed,
                 ..
             } => {
-                if let Some(input) = map_key(code) {
-                    if self.press_key(input) {
-                        present(&mut self, window);
-                    }
+                if let Some(input) = map_key(code)
+                    && self.press_key(input)
+                {
+                    present(&mut self, window);
                 }
                 ControlFlow::Wait
             }

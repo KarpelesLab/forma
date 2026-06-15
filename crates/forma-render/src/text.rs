@@ -74,10 +74,10 @@ impl Font {
             "C:\\Windows\\Fonts\\arial.ttf",
         ];
         for path in CANDIDATES {
-            if let Ok(bytes) = std::fs::read(path) {
-                if let Ok(font) = Font::from_bytes(bytes) {
-                    return Some(font);
-                }
+            if let Ok(bytes) = std::fs::read(path)
+                && let Ok(font) = Font::from_bytes(bytes)
+            {
+                return Some(font);
             }
         }
         None
@@ -213,10 +213,10 @@ mod tests {
         let mut darkened = 0;
         for y in 0..pm.size().height {
             for x in 0..pm.size().width {
-                if let Some([r, _, _, _]) = pm.pixel(x, y) {
-                    if r < 128 {
-                        darkened += 1;
-                    }
+                if let Some([r, _, _, _]) = pm.pixel(x, y)
+                    && r < 128
+                {
+                    darkened += 1;
                 }
             }
         }
@@ -247,10 +247,12 @@ mod tests {
         let mut reddish = 0;
         for y in 0..pm.size().height {
             for x in 0..pm.size().width {
-                if let Some([r, g, b, _]) = pm.pixel(x, y) {
-                    if r > 180 && g < 80 && b < 80 {
-                        reddish += 1;
-                    }
+                if let Some([r, g, b, _]) = pm.pixel(x, y)
+                    && r > 180
+                    && g < 80
+                    && b < 80
+                {
+                    reddish += 1;
                 }
             }
         }
