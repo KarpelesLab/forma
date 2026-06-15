@@ -87,6 +87,14 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   shader → offscreen FBO → readback). **CI-verified** on Mesa software GL
   (`docs/screenshots/forma-gpu.png`). v1 composites the CPU frame on the GPU;
   GPU-native scene tessellation and Vulkan/Metal/D3D/WebGPU are future work.
+- ✅ **Theme engine + customization**: a semantic `Palette` (roles, interaction
+  states, status, overlays), a `Typography` scale, and a `Theme` builder —
+  `with_accent` (recolor + derive hover/active + pick a readable on-color),
+  `with_radius`, `with_font_size`, `high_contrast`. Widgets gained `heading`
+  and `button_variant` (Primary/Secondary/Ghost/Danger); the App's focus ring
+  and hover overlay read theme tokens. **CI-verified**: the `themegallery`
+  example renders one card under four themes, montaged into
+  `docs/screenshots/forma-themes.png`.
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ X11
   MIT-SHM fast present; ⬜ reconciliation/diffing; ⬜ multi-line/selection

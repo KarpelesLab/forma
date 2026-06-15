@@ -53,6 +53,19 @@ via `cliclick` (clicking a counter):
 |---|---|---|
 | ![clicks](./docs/screenshots/forma-x11-clicks.png) | ![typing](./docs/screenshots/forma-x11-textinput.png) | ![mac clicks](./docs/screenshots/forma-macos-clicks.png) |
 
+## Themeable by design
+
+Every widget reads its colors and metrics from a [`Theme`] — a semantic
+`Palette` (roles, interaction states, status colors, overlays), a `Typography`
+scale, a `Spacing` scale, and a corner radius. Customizing is a one-liner:
+`Theme::dark().with_accent(color).with_radius(14.0)` recolors the accent,
+derives its hover/active tints, and picks a readable on-color automatically;
+`high_contrast()` maximizes text/border contrast. The same card below is
+rendered under four themes (light, dark, a violet-accent dark, high-contrast),
+montaged in CI:
+
+![themes](./docs/screenshots/forma-themes.png)
+
 ## Design at a glance
 
 - **Software-first rendering** behind a GPU-ready `Surface` seam (raw
@@ -82,6 +95,7 @@ via `cliclick` (clicking a counter):
 cargo run -p window       # a settings panel in a native window
 cargo run -p clickdemo    # a click-counting button
 cargo run -p textinput    # an editable text field (Tab to focus, then type)
+cargo run -p themegallery # one card rendered under four themes (writes .raw files)
 ```
 
 Each opens a real native window (X11/Win32/Cocoa) via `App::run`, or falls back
