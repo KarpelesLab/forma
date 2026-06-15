@@ -52,14 +52,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   — the Visual workflow's Windows job runs the example on the runner's desktop
   and screenshots it (`docs/screenshots/forma-windows.png`). Input + live resize
   are follow-ups.
-- ✅ **Cross-OS CI**: the workspace build matrix compiles on Ubuntu, macOS, and
-  Windows runners — build-verifying the platform layer on all three desktops.
-- 🚧 **Windows/X11 input + live resize** (present paths done; event plumbing
-  next); ⬜ **macOS backend** (Cocoa FFI; build-checked on CI, no runner display
-  for screenshots); ⬜ **Wayland backend** (hand-authored xdg-shell tables);
-  ⬜ X11 keysym→text mapping + MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret +
-  multi-line/selection text editing; ⬜ hover/cursor states; ⬜ a11y;
-  ⬜ mobile; ⬜ web; ⬜ GPU backends.
+- ✅ **Native macOS backend** over raw `objc_msgSend` Cocoa FFI (no
+  `objc`/`cocoa` crate): `NSWindow` + a custom `NSView` whose `drawRect:` blits
+  a `CGImage` (CTM-flipped for top-left origin). **CI-verified** —
+  `docs/screenshots/forma-macos.png`.
+- ✅ **Desktop trio native + CI-screenshot-verified**: X11, Win32, and Cocoa
+  backends each render the demo on their own OS runner. The build matrix also
+  compiles the whole workspace on all three.
+- 🚧 **Win32/Cocoa input + live resize** (present paths done + screenshot-
+  verified; event plumbing next — X11 already routes input); ⬜ **Wayland
+  backend** (hand-authored xdg-shell tables); ⬜ X11 keysym→text mapping +
+  MIT-SHM; ⬜ reconciliation/diffing; ⬜ caret + multi-line/selection text
+  editing; ⬜ hover/cursor states; ⬜ a11y; ⬜ mobile; ⬜ web; ⬜ GPU backends.
 
 ---
 
