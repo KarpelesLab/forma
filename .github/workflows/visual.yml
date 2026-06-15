@@ -1,0 +1,80 @@
+name: Visual
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Compile the whole workspace on each desktop OS. This build-verifies the
+  # per-OS platform backends (today: X11 on Linux; the others use the headless
+  # fallback until their native backends land).
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace
+        run: cargo build --workspace --all-targets
+
+  # Run the windowed example against a real (virtual) X server and screenshot
+  # the result, proving the native X11 backend connects, maps a window, and
+  # paints. The Forma X11 backend speaks the wire protocol directly, so no
+  # libX11/libxcb is needed — only Xvfb (a server) and ImageMagick (capture).
+  visual-x11:
+    name: Visual test (X11 / Xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, and a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick fonts-dejavu-core
+
+      - name: Build the window example
+        run: cargo build -p window
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Launch the Forma window and screenshot it
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/debug/window &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          # Capture the whole virtual root (our window maps at the top-left).
+          import -window root visual_output/forma-x11.png
+          echo "Captured:"; identify visual_output/forma-x11.png
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-x11-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn

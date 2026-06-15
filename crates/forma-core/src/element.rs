@@ -48,7 +48,7 @@ pub struct BoxStyle {
 }
 
 /// What an element arranges; all kinds share [`Element::decoration`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
     /// A leaf with no children.
     Leaf,
@@ -71,7 +71,12 @@ pub enum ElementKind {
 
 /// A node in the element tree: layout properties, decoration, an optional
 /// interaction handle, and a kind.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` enables the runtime's no-op repaint skip: if a rebuilt tree
+/// equals the previous one, the cached frame is reused. Handler ids compare by
+/// value and are assigned deterministically per build, so an unchanged view
+/// produces an equal tree.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Element {
     pub layout: LayoutStyle,
     pub decoration: BoxStyle,
