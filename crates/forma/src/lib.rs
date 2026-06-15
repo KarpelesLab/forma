@@ -309,6 +309,16 @@ where
         self.dragging = None;
     }
 
+    /// Update the hovered element to whatever tappable sits under `pos`.
+    /// Returns `true` if the hovered element changed (the UI should repaint).
+    pub fn hover_at(&mut self, pos: Point) -> bool {
+        self.ensure_tree();
+        let now = self.tree.as_ref().and_then(|t| hit_test(t, pos));
+        let changed = now != self.hovered;
+        self.hovered = now;
+        changed
+    }
+
     /// Run the app against the platform backend ([`backend::run`]): native X11
     /// when `$DISPLAY` is set, else a one-shot headless present. Frames are
     /// rendered into the window's [`Surface`]; pointer/keyboard events route
@@ -353,13 +363,8 @@ where
                     if self.drag_at_point(position) {
                         present(&mut self, window);
                     }
-                } else {
-                    // Update hover; re-present when the hovered element changes.
-                    let now = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                    if now != self.hovered {
-                        self.hovered = now;
-                        present(&mut self, window);
-                    }
+                } else if self.hover_at(position) {
+                    present(&mut self, window);
                 }
                 ControlFlow::Wait
             }

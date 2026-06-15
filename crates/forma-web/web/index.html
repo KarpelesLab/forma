@@ -9,10 +9,10 @@
     </style>
   </head>
   <body>
-    <canvas id="forma" width="640" height="400"></canvas>
+    <canvas id="forma" width="640" height="360"></canvas>
     <script type="module">
-      // Hand-written glue: instantiate the wasm, render, and blit the RGBA
-      // framebuffer to the canvas via putImageData. No wasm-bindgen.
+      // Hand-written glue: instantiate the wasm, load a font, render, and wire
+      // canvas events to the module. No wasm-bindgen.
       const canvas = document.getElementById("forma");
       const ctx = canvas.getContext("2d");
       const W = canvas.width, H = canvas.height;
@@ -21,27 +21,46 @@
         fetch("forma_web.wasm"),
         {},
       ).catch(async () => {
-        // Fallback for servers without application/wasm MIME.
         const bytes = await (await fetch("forma_web.wasm")).arrayBuffer();
         return WebAssembly.instantiate(bytes, {});
       });
-
       const e = instance.exports;
-      e.forma_render(W, H);
-      const ptr = e.forma_frame_ptr();
-      const len = e.forma_frame_len();
-      const w = e.forma_width();
-      const h = e.forma_height();
 
-      // Copy out of wasm memory (putImageData needs its own buffer).
-      const src = new Uint8ClampedArray(e.memory.buffer, ptr, len).slice();
-      const img = new ImageData(src, w, h);
-      canvas.width = w;
-      canvas.height = h;
-      ctx.putImageData(img, 0, 0);
+      // Load a font (served alongside) so text renders; shapes-only if absent.
+      try {
+        const font = new Uint8Array(await (await fetch("font.ttf")).arrayBuffer());
+        const p = e.forma_alloc(font.length);
+        new Uint8Array(e.memory.buffer, p, font.length).set(font);
+        e.forma_set_font(p, font.length);
+      } catch (_) { /* no font available */ }
 
-      // Signal readiness for screenshot tooling.
-      document.title = "Forma ready " + w + "x" + h;
+      e.forma_init(W, H);
+
+      function redraw() {
+        const ptr = e.forma_frame_ptr(), len = e.forma_frame_len();
+        const w = e.forma_width(), h = e.forma_height();
+        const src = new Uint8ClampedArray(e.memory.buffer, ptr, len).slice();
+        canvas.width = w; canvas.height = h;
+        ctx.putImageData(new ImageData(src, w, h), 0, 0);
+      }
+      redraw();
+
+      const at = (ev) => {
+        const r = canvas.getBoundingClientRect();
+        return [ev.clientX - r.left, ev.clientY - r.top];
+      };
+      canvas.addEventListener("mousedown", (ev) => { const [x, y] = at(ev); e.forma_click(x, y); redraw(); });
+      canvas.addEventListener("mousemove", (ev) => { const [x, y] = at(ev); e.forma_pointer_move(x, y); redraw(); });
+
+      // Self-drive for CI: dispatch two real click events at the canvas center,
+      // so the screenshot shows the counter at 2 (verifies the event wiring).
+      setTimeout(() => {
+        const r = canvas.getBoundingClientRect();
+        const opts = { clientX: r.left + W / 2, clientY: r.top + H / 2, bubbles: true };
+        canvas.dispatchEvent(new MouseEvent("mousedown", opts));
+        canvas.dispatchEvent(new MouseEvent("mousedown", opts));
+        document.title = "Forma clicked";
+      }, 400);
     </script>
   </body>
 </html>
