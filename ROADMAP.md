@@ -13,6 +13,30 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 
 ---
 
+## 0. Implementation status
+
+> Living checklist — updated as work lands. ✅ done · 🚧 in progress · ⬜ not started.
+
+- ✅ **Workspace + 9 crates** scaffolded (edition 2024, rust 1.86), CI (lint +
+  MSRV), `forma-geometry`.
+- ✅ **Rendering seam** (`forma-render`): `Scene` → oxideav `VectorFrame` →
+  `oxideav-raster` → `Pixmap`; `Surface` GPU-ready boundary.
+- ✅ **Software rasterization** path verified end to end (off-screen PNGs).
+- ✅ **Layout** (`forma-layout`): flex/box solver. **Paint**: `Element` IR +
+  measure/layout/paint passes.
+- ✅ **Reactivity MVP** (`forma-core`): retained `LayoutNode` tree, `hit_test`,
+  `Cx` handler registry, `on_tap` dispatch → state mutation (the `counter`
+  example drives clicks through the real path).
+- ✅ **Theming** (`forma-style`) and **animation primitives** (`forma-anim`).
+- ✅ **Widgets** (scaffold): panel, row/column, button, divider, swatch, spacer.
+- 🚧 **Platform layer**: headless backend only (full vocabulary + golden-image
+  probe). Native backends pending.
+- ⬜ **Text rendering** via `oxideav-scribe`; ⬜ **native Wayland/X11 backend**;
+  ⬜ reconciliation/diffing; ⬜ focus + keyboard; ⬜ richer widgets; ⬜ a11y;
+  ⬜ macOS/Windows; ⬜ mobile; ⬜ web; ⬜ GPU backends.
+
+---
+
 ## 1. Guiding principles
 
 1. **Minimal third-party dependencies.** No `winit`, `wgpu`, `taffy`, `lyon`,

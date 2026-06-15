@@ -5,6 +5,7 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
+use crate::runtime::{ActionId, Cx};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -61,11 +62,15 @@ pub enum ElementKind {
     },
 }
 
-/// A node in the element tree: layout properties, decoration, and a kind.
+/// A node in the element tree: layout properties, decoration, an optional
+/// interaction handle, and a kind.
 #[derive(Clone, Debug)]
 pub struct Element {
     pub layout: LayoutStyle,
     pub decoration: BoxStyle,
+    /// Handler this element routes pointer taps to, if any. Set via
+    /// [`Element::on_tap`]; resolved against the [`Cx`] handler table.
+    pub action: Option<ActionId>,
     pub kind: ElementKind,
 }
 
@@ -75,6 +80,7 @@ impl Element {
         Self {
             layout: LayoutStyle::default(),
             decoration: style,
+            action: None,
             kind: ElementKind::Leaf,
         }
     }
@@ -84,6 +90,7 @@ impl Element {
         Self {
             layout: LayoutStyle::default(),
             decoration: BoxStyle::default(),
+            action: None,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -92,6 +99,25 @@ impl Element {
                 children,
             },
         }
+    }
+
+    /// Route pointer taps on this element to `handler`, which runs against the
+    /// app state. Registers the handler in `cx` and stamps its [`ActionId`].
+    ///
+    /// ```
+    /// # use forma_core::{Element, BoxStyle, runtime::Cx};
+    /// # use forma_style::Theme;
+    /// let theme = Theme::light();
+    /// let mut cx = Cx::new(&theme);
+    /// let button = Element::boxed(BoxStyle::default())
+    ///     .width(80.0)
+    ///     .height(32.0)
+    ///     .on_tap(&mut cx, |count: &mut i32| *count += 1);
+    /// assert!(button.action.is_some());
+    /// ```
+    pub fn on_tap<S>(mut self, cx: &mut Cx<'_, S>, handler: impl FnMut(&mut S) + 'static) -> Self {
+        self.action = Some(cx.register(handler));
+        self
     }
 
     // --- decoration modifiers ---

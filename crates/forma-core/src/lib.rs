@@ -4,22 +4,29 @@
 //! and the layout + paint passes ([`render_view`]) that turn a view into a
 //! [`Scene`] ready for `forma-render` to rasterize.
 //!
-//! # What's here vs. what's next
+//! # Pipeline
 //!
-//! The scaffold implements the **build → layout → paint** pipeline end to end:
-//! a `View` produces an `Element` tree, [`render_view`] lays it out under a set
-//! of bounds and paints it. The **reactive half** — fine-grained state,
-//! tree-diff/reconcile between frames, event dispatch + hit-testing, and focus
-//! — is the next milestone (ROADMAP.md Phase 1, "forma-core reactivity MVP")
-//! and will layer on top of this IR without replacing it.
+//! `build → layout → paint`, with pointer events routed back through the laid-
+//! out tree:
+//! - a [`View`] (or an app build closure with a [`Cx`]) produces an [`Element`]
+//!   tree, registering `on_tap` handlers in the context;
+//! - [`layout`] turns it into a retained [`LayoutNode`] tree;
+//! - [`paint`] draws that tree into a [`Scene`], and [`hit_test`] routes
+//!   pointer taps to the registered [`Handlers`].
+//!
+//! Still ahead (ROADMAP.md Phase 1+): fine-grained state and tree-diff
+//! reconciliation between frames (today a frame rebuilds the whole tree),
+//! keyboard focus traversal, and richer gesture recognition.
 
 #![forbid(unsafe_code)]
 
 mod element;
 mod render;
+pub mod runtime;
 
 pub use element::{Align, BoxStyle, Element, ElementKind, LayoutStyle, SizeOverride};
-pub use render::{measure, place};
+pub use render::{layout, measure, paint};
+pub use runtime::{ActionId, Cx, Handlers, LayoutNode, hit_test};
 
 // Re-export the layout axis so widget crates speak one vocabulary.
 pub use forma_layout::Axis;
@@ -28,11 +35,11 @@ use forma_geometry::{Rect, Size};
 use forma_render::Scene;
 use forma_style::Theme;
 
-/// A piece of UI, described declaratively as a function of theme (and, in the
-/// reactive milestone, state).
+/// A piece of UI, described declaratively as a function of theme.
 ///
-/// Implementors return an [`Element`] tree. Widgets in `forma-widgets`
-/// implement this; composite views implement it by composing child views.
+/// Implementors return an [`Element`] tree. This is the static-composition
+/// entry point; interactive UIs use an app build closure threaded with a
+/// [`Cx`] (see the `forma` umbrella crate's `App`) to register handlers.
 pub trait View {
     /// Build this view's element tree under the given `theme`.
     fn build(&self, theme: &Theme) -> Element;
@@ -46,15 +53,13 @@ impl View for Element {
 }
 
 /// Build `view`, lay it out to fill `size` logical pixels, and paint it into a
-/// fresh [`Scene`].
+/// fresh [`Scene`]. Interaction handles on the elements are ignored (use
+/// [`layout`] + [`hit_test`] directly to route events).
 pub fn render_view(view: &impl View, size: Size, theme: &Theme) -> Scene {
     let element = view.build(theme);
+    let tree = layout(&element, Rect::from_xywh(0.0, 0.0, size.width, size.height));
     let mut scene = Scene::new(size);
-    place(
-        &element,
-        Rect::from_xywh(0.0, 0.0, size.width, size.height),
-        &mut scene,
-    );
+    paint(&tree, &mut scene);
     scene
 }
 

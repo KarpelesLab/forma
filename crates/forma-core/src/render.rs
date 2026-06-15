@@ -1,14 +1,18 @@
-//! Layout and paint passes: turn an [`Element`] tree into a [`Scene`].
+//! Layout and paint passes: turn an [`Element`] tree into a retained
+//! [`LayoutNode`] tree, then paint that tree into a [`Scene`].
 //!
-//! Two phases:
+//! Three phases:
 //! 1. **measure** — bottom-up natural sizing (content + padding, honoring fixed
 //!    overrides).
-//! 2. **place** — top-down assignment of bounds, using
+//! 2. **layout** — top-down assignment of absolute bounds, using
 //!    [`forma_layout::solve_main_axis`] to distribute the main axis and
-//!    [`Align`] to position children on the cross axis; each element paints its
-//!    decoration as it is placed.
+//!    [`Align`] to position children on the cross axis. Produces a
+//!    [`LayoutNode`] tree that survives the frame so pointer events can be
+//!    routed against it (see [`crate::hit_test`]).
+//! 3. **paint** — walk the layout tree, drawing each node's decoration.
 
 use crate::element::{Align, BoxStyle, Element, ElementKind};
+use crate::runtime::LayoutNode;
 use forma_geometry::{Rect, Size};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
 use forma_render::Scene;
@@ -53,9 +57,15 @@ pub fn measure(el: &Element, avail: Size) -> Size {
     Size::new(w, h)
 }
 
-/// Place `el` within `bounds` and paint it (and its descendants) into `scene`.
-pub fn place(el: &Element, bounds: Rect, scene: &mut Scene) {
-    paint_decoration(&el.decoration, bounds, scene);
+/// Lay `el` out within `bounds`, producing a retained [`LayoutNode`] tree with
+/// absolute bounds, decorations, and action handles.
+pub fn layout(el: &Element, bounds: Rect) -> LayoutNode {
+    let mut node = LayoutNode {
+        bounds,
+        decoration: el.decoration,
+        action: el.action,
+        children: Vec::new(),
+    };
 
     let ElementKind::Stack {
         axis,
@@ -65,10 +75,10 @@ pub fn place(el: &Element, bounds: Rect, scene: &mut Scene) {
         children,
     } = &el.kind
     else {
-        return;
+        return node;
     };
     if children.is_empty() {
-        return;
+        return node;
     }
 
     let content = bounds.inset(el.layout.padding);
@@ -97,6 +107,7 @@ pub fn place(el: &Element, bounds: Rect, scene: &mut Scene) {
         Align::End => leftover,
     };
 
+    node.children.reserve(children.len());
     for ((child, m), span) in children.iter().zip(&measured).zip(&spans) {
         let cross_avail = axis.cross(avail);
         let cross_len = match cross_align {
@@ -116,7 +127,16 @@ pub fn place(el: &Element, bounds: Rect, scene: &mut Scene) {
             cross_off,
             cross_len,
         );
-        place(child, child_bounds, scene);
+        node.children.push(layout(child, child_bounds));
+    }
+    node
+}
+
+/// Paint a laid-out tree into `scene`, parents before children.
+pub fn paint(node: &LayoutNode, scene: &mut Scene) {
+    paint_decoration(&node.decoration, node.bounds, scene);
+    for child in &node.children {
+        paint(child, scene);
     }
 }
 
@@ -178,20 +198,24 @@ mod tests {
     fn grow_child_fills_main_axis() {
         // A row with one fixed 40px box and one grow=1 box in 200px width.
         let fixed = Element::boxed(BoxStyle::default()).width(40.0).height(10.0);
-        let flex = Element::boxed(BoxStyle::default().with_fill(Color::WHITE)).grow(1.0);
-        let row = Element::stack(Axis::Horizontal, vec![fixed, flex]);
+        let flex = Element::boxed(BoxStyle {
+            fill: Some(Color::WHITE),
+            ..BoxStyle::default()
+        })
+        .grow(1.0);
+        let row =
+            Element::stack(Axis::Horizontal, vec![fixed, flex]).align(Align::Start, Align::Stretch);
 
-        // Render into a scene and confirm two primitives were emitted: the
-        // flex child has a fill, the fixed one does not.
+        let tree = layout(&row, Rect::from_xywh(0.0, 0.0, 200.0, 20.0));
+        // The flex child occupies the leftover: 200 - 40 = 160px, at x=40,
+        // stretched to the full 20px cross height.
+        assert_eq!(
+            tree.children[1].bounds,
+            Rect::from_xywh(40.0, 0.0, 160.0, 20.0)
+        );
+
         let mut scene = Scene::new(Size::new(200.0, 20.0));
-        place(&row, Rect::from_xywh(0.0, 0.0, 200.0, 20.0), &mut scene);
+        paint(&tree, &mut scene);
         assert_eq!(scene.len(), 1); // only the filled flex box paints
-    }
-
-    impl BoxStyle {
-        fn with_fill(mut self, c: Color) -> Self {
-            self.fill = Some(c);
-            self
-        }
     }
 }

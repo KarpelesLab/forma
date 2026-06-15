@@ -19,7 +19,9 @@ use oxideav_png::image::{PngImage, PngPixelFormat};
 struct Gallery;
 
 /// The UI: a centered card holding a header bar and a few setting rows.
-fn view(_state: &Gallery, theme: &Theme) -> Element {
+fn view(_state: &Gallery, cx: &mut Cx<Gallery>) -> Element {
+    let theme = *cx.theme();
+    let theme = &theme;
     let card = panel(
         theme,
         vec![
@@ -49,7 +51,7 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "forma-gallery.png".to_string());
 
-    let app = App::new(Gallery, view)
+    let mut app = App::new(Gallery, view)
         .title("Forma Gallery")
         .theme(Theme::dark())
         .logical_size(Size::new(380.0, 260.0))
