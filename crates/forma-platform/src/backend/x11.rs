@@ -6,16 +6,15 @@
 //! creates a top-level window, and presents the software [`Pixmap`] via
 //! `PutImage`.
 //!
-//! Scope: window creation, resize, close, pointer (move + buttons), and raw
-//! key events; `PutImage` presentation. Proper keysym→text translation
-//! (via `GetKeyboardMapping`) and MIT-SHM fast presentation are follow-ups, so
-//! text input is not yet delivered here.
+//! Scope: window creation, resize, close, pointer (move + buttons + wheel),
+//! and keyboard — `GetKeyboardMapping` resolves keycodes to keysyms, which
+//! become [`Event::Text`] (Latin-1 + Unicode) or editing [`Event::Key`]s;
+//! `PutImage` presentation. MIT-SHM fast presentation is a follow-up.
 //!
-//! **Verification status:** the pure codec — connection-setup parsing,
-//! `$DISPLAY` parsing, `.Xauthority` lookup, and the RGBA→X11 pixel
-//! conversion — is unit-tested against synthetic buffers below. The live
-//! socket round-trip (handshake, window mapping, event loop) needs a running X
-//! server and has not been exercised in CI.
+//! **Verification:** the pure codec (setup-reply / `$DISPLAY` / `.Xauthority`
+//! parsing, RGBA→X11 conversion) is unit-tested below; the live socket path —
+//! handshake, window mapping, present, pointer + keyboard input — is exercised
+//! by the `Visual` workflow's Xvfb jobs (screenshot + `xdotool` click/type).
 
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -36,6 +35,7 @@ const OP_INTERN_ATOM: u8 = 16;
 const OP_CHANGE_PROPERTY: u8 = 18;
 const OP_CREATE_GC: u8 = 55;
 const OP_PUT_IMAGE: u8 = 72;
+const OP_GET_KEYBOARD_MAPPING: u8 = 101;
 
 // Event masks.
 const EV_EXPOSURE: u32 = 0x0000_8000;
@@ -102,6 +102,8 @@ struct Setup {
     root_depth: u8,
     /// Server's max request length, in 4-byte units.
     max_request_len: u32,
+    min_keycode: u8,
+    max_keycode: u8,
 }
 
 /// Parse the additional-data portion of a successful setup reply (everything
@@ -119,6 +121,9 @@ fn parse_setup(data: &[u8]) -> Option<Setup> {
     let vendor_pad = (vendor_len + 3) & !3;
     let screens_off = 32 + vendor_pad + num_formats * 8;
 
+    let min_keycode = *data.get(26)?;
+    let max_keycode = *data.get(27)?;
+
     let root = rd_u32(data, screens_off)?;
     let root_visual = rd_u32(data, screens_off + 32)?;
     let root_depth = *data.get(screens_off + 38)?;
@@ -130,6 +135,8 @@ fn parse_setup(data: &[u8]) -> Option<Setup> {
         root_visual,
         root_depth,
         max_request_len,
+        min_keycode,
+        max_keycode,
     })
 }
 
@@ -423,6 +430,15 @@ where
     let size = ScaleFactor::IDENTITY.to_physical(attrs.logical_size);
     let (w, h) = (size.width.max(1) as u16, size.height.max(1) as u16);
 
+    // Fetch the keyboard mapping up front (no window yet, so the reply is the
+    // next message and won't interleave with events).
+    let keymap = fetch_keymap(&mut conn).map_err(os)?;
+    dbg(format_args!(
+        "keymap: {} keysyms, {}/keycode",
+        keymap.syms.len(),
+        keymap.per
+    ));
+
     let window = conn.new_id();
     let gc = conn.new_id();
     let setup = conn.setup;
@@ -559,20 +575,19 @@ where
                 }
             }
             code @ (X_KEY_PRESS | X_KEY_RELEASE) => {
-                // Raw keycode only; keysym/text mapping is a follow-up.
                 let state = if code == X_KEY_PRESS {
                     ButtonState::Pressed
                 } else {
                     ButtonState::Released
                 };
-                handler(
-                    Event::Key {
-                        code: KeyCode::Unidentified(buf[1] as u32),
-                        state,
-                        modifiers: Default::default(),
-                    },
-                    &win,
-                )
+                // buf[1] = keycode; buf[28..30] = modifier mask (bit 0 = Shift).
+                let keycode = buf[1];
+                let shift = rd_u16(&buf, 28).unwrap_or(0) & 0x0001 != 0;
+                let ks = keymap.keysym(keycode, shift);
+                match keysym_to_event(ks, state) {
+                    Some(ev) => handler(ev, &win),
+                    None => ControlFlow::Wait,
+                }
             }
             X_CLIENT_MESSAGE => {
                 // data starts at byte 12; first 32-bit word is the protocol atom.
@@ -590,6 +605,87 @@ where
         }
     }
     Ok(())
+}
+
+/// The keyboard mapping (keycode → keysyms) fetched via `GetKeyboardMapping`,
+/// used to turn key events into text + editing keys.
+struct Keymap {
+    syms: Vec<u32>,
+    per: usize,
+    min: u8,
+}
+
+impl Keymap {
+    fn keysym(&self, keycode: u8, shift: bool) -> u32 {
+        if keycode < self.min || self.per == 0 {
+            return 0;
+        }
+        let base = (keycode - self.min) as usize * self.per;
+        let i = base + if shift && self.per > 1 { 1 } else { 0 };
+        let ks = self.syms.get(i).copied().unwrap_or(0);
+        // Fall back to the unshifted keysym when the shifted slot is empty.
+        if ks == 0 {
+            self.syms.get(base).copied().unwrap_or(0)
+        } else {
+            ks
+        }
+    }
+}
+
+fn fetch_keymap(conn: &mut Conn) -> io::Result<Keymap> {
+    let min = conn.setup.min_keycode;
+    let max = conn.setup.max_keycode;
+    let count = max.saturating_sub(min).saturating_add(1);
+    let mut req = vec![OP_GET_KEYBOARD_MAPPING, 0, 0, 0, min, count, 0, 0];
+    conn.send(&finish(std::mem::take(&mut req)))?;
+    let mut reply = [0u8; 32];
+    conn.stream.read_exact(&mut reply)?;
+    let per = reply[1] as usize;
+    let len_words = rd_u32(&reply, 4).unwrap_or(0) as usize; // = count * per
+    let mut body = vec![0u8; len_words * 4];
+    conn.stream.read_exact(&mut body)?;
+    let syms = body
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Ok(Keymap { syms, per, min })
+}
+
+/// Translate an X11 keysym into a Forma event: editing/navigation keys become
+/// [`Event::Key`]; printable Latin-1 / Unicode keysyms become [`Event::Text`]
+/// (on press only).
+fn keysym_to_event(ks: u32, state: ButtonState) -> Option<Event> {
+    let code = match ks {
+        0xff08 => Some(KeyCode::Backspace),
+        0xff09 => Some(KeyCode::Tab),
+        0xff0d => Some(KeyCode::Enter),
+        0xff1b => Some(KeyCode::Escape),
+        0xff51 => Some(KeyCode::ArrowLeft),
+        0xff52 => Some(KeyCode::ArrowUp),
+        0xff53 => Some(KeyCode::ArrowRight),
+        0xff54 => Some(KeyCode::ArrowDown),
+        _ => None,
+    };
+    if let Some(code) = code {
+        return Some(Event::Key {
+            code,
+            state,
+            modifiers: Default::default(),
+        });
+    }
+    if state != ButtonState::Pressed {
+        return None;
+    }
+    // Latin-1 keysyms map directly to codepoints; the Unicode plane is
+    // 0x0100_0000 | codepoint.
+    let cp = if (0x20..=0x7e).contains(&ks) || (0xa0..=0xff).contains(&ks) {
+        ks
+    } else if ks & 0xff00_0000 == 0x0100_0000 {
+        ks & 0x00ff_ffff
+    } else {
+        return None;
+    };
+    char::from_u32(cp).map(|c| Event::Text(c.to_string()))
 }
 
 fn event_xy(buf: &[u8; 32]) -> (f64, f64) {

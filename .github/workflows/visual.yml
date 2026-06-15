@@ -99,10 +99,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
 
-      - name: Build the clickdemo example
-        run: cargo build -p clickdemo
+      - name: Build the clickdemo + form examples
+        run: cargo build -p clickdemo -p form
 
-      - name: Click the window and screenshot before/after
+      - name: Click + type, screenshotting the results
         env:
           DISPLAY: ":99"
           FORMA_X11_DEBUG: "1"
@@ -111,17 +111,26 @@ jobs:
           Xvfb :99 -screen 0 1024x768x24 &
           echo "XVFB_PID=$!" >> "$GITHUB_ENV"
           sleep 2
+
+          # --- pointer: click a counting button ---
           ./target/debug/clickdemo > visual_output/clickdemo.log 2>&1 &
-          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          CLICK_PID=$!
           sleep 4
           import -window root visual_output/clicks-before.png
-          # The window maps at the root origin; click its center (640x480).
-          xdotool mousemove 320 240 click 1
-          sleep 1
-          xdotool mousemove 320 240 click 1
-          sleep 1
+          xdotool mousemove 320 240 click 1; sleep 1
+          xdotool mousemove 320 240 click 1; sleep 1
           import -window root visual_output/clicks-after.png
+          kill "$CLICK_PID" 2>/dev/null || true
           echo "=== clickdemo.log ==="; cat visual_output/clickdemo.log || true
+
+          # --- keyboard: focus the text field (Tab) and type ---
+          ./target/debug/form > visual_output/form.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          xdotool key Tab; sleep 1
+          xdotool type "Forma!"; sleep 1
+          import -window root visual_output/form-typed.png
+          echo "=== form.log ==="; cat visual_output/form.log || true
 
       - name: Stop the app and Xvfb
         if: always()
