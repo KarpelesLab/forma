@@ -182,8 +182,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
 - 🚧 **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
   semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
-  Unit-tested. ⬜ Wiring it to the OS APIs (AT-SPI / UI Automation /
-  `NSAccessibility`).
+  Unit-tested. On **Linux** the tree is wired to the OS accessibility API:
+  `forma_platform::a11y` is a **hand-written D-Bus client + server** (no
+  `zbus`/`dbus`/`libdbus` — just a `UnixStream` and the wire protocol, like the
+  X11/Wayland backends) that runs the SASL `EXTERNAL` handshake, calls `Hello`,
+  reaches the **AT-SPI** bus via `org.a11y.Bus.GetAddress`, claims a name, and
+  **serves the accessibility tree over `org.a11y.atspi.Accessible`** —
+  hand-marshalling method returns, properties, and variants. **CI-verified**: a
+  `dbus-send` client reads the Forma UI's root as AT-SPI role 27 (Window→FRAME),
+  `ChildCount` 2, and `Name` "Forma" from our server. ⬜ The Windows
+  (UI Automation) and macOS (`NSAccessibility`) bridges.
 - ✅ **GPU-native drawing**: a live forma `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `forma-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a
