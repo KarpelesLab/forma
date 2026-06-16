@@ -1,20 +1,29 @@
 //! A native X11 backend implemented directly against the wire protocol.
 //!
 //! No `xcb`/`x11` crate, no `libX11` FFI — just a `UnixStream` and the X11
-//! byte protocol, keeping the crate `#![forbid(unsafe_code)]` and dependency
-//! free (the workspace policy in `ROADMAP.md` §1). It connects to `$DISPLAY`,
-//! creates a top-level window, and presents the software [`Pixmap`] via
-//! `PutImage`.
+//! byte protocol (the workspace policy in `ROADMAP.md` §1). It connects to
+//! `$DISPLAY`, creates a top-level window, and presents the software [`Pixmap`].
 //!
 //! Scope: window creation, resize, close, pointer (move + buttons + wheel),
 //! and keyboard — `GetKeyboardMapping` resolves keycodes to keysyms, which
-//! become [`Event::Text`] (Latin-1 + Unicode) or editing [`Event::Key`]s;
-//! `PutImage` presentation. MIT-SHM fast presentation is a follow-up.
+//! become [`Event::Text`] (Latin-1 + Unicode) or editing [`Event::Key`]s.
+//!
+//! Presentation has two paths: when the server advertises the **MIT-SHM**
+//! extension, frames are copied into a System V shared-memory segment the
+//! server maps directly and blitted with `ShmPutImage` — limited to the
+//! [`Surface::present`] damage rectangles, so a small change uploads no pixels
+//! over the socket at all. Otherwise it falls back to plain `PutImage`. The shm
+//! segment is the one place this otherwise-safe backend needs FFI (the SysV
+//! `shm*` syscalls), hence the module-level `allow(unsafe_code)`.
 //!
 //! **Verification:** the pure codec (setup-reply / `$DISPLAY` / `.Xauthority`
 //! parsing, RGBA→X11 conversion) is unit-tested below; the live socket path —
-//! handshake, window mapping, present, pointer + keyboard input — is exercised
-//! by the `Visual` workflow's Xvfb jobs (screenshot + `xdotool` click/type).
+//! handshake, window mapping, present (both shm and `PutImage`), pointer +
+//! keyboard input — is exercised by the `Visual` workflow's Xvfb jobs
+//! (screenshot + `xdotool` click/type); Xvfb supports MIT-SHM, so CI covers the
+//! shm path.
+
+#![allow(unsafe_code)]
 
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -33,10 +42,22 @@ const OP_CREATE_WINDOW: u8 = 1;
 const OP_MAP_WINDOW: u8 = 8;
 const OP_INTERN_ATOM: u8 = 16;
 const OP_CHANGE_PROPERTY: u8 = 18;
+const OP_GET_INPUT_FOCUS: u8 = 43;
+const OP_QUERY_EXTENSION: u8 = 98;
 const OP_SET_INPUT_FOCUS: u8 = 42;
 const OP_CREATE_GC: u8 = 55;
 const OP_PUT_IMAGE: u8 = 72;
 const OP_GET_KEYBOARD_MAPPING: u8 = 101;
+
+// MIT-SHM minor opcodes (within the extension's major opcode).
+const SHM_ATTACH: u8 = 1;
+const SHM_PUT_IMAGE: u8 = 3;
+
+// System V IPC flags for the shared-memory segment.
+const IPC_PRIVATE: i32 = 0;
+const IPC_CREAT: i32 = 0o1000;
+const IPC_RMID: i32 = 0;
+const SHM_PERM: i32 = 0o600;
 
 // Event masks.
 const EV_EXPOSURE: u32 = 0x0000_8000;
@@ -161,6 +182,248 @@ fn rgba_to_bgrx(rgba: &[u8], out: &mut Vec<u8>) {
     for px in rgba.chunks_exact(4) {
         out.extend_from_slice(&[px[2], px[1], px[0], 0]);
     }
+}
+
+/// Swizzle a straight-RGBA8 row in place into a ZPixmap (`[B, G, R, 0]`) row of
+/// equal pixel count. Used to fill the shared-memory image without allocating.
+fn swizzle_row(src: &[u8], dst: &mut [u8]) {
+    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+        d[0] = s[2];
+        d[1] = s[1];
+        d[2] = s[0];
+        d[3] = 0;
+    }
+}
+
+// ---- MIT-SHM shared-memory presentation -------------------------------------
+
+use core::ffi::c_void;
+
+// System V shared-memory syscalls (libc, linked by default on Linux). Declared
+// directly to keep the crate dependency-free; this is the only FFI in the X11
+// backend.
+unsafe extern "C" {
+    fn shmget(key: i32, size: usize, shmflg: i32) -> i32;
+    fn shmat(shmid: i32, shmaddr: *const c_void, shmflg: i32) -> *mut c_void;
+    fn shmdt(shmaddr: *const c_void) -> i32;
+    fn shmctl(shmid: i32, cmd: i32, buf: *mut c_void) -> i32;
+}
+
+/// A System V shared-memory segment attached to both this process and the X
+/// server, used as the backing image for `ShmPutImage`.
+#[derive(Debug)]
+struct ShmState {
+    /// MIT-SHM extension major opcode.
+    major: u8,
+    /// X resource id naming the attached segment (`ShmSeg`).
+    seg: u32,
+    /// Mapped address in this process.
+    ptr: *mut u8,
+    /// Bytes available at `ptr`.
+    capacity: usize,
+}
+
+impl Drop for ShmState {
+    fn drop(&mut self) {
+        // Detach our mapping; the kernel frees the segment once the server
+        // (which detaches on connection close) has also let go.
+        unsafe {
+            shmdt(self.ptr as *const c_void);
+        }
+    }
+}
+
+impl ShmState {
+    /// The mapped segment as a mutable byte slice.
+    fn buffer(&mut self) -> &mut [u8] {
+        // Safe: we own this mapping for `capacity` bytes; access is single-
+        // threaded (present runs on the event-loop thread).
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
+    }
+
+    /// Copy the damaged regions of `pixmap` into the segment and blit them with
+    /// `ShmPutImage`. Returns `false` if the frame doesn't fit (caller should
+    /// fall back to `PutImage`); `true` on a successful (queued) present.
+    fn present(
+        &mut self,
+        conn: &mut Conn,
+        window: u32,
+        gc: u32,
+        pixmap: &Pixmap,
+        damage: &[forma_geometry::Rect],
+    ) -> bool {
+        let size = pixmap.size();
+        let (w, h) = (size.width as usize, size.height as usize);
+        let stride = w * 4;
+        if stride * h > self.capacity {
+            return false; // grew past our segment; let PutImage handle it
+        }
+        let (major, seg) = (self.major, self.seg);
+        let src = pixmap.as_bytes();
+        let dst = self.buffer();
+
+        // Build the integer regions to upload: explicit damage, or the whole
+        // frame when none is given (first frame / expose / resize).
+        let mut regions: Vec<(usize, usize, usize, usize)> = Vec::new();
+        if damage.is_empty() {
+            regions.push((0, 0, w, h));
+        } else {
+            for r in damage {
+                let x0 = (r.min_x().floor().max(0.0) as usize).min(w);
+                let y0 = (r.min_y().floor().max(0.0) as usize).min(h);
+                let x1 = (r.max_x().ceil().max(0.0) as usize).min(w);
+                let y1 = (r.max_y().ceil().max(0.0) as usize).min(h);
+                if x1 > x0 && y1 > y0 {
+                    regions.push((x0, y0, x1 - x0, y1 - y0));
+                }
+            }
+        }
+
+        for &(x, y, rw, rh) in &regions {
+            // Copy each row's sub-span into the shared image (matching strides).
+            for row in y..y + rh {
+                let off = row * stride + x * 4;
+                let len = rw * 4;
+                swizzle_row(&src[off..off + len], &mut dst[off..off + len]);
+            }
+            if conn
+                .send(&finish(shm_put_image(
+                    major, window, gc, seg, w, h, x, y, rw, rh,
+                )))
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Encode a `ShmPutImage` request blitting the sub-rectangle `(x, y, rw, rh)` of
+/// a `total_w × total_h` ZPixmap image (depth 24) from the attached segment to
+/// the drawable at the same position.
+#[allow(clippy::too_many_arguments)]
+fn shm_put_image(
+    major: u8,
+    drawable: u32,
+    gc: u32,
+    seg: u32,
+    total_w: usize,
+    total_h: usize,
+    x: usize,
+    y: usize,
+    rw: usize,
+    rh: usize,
+) -> Vec<u8> {
+    let mut req = vec![major, SHM_PUT_IMAGE, 0, 0];
+    req.extend_from_slice(&drawable.to_le_bytes());
+    req.extend_from_slice(&gc.to_le_bytes());
+    req.extend_from_slice(&(total_w as u16).to_le_bytes());
+    req.extend_from_slice(&(total_h as u16).to_le_bytes());
+    req.extend_from_slice(&(x as u16).to_le_bytes()); // src-x
+    req.extend_from_slice(&(y as u16).to_le_bytes()); // src-y
+    req.extend_from_slice(&(rw as u16).to_le_bytes()); // src-width
+    req.extend_from_slice(&(rh as u16).to_le_bytes()); // src-height
+    req.extend_from_slice(&(x as i16).to_le_bytes()); // dst-x
+    req.extend_from_slice(&(y as i16).to_le_bytes()); // dst-y
+    req.push(24); // depth
+    req.push(2); // format: ZPixmap
+    req.push(0); // send-event: false
+    req.push(0); // unused
+    req.extend_from_slice(&seg.to_le_bytes());
+    req.extend_from_slice(&0u32.to_le_bytes()); // offset into segment
+    req
+}
+
+/// Query whether the server supports an extension, returning its major opcode.
+/// Must be called before the window is mapped, so the reply doesn't interleave
+/// with events.
+fn query_extension(conn: &mut Conn, name: &[u8]) -> io::Result<Option<u8>> {
+    let mut req = vec![OP_QUERY_EXTENSION, 0, 0, 0];
+    req.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    req.extend_from_slice(&[0u8; 2]); // unused
+    req.extend_from_slice(name);
+    pad4(&mut req);
+    conn.send(&finish(req))?;
+    let mut pkt = [0u8; 32];
+    conn.stream.read_exact(&mut pkt)?;
+    // Reply: byte 8 = present (bool), byte 9 = major-opcode.
+    if pkt[0] != 1 || pkt[8] == 0 {
+        return Ok(None);
+    }
+    Ok(Some(pkt[9]))
+}
+
+/// Set up MIT-SHM: create a shared segment of `capacity` bytes, attach it to the
+/// server, and confirm the attach succeeded. Returns `None` (with everything
+/// cleaned up) if the extension is absent or any step fails — the caller then
+/// presents via `PutImage`. Must run before the window is mapped.
+fn setup_shm(conn: &mut Conn, capacity: usize) -> Option<ShmState> {
+    let major = query_extension(conn, b"MIT-SHM").ok()??;
+
+    let shmid = unsafe { shmget(IPC_PRIVATE, capacity, IPC_CREAT | SHM_PERM) };
+    if shmid < 0 {
+        return None;
+    }
+    let addr = unsafe { shmat(shmid, core::ptr::null(), 0) };
+    if addr as isize == -1 {
+        unsafe {
+            shmctl(shmid, IPC_RMID, core::ptr::null_mut());
+        }
+        return None;
+    }
+    let ptr = addr as *mut u8;
+
+    // ShmAttach: hand the segment to the server.
+    let seg = conn.new_id();
+    let mut req = vec![major, SHM_ATTACH, 0, 0];
+    req.extend_from_slice(&seg.to_le_bytes());
+    req.extend_from_slice(&(shmid as u32).to_le_bytes());
+    req.push(0); // read-only: false
+    req.extend_from_slice(&[0u8; 3]);
+    let cleanup = |ptr: *mut u8, shmid: i32| unsafe {
+        shmdt(ptr as *const c_void);
+        shmctl(shmid, IPC_RMID, core::ptr::null_mut());
+    };
+    if conn.send(&finish(req)).is_err() {
+        cleanup(ptr, shmid);
+        return None;
+    }
+
+    // Synchronize on GetInputFocus (which has a reply): if ShmAttach errored, the
+    // error packet arrives first. No window is mapped yet, so nothing else can
+    // interleave with the reply.
+    if conn
+        .send(&finish(vec![OP_GET_INPUT_FOCUS, 0, 0, 0]))
+        .is_err()
+    {
+        cleanup(ptr, shmid);
+        return None;
+    }
+    let mut pkt = [0u8; 32];
+    if conn.stream.read_exact(&mut pkt).is_err() {
+        cleanup(ptr, shmid);
+        return None;
+    }
+    if pkt[0] == 0 {
+        // ShmAttach failed; drain the GetInputFocus reply and bail.
+        let mut reply = [0u8; 32];
+        let _ = conn.stream.read_exact(&mut reply);
+        cleanup(ptr, shmid);
+        return None;
+    }
+
+    // Attach confirmed: mark the segment for deletion now (the server holds a
+    // reference), so it's freed automatically once everyone detaches.
+    unsafe {
+        shmctl(shmid, IPC_RMID, core::ptr::null_mut());
+    }
+    Some(ShmState {
+        major,
+        seg,
+        ptr,
+        capacity,
+    })
 }
 
 /// Read the first MIT-MAGIC-COOKIE-1 entry's cookie from `.Xauthority`, if any.
@@ -314,6 +577,8 @@ struct X11Window {
     window: u32,
     gc: u32,
     size: PhysicalSize,
+    // Set up once before mapping; moved into the surface on `create_surface`.
+    shm: std::cell::RefCell<Option<ShmState>>,
 }
 
 impl std::fmt::Debug for Conn {
@@ -345,6 +610,7 @@ impl Window for X11Window {
             window: self.window,
             gc: self.gc,
             size: self.size,
+            shm: self.shm.borrow_mut().take(),
         })
     }
 }
@@ -354,6 +620,8 @@ struct X11Surface {
     window: u32,
     gc: u32,
     size: PhysicalSize,
+    /// Present via MIT-SHM when available; `None` falls back to `PutImage`.
+    shm: Option<ShmState>,
 }
 
 impl std::fmt::Debug for X11Surface {
@@ -372,16 +640,29 @@ impl Surface for X11Surface {
     fn size(&self) -> PhysicalSize {
         self.size
     }
-    fn present(&mut self, pixmap: &Pixmap, _damage: &[forma_geometry::Rect]) {
+    fn present(&mut self, pixmap: &Pixmap, damage: &[forma_geometry::Rect]) {
         let size = pixmap.size();
         if size.width == 0 || size.height == 0 {
             return;
         }
         dbg(format_args!(
-            "present {}x{} to window={:#x}",
-            size.width, size.height, self.window
+            "present {}x{} to window={:#x} (shm={})",
+            size.width,
+            size.height,
+            self.window,
+            self.shm.is_some()
         ));
         let mut conn = self.conn.lock().unwrap();
+
+        // Fast path: copy only the damaged regions into shared memory and blit
+        // them. On failure (frame grew past the segment), drop shm and fall
+        // through to PutImage for this and subsequent frames.
+        if let Some(shm) = self.shm.as_mut() {
+            if shm.present(&mut conn, self.window, self.gc, pixmap, damage) {
+                return;
+            }
+            self.shm = None;
+        }
         // PutImage may exceed the server's max request length; send in row
         // bands that each fit. Header is 24 bytes; budget the rest for pixels.
         let max_bytes = (conn.setup.max_request_len as usize)
@@ -483,6 +764,12 @@ where
     // type ATOM = 4.
     set_property_atoms(&mut conn, window, wm_protocols, &[wm_delete]).map_err(os)?;
 
+    // Set up MIT-SHM presentation before mapping (its handshake needs a reply
+    // that must not interleave with window events). Falls back to PutImage when
+    // unavailable.
+    let shm = setup_shm(&mut conn, (w as usize) * (h as usize) * 4);
+    dbg(format_args!("shm present path: {}", shm.is_some()));
+
     // MapWindow.
     let mut req = vec![OP_MAP_WINDOW, 0, 0, 0];
     req.extend_from_slice(&window.to_le_bytes());
@@ -507,6 +794,7 @@ where
         window,
         gc,
         size,
+        shm: std::cell::RefCell::new(shm),
     };
 
     // Event loop. Events are 32 bytes each.
@@ -838,5 +1126,36 @@ mod tests {
     fn finish_sets_length_in_words() {
         let req = finish(vec![1, 0, 0, 0, 0, 0, 0, 0]); // 8 bytes = 2 words
         assert_eq!(u16::from_le_bytes([req[2], req[3]]), 2);
+    }
+
+    #[test]
+    fn swizzle_row_reorders_to_bgrx() {
+        let mut dst = [0u8; 8];
+        swizzle_row(&[10, 20, 30, 255, 1, 2, 3, 128], &mut dst);
+        assert_eq!(dst, [30, 20, 10, 0, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn shm_put_image_encodes_fields() {
+        // major=130, draw=0xaa, gc=0xbb, seg=0xcc, total 200x100, rect (8,16,4,2).
+        let req = finish(shm_put_image(130, 0xaa, 0xbb, 0xcc, 200, 100, 8, 16, 4, 2));
+        assert_eq!(req[0], 130); // major opcode
+        assert_eq!(req[1], SHM_PUT_IMAGE); // minor opcode
+        assert_eq!(u16::from_le_bytes([req[2], req[3]]), 10); // length in words
+        assert_eq!(rd_u32(&req, 4), Some(0xaa)); // drawable
+        assert_eq!(rd_u32(&req, 8), Some(0xbb)); // gc
+        assert_eq!(u16::from_le_bytes([req[12], req[13]]), 200); // total-width
+        assert_eq!(u16::from_le_bytes([req[14], req[15]]), 100); // total-height
+        assert_eq!(u16::from_le_bytes([req[16], req[17]]), 8); // src-x
+        assert_eq!(u16::from_le_bytes([req[18], req[19]]), 16); // src-y
+        assert_eq!(u16::from_le_bytes([req[20], req[21]]), 4); // src-width
+        assert_eq!(u16::from_le_bytes([req[22], req[23]]), 2); // src-height
+        assert_eq!(i16::from_le_bytes([req[24], req[25]]), 8); // dst-x
+        assert_eq!(i16::from_le_bytes([req[26], req[27]]), 16); // dst-y
+        assert_eq!(req[28], 24); // depth
+        assert_eq!(req[29], 2); // ZPixmap
+        assert_eq!(req[30], 0); // send-event
+        assert_eq!(rd_u32(&req, 32), Some(0xcc)); // shmseg
+        assert_eq!(rd_u32(&req, 36), Some(0)); // offset
     }
 }
