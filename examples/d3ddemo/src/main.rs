@@ -6,9 +6,30 @@
 //! Without the `d3d` feature (or off Windows) the entry point returns an error,
 //! which is printed non-fatally so the demo still exits cleanly.
 
+const W: u32 = 420;
+const H: u32 = 300;
+
 fn main() {
     match forma_gpu::d3d11_device() {
         Ok(summary) => println!("D3D11 device: {summary}"),
         Err(e) => println!("D3D11 unavailable: {e}"),
+    }
+    // Render a frame on the GPU (WARP) and read it back. We print the top-left
+    // pixel so CI can confirm the cleared color tool-free, and write the raw
+    // buffer as an artifact.
+    match forma_gpu::d3d11_render_clear(W, H) {
+        Ok(pixels) => {
+            std::fs::write("d3d-clear.raw", &pixels).expect("write raw");
+            let px = &pixels[0..4];
+            println!(
+                "D3D11 readback: {} bytes ({W}x{H}) first pixel {},{},{},{}",
+                pixels.len(),
+                px[0],
+                px[1],
+                px[2],
+                px[3]
+            );
+        }
+        Err(e) => println!("D3D11 readback unavailable: {e}"),
     }
 }

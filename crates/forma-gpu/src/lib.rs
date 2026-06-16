@@ -159,6 +159,23 @@ pub fn d3d11_device() -> Result<String, String> {
     }
 }
 
+/// Render a `width`×`height` frame through Direct3D 11 on WARP (raw FFI) and read
+/// it back: clear a render-target texture to forma blue, copy it into a staging
+/// texture, map it, and return the RGBA pixels — an actual GPU-rendered frame,
+/// the D3D analog of [`vulkan_render_clear`]. Errors if the `d3d` feature is off
+/// or any step fails.
+pub fn d3d11_render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "windows", feature = "d3d"))]
+    {
+        d3d::render_clear(width, height)
+    }
+    #[cfg(not(all(target_os = "windows", feature = "d3d")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `d3d` feature (Windows-only Direct3D FFI)".to_string())
+    }
+}
+
 /// Create the system default Metal device (raw `objc_msgSend` FFI — no `metal`
 /// crate) and return its name — the foundation for a GPU-native Metal backend,
 /// the macOS analog of [`vulkan_init_device`]. Errors if the `mtl` feature is off
