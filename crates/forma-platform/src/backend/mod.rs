@@ -48,12 +48,7 @@ pub mod ios;
 // targets with no native backend (e.g. Android/web) the handler is moved
 // straight into the headless fallback, so the `mut` is unused there.
 #[cfg_attr(
-    not(any(
-        target_os = "linux",
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "ios"
-    )),
+    not(any(target_os = "linux", target_os = "windows", target_os = "macos")),
     allow(unused_mut)
 )]
 pub fn run<H>(attrs: WindowAttributes, mut handler: H)

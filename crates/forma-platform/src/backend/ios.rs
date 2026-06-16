@@ -374,11 +374,12 @@ where
 {
     let size = ScaleFactor::IDENTITY.to_physical(attrs.logical_size);
 
-    // Type-erase the handler and stash a raw pointer. `UIApplicationMain` never
-    // returns, so `handler` lives for the process lifetime; the lifetime erasure
-    // is therefore sound in practice.
-    let dyn_ref: &mut (dyn FnMut(Event, &dyn Window) -> ControlFlow) = &mut handler;
-    let fat: DynHandler = dyn_ref as DynHandler;
+    // Type-erase the handler and stash a raw pointer. `H` is not `'static`, but
+    // `UIApplicationMain` never returns, so `handler` lives for the process
+    // lifetime — we launder the borrow lifetime to the `'static` raw pointer the
+    // stash holds, which is therefore sound in practice.
+    let dyn_ref: &mut (dyn FnMut(Event, &dyn Window) -> ControlFlow + '_) = &mut handler;
+    let fat: DynHandler = unsafe { std::mem::transmute(dyn_ref) };
     let boxed: *mut DynHandler = Box::into_raw(Box::new(fat));
 
     CTX.with(|c| {
