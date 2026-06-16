@@ -176,6 +176,24 @@ pub fn d3d11_render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Draw a triangle through a full Direct3D 11 pipeline on WARP (raw FFI): compile
+/// HLSL vertex+pixel shaders with `D3DCompile`, bind them, and `Draw` over a
+/// dark-cleared `width`×`height` target, then read the frame back. The center
+/// pixel comes out forma green — proof real shaders ran, the D3D analog of
+/// [`vulkan_render_triangle`]. Returns the RGBA pixels. Errors if the `d3d`
+/// feature is off or any step fails.
+pub fn d3d11_render_triangle(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "windows", feature = "d3d"))]
+    {
+        d3d::render_triangle(width, height)
+    }
+    #[cfg(not(all(target_os = "windows", feature = "d3d")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `d3d` feature (Windows-only Direct3D FFI)".to_string())
+    }
+}
+
 /// Create the system default Metal device (raw `objc_msgSend` FFI — no `metal`
 /// crate) and return its name — the foundation for a GPU-native Metal backend,
 /// the macOS analog of [`vulkan_init_device`]. Errors if the `mtl` feature is off

@@ -32,4 +32,22 @@ fn main() {
         }
         Err(e) => println!("D3D11 readback unavailable: {e}"),
     }
+    // The full D3D pipeline: a triangle drawn by HLSL shaders. The center pixel
+    // must come back forma green; print it so CI can check it.
+    match forma_gpu::d3d11_render_triangle(W, H) {
+        Ok(pixels) => {
+            std::fs::write("d3d-tri.raw", &pixels).expect("write raw");
+            let i = ((H / 2) as usize * W as usize + (W / 2) as usize) * 4;
+            let px = &pixels[i..i + 4];
+            println!(
+                "D3D11 triangle: {} bytes ({W}x{H}) center pixel {},{},{},{}",
+                pixels.len(),
+                px[0],
+                px[1],
+                px[2],
+                px[3]
+            );
+        }
+        Err(e) => println!("D3D11 triangle unavailable: {e}"),
+    }
 }
