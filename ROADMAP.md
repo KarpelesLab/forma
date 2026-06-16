@@ -193,11 +193,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   (`docs/screenshots/forma-gpu-rects.png`) and the actual widget-tree `Scene`,
   whose text is drawn from a packed **per-glyph atlas** (each unique glyph
   rasterized once into one shared texture; repeats reuse the slot)
-  (`docs/screenshots/forma-gpu-scene.png`). A **raw Vulkan FFI foundation**
-  (`vulkan_devices`, no `ash`/`vulkano`) creates a `VkInstance` and enumerates
-  physical devices — **CI-verified** reaching Mesa lavapipe. ⬜ The full Vulkan
-  render pipeline (device/queues/SPIR-V/command buffers) and Metal/D3D/WebGPU
-  backends.
+  (`docs/screenshots/forma-gpu-scene.png`). A complete **raw Vulkan render
+  pipeline** (no `ash`/`vulkano` — just `libvulkan` + hand-written C structs)
+  now runs end to end: `VkInstance` + physical-device enumeration → logical
+  device + graphics queue → a `DEVICE_LOCAL` color image + memory → image view +
+  single-attachment render pass + framebuffer → a fenced command-buffer submit
+  that clears the image, copies it to a `HOST_VISIBLE` buffer, and reads it back
+  to the CPU → and finally a full `VkGraphicsPipeline` with two committed
+  **SPIR-V** shader modules that `vkCmdDraw`s a triangle. **CI-verified** on Mesa
+  lavapipe: the read-back clear is forma blue (`docs/screenshots/forma-gpu-vk.png`)
+  and the shader-drawn triangle's center pixel is forma green
+  (`docs/screenshots/forma-gpu-vk-tri.png`). ⬜ Wiring this Vulkan path behind the
+  `Surface` trait for on-screen present, and the Metal/D3D/WebGPU backends.
 
 ---
 
