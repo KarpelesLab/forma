@@ -13,9 +13,8 @@
 //! cross-compile CI job; an emulator run is a follow-up.
 #![allow(unsafe_code)]
 
-use core::ffi::c_void;
+use core::ffi::{c_char, c_void};
 
-use forma_geometry::PhysicalSize;
 use forma_render::Pixmap;
 
 // WINDOW_FORMAT_RGBA_8888 — straight R,G,B,A bytes, matching our Pixmap.
@@ -46,6 +45,54 @@ unsafe extern "C" {
         in_out_dirty_bounds: *mut c_void,
     ) -> i32;
     fn ANativeWindow_unlockAndPost(window: *mut c_void) -> i32;
+    /// The window's current drawable width in pixels.
+    pub fn ANativeWindow_getWidth(window: *mut c_void) -> i32;
+    /// The window's current drawable height in pixels.
+    pub fn ANativeWindow_getHeight(window: *mut c_void) -> i32;
+}
+
+/// `ANativeActivityCallbacks` — the lifecycle/window function-pointer table a
+/// `NativeActivity` invokes. Only the fields a backend wires up need non-null
+/// pointers; the rest stay null. Field order matches `native_activity.h`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct ANativeActivityCallbacks {
+    pub on_start: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+    pub on_resume: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+    pub on_save_instance_state:
+        Option<unsafe extern "C" fn(*mut ANativeActivity, *mut usize) -> *mut c_void>,
+    pub on_pause: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+    pub on_stop: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+    pub on_destroy: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+    pub on_window_focus_changed: Option<unsafe extern "C" fn(*mut ANativeActivity, i32)>,
+    pub on_native_window_created: Option<unsafe extern "C" fn(*mut ANativeActivity, *mut c_void)>,
+    pub on_native_window_resized: Option<unsafe extern "C" fn(*mut ANativeActivity, *mut c_void)>,
+    pub on_native_window_redraw_needed:
+        Option<unsafe extern "C" fn(*mut ANativeActivity, *mut c_void)>,
+    pub on_native_window_destroyed: Option<unsafe extern "C" fn(*mut ANativeActivity, *mut c_void)>,
+    pub on_input_queue_created: Option<unsafe extern "C" fn(*mut ANativeActivity, *mut c_void)>,
+    pub on_input_queue_destroyed: Option<unsafe extern "C" fn(*mut ANativeActivity, *mut c_void)>,
+    pub on_content_rect_changed: Option<unsafe extern "C" fn(*mut ANativeActivity, *const c_void)>,
+    pub on_configuration_changed: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+    pub on_low_memory: Option<unsafe extern "C" fn(*mut ANativeActivity)>,
+}
+
+/// `ANativeActivity` — the activity handed to `ANativeActivity_onCreate`. Only
+/// the leading `callbacks` pointer is needed to register window callbacks; the
+/// rest of the fields are kept for layout correctness.
+#[repr(C)]
+#[derive(Debug)]
+pub struct ANativeActivity {
+    pub callbacks: *mut ANativeActivityCallbacks,
+    pub vm: *mut c_void,
+    pub env: *mut c_void,
+    pub clazz: *mut c_void,
+    pub internal_data_path: *const c_char,
+    pub external_data_path: *const c_char,
+    pub sdk_version: i32,
+    pub instance: *mut c_void,
+    pub asset_manager: *mut c_void,
+    pub obb_path: *const c_char,
 }
 
 /// Blit a software [`Pixmap`] to an `ANativeWindow`: size the buffer to the
@@ -87,12 +134,4 @@ pub unsafe fn present_to_native_window(window: *mut c_void, pixmap: &Pixmap) -> 
         }
         ANativeWindow_unlockAndPost(window) == 0
     }
-}
-
-/// The drawable size of an `ANativeWindow` is not queried here yet; callers pass
-/// the surface size in from the `NativeActivity` configuration. Kept for the
-/// upcoming lifecycle integration.
-#[allow(dead_code)]
-pub fn surface_size_hint() -> PhysicalSize {
-    PhysicalSize::new(0, 0)
 }
