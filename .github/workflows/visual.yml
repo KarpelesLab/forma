@@ -138,8 +138,10 @@ jobs:
           ./target/release/textinput > visual_output/wl-input.log 2>&1 &
           TXT_PID=$!
           sleep 4
-          wtype -k Tab 2>> visual_output/wtype.log; sleep 1
-          wtype "forma wl" 2>> visual_output/wtype.log; sleep 2
+          # One wtype session keeps a single virtual keyboard alive for the whole
+          # sequence (Tab to focus, then type), so the keymap stays valid: Tab,
+          # then "forma wl", with a delay between keystrokes.
+          wtype -d 120 -k Tab -- "forma wl" 2>> visual_output/wtype.log; sleep 2
           grim visual_output/forma-wayland-input.png || echo "grim failed"
           echo "=== wtype.log ==="; cat visual_output/wtype.log || true
           kill "$TXT_PID" 2>/dev/null || true
