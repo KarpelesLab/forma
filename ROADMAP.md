@@ -131,11 +131,17 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   dropped by one line height. Editable fields stay single-line (caret/selection
   math unchanged). **CI-verified** — the `window` example's two-line caption
   (`docs/screenshots/forma-x11.png`).
+- ✅ **Pointer-drag text selection**: `forma-core::caret_index_at` resolves a
+  pointer x to the nearest caret byte index (prefix-measured); a `TextPosId` /
+  `on_text_pos` handler routes presses (place caret) and drags (extend
+  selection) through `text_pos_at`/`find_text_pos`. `EditBuffer` gains
+  `place_caret`/`extend_to`; `text_editor` takes a `&mut EditBuffer` accessor and
+  wires keyboard + pointer together. **CI-verified** on X11 — mouse drag selects
+  "ForXYm" (`docs/screenshots/forma-x11-dragselect.png`).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
   state to skip unchanged subtrees on rebuild; ⬜ word-wrapping + multi-line
-  editing (caret/selection across lines); ⬜ pointer-drag text selection;
-  ⬜ a11y.
+  editing (caret/selection across lines); ⬜ a11y.
 
 ---
 
