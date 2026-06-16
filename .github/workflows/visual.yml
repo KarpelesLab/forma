@@ -666,3 +666,26 @@ jobs:
           name: forma-macos-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
+
+  # Connect to a private session bus with the hand-written D-Bus client (the
+  # AT-SPI accessibility-bridge foundation) and confirm the SASL handshake +
+  # Hello assign us a unique name. No display needed.
+  a11y-dbus:
+    name: a11y (D-Bus bridge / Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install D-Bus
+        run: sudo apt-get update && sudo apt-get install -y dbus
+
+      - name: Build the a11y demo
+        run: cargo build --release -p a11ydemo
+
+      - name: Connect to a private session bus and read the unique name
+        run: |
+          dbus-run-session -- ./target/release/a11ydemo | tee a11y.log
+          # The bus assigns every connection a ":1.N" unique name on Hello.
+          grep -qE "D-Bus connected: unique name :1\." a11y.log

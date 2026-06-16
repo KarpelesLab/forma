@@ -17,6 +17,9 @@
 // that genuinely need it (the X11 and headless backends stay safe).
 #![deny(unsafe_code)]
 
+/// Hand-written D-Bus / AT-SPI accessibility bridge (Linux).
+#[cfg(target_os = "linux")]
+pub mod a11y;
 pub mod backend;
 mod error;
 mod event;
