@@ -128,6 +128,12 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   damaged region via the `Surface` damage seam — a state change repaints only
   what moved (expose/resize still force a full present). Unit-tested in
   `forma-core` (localized/full/none cases) and `forma` (incremental App frames).
+- ✅ **Subtree memoization** (`Cx::memo`): `cx.memo(key, build)` returns the
+  previous frame's `Element` for an unchanged `key`, skipping the build closure
+  so unchanged static branches aren't rebuilt. The closure gets no `Cx` (so a
+  memoized subtree can't register handlers whose ids would desync); the `App`
+  threads the cache across frames and evicts untouched keys. Unit-tested
+  (build-once-per-key, rebuild-on-change, eviction).
 - ✅ **Caret-aware text editing**: a single-line `EditBuffer` with a
   UTF-8-boundary-safe caret (insert / backspace / delete at the caret;
   left / right / home / end motion; `apply(KeyInput)`). The `Element`/
@@ -168,7 +174,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   column from x). New `text_area` widget. **CI-verified** on X11 — three typed
   lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
 - ⬜ **mobile** (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU);
-  ⬜ per-node state to skip unchanged subtrees on rebuild; ⬜ a11y.
+  ⬜ a11y.
 
 ---
 
