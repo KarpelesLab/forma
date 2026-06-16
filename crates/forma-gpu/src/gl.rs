@@ -59,6 +59,9 @@ const GL_LINK_STATUS: GLenum = 0x8B82;
 const GL_TRIANGLE_STRIP: GLenum = 0x0005;
 const GL_TRIANGLES: GLenum = 0x0004;
 const GL_COLOR_BUFFER_BIT: GLbitfield = 0x4000;
+const GL_BLEND: GLenum = 0x0BE2;
+const GL_SRC_ALPHA: GLenum = 0x0302;
+const GL_ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
 
 #[link(name = "EGL")]
 unsafe extern "C" {
@@ -121,6 +124,8 @@ unsafe extern "C" {
     fn glViewport(x: GLint, y: GLint, width: GLsizei, height: GLsizei);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: GLbitfield);
+    fn glEnable(cap: GLenum);
+    fn glBlendFunc(sfactor: GLenum, dfactor: GLenum);
     fn glCreateShader(ty: GLenum) -> GLuint;
     fn glShaderSource(
         shader: GLuint,
@@ -187,6 +192,17 @@ void main() {\n\
   if (dist > 0.5) discard;\n\
   if (u_border > 0.0 && dist < -u_border) discard;\n\
   gl_FragColor = u_color;\n\
+}\n\0";
+
+// Text program: sample a coverage mask (white-on-black glyph raster, so the red
+// channel is coverage) and emit `u_color` modulated by it, for alpha blending.
+const TEXT_FRAGMENT_SRC: &[u8] = b"precision mediump float;\n\
+varying vec2 v_uv;\n\
+uniform sampler2D u_mask;\n\
+uniform vec4 u_color;\n\
+void main() {\n\
+  float cov = texture2D(u_mask, v_uv).r;\n\
+  gl_FragColor = vec4(u_color.rgb, u_color.a * cov);\n\
 }\n\0";
 
 unsafe fn compile(kind: GLenum, src: &[u8]) -> Result<GLuint, String> {
@@ -414,20 +430,32 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
     }
 }
 
-/// Draw solid-color rectangles **GPU-natively** — as tessellated geometry
-/// through a flat-color shader (not by compositing a CPU pixmap) — onto a
-/// `background`-cleared offscreen framebuffer, and read the result back.
-///
-/// Each entry is `(rect, color, corner_radius, border_width)` in logical pixels
-/// with a top-left origin (mapped to GL NDC); the fragment shader evaluates a
-/// rounded-rectangle SDF, so a radius of `0.0` is a sharp rect and a
-/// `border_width` of `0.0` is a solid fill (a positive width strokes the outline
-/// instead). This is the first step of the GPU-native scene renderer; a glyph
-/// atlas for text is future work.
+/// Convenience wrapper for a box-only GPU render (no text). See
+/// [`render_offscreen`].
 pub fn fill_rects_offscreen(
     size: PhysicalSize,
     background: Color,
     rects: &[(Rect, Color, f32, f32)],
+) -> Result<Pixmap, String> {
+    render_offscreen(size, background, rects, &[])
+}
+
+/// Render a scene **GPU-natively** to an offscreen framebuffer and read it back:
+/// box primitives as tessellated geometry through a rounded-rect SDF shader, and
+/// text by alpha-blending CPU-rasterized glyph coverage masks as colored quads.
+///
+/// Each rect is `(rect, color, corner_radius, border_width)` (radius `0.0` =
+/// sharp, `border_width` `0.0` = solid fill, else a stroked outline). Each text
+/// is `(mask, dst, color)` where `mask` is a white-on-black coverage raster of
+/// the glyphs (its red channel is the coverage), `dst` the logical rectangle to
+/// place it in, and `color` the ink color. All coordinates are logical pixels
+/// with a top-left origin. A per-glyph atlas cache is the production
+/// optimization; this composites whole coverage masks.
+pub fn render_offscreen(
+    size: PhysicalSize,
+    background: Color,
+    rects: &[(Rect, Color, f32, f32)],
+    texts: &[(&Pixmap, Rect, Color)],
 ) -> Result<Pixmap, String> {
     let (w, h) = (size.width as GLsizei, size.height as GLsizei);
     if w == 0 || h == 0 {
@@ -558,6 +586,101 @@ pub fn fill_rects_offscreen(
             );
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
+
+        // --- text pass: alpha-blend glyph-coverage masks as colored quads ---
+        if !texts.is_empty() {
+            let tvs = compile(GL_VERTEX_SHADER, VERTEX_SRC)?; // pos + uv
+            let tfs = compile(GL_FRAGMENT_SHADER, TEXT_FRAGMENT_SRC)?;
+            let tprog = glCreateProgram();
+            glAttachShader(tprog, tvs);
+            glAttachShader(tprog, tfs);
+            glLinkProgram(tprog);
+            let mut tlinked: GLint = 0;
+            glGetProgramiv(tprog, GL_LINK_STATUS, &mut tlinked);
+            if tlinked == 0 {
+                return Err("text program link failed".into());
+            }
+            glUseProgram(tprog);
+            let tpos = glGetAttribLocation(tprog, c"pos".as_ptr());
+            let tuv = glGetAttribLocation(tprog, c"uv".as_ptr());
+            let tcolor = glGetUniformLocation(tprog, c"u_color".as_ptr());
+            let tmask = glGetUniformLocation(tprog, c"u_mask".as_ptr());
+            if tpos < 0 || tuv < 0 {
+                return Err("text attribute location not found".into());
+            }
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+            let mut tvbo: GLuint = 0;
+            glGenBuffers(1, &mut tvbo);
+            glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+            let mut mask_tex: GLuint = 0;
+            glGenTextures(1, &mut mask_tex);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(tmask, 0);
+            let stride = 4 * std::mem::size_of::<f32>() as GLsizei;
+
+            for (mask, dst, color) in texts {
+                let ms = mask.size();
+                glBindTexture(GL_TEXTURE_2D, mask_tex);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(
+                    GL_TEXTURE_2D,
+                    0,
+                    GL_RGBA as GLint,
+                    ms.width as GLsizei,
+                    ms.height as GLsizei,
+                    0,
+                    GL_RGBA,
+                    GL_UNSIGNED_BYTE,
+                    mask.as_bytes().as_ptr() as *const c_void,
+                );
+                // Quad at `dst` with uv top→0 (matches the mask's top-first rows).
+                let (x0, y0) = ndc(dst.min_x(), dst.min_y());
+                let (x1, y1) = ndc(dst.max_x(), dst.max_y());
+                #[rustfmt::skip]
+                let verts: [f32; 24] = [
+                    x0, y0, 0.0, 0.0,  x1, y0, 1.0, 0.0,  x0, y1, 0.0, 1.0,
+                    x0, y1, 0.0, 1.0,  x1, y0, 1.0, 0.0,  x1, y1, 1.0, 1.0,
+                ];
+                glBufferData(
+                    GL_ARRAY_BUFFER,
+                    std::mem::size_of_val(&verts) as isize,
+                    verts.as_ptr() as *const c_void,
+                    GL_STATIC_DRAW,
+                );
+                glEnableVertexAttribArray(tpos as GLuint);
+                glVertexAttribPointer(
+                    tpos as GLuint,
+                    2,
+                    GL_FLOAT,
+                    GL_FALSE,
+                    stride,
+                    core::ptr::null(),
+                );
+                glEnableVertexAttribArray(tuv as GLuint);
+                glVertexAttribPointer(
+                    tuv as GLuint,
+                    2,
+                    GL_FLOAT,
+                    GL_FALSE,
+                    stride,
+                    (2 * std::mem::size_of::<f32>()) as *const c_void,
+                );
+                glUniform4f(
+                    tcolor,
+                    color.r as f32 / 255.0,
+                    color.g as f32 / 255.0,
+                    color.b as f32 / 255.0,
+                    color.a as f32 / 255.0,
+                );
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+        }
+
         glFinish();
         Ok(read_back(w, h))
     }

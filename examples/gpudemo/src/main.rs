@@ -86,11 +86,29 @@ fn main() {
             6.0,
         ),
     ];
-    match forma_gpu::fill_rects_offscreen(size, Color::rgb(0x14, 0x15, 0x18), &rects) {
+    // GPU text: rasterize a label to a white-on-black coverage mask on the CPU,
+    // then let the GPU composite it (alpha-blended, recolored) over the boxes.
+    let mask = Font::system_default().map(|font| {
+        let label = "FORMA - GPU";
+        let m = font.measure(label, 30.0);
+        let (tw, th) = (m.width.ceil() + 12.0, m.height.ceil() + 6.0);
+        let mut scene = forma::render::Scene::new(Size::new(tw, th));
+        scene.fill_text(&font, label, Point::new(6.0, 2.0), 30.0, Color::WHITE);
+        let pm = forma::render::SoftwareRenderer::new()
+            .with_background(Color::BLACK)
+            .render(scene, ScaleFactor::IDENTITY);
+        (pm, Rect::from_xywh(40.0, 130.0, tw, th))
+    });
+    let texts: Vec<(&forma::render::Pixmap, Rect, Color)> = mask
+        .iter()
+        .map(|(pm, dst)| (pm, *dst, Color::rgb(0xec, 0xee, 0xf2)))
+        .collect();
+
+    match forma_gpu::render_offscreen(size, Color::rgb(0x14, 0x15, 0x18), &rects, &texts) {
         Ok(out) => {
             std::fs::write("gpu-rects.raw", out.as_bytes()).expect("write raw");
             println!(
-                "GPU-native rects ok: {}x{}",
+                "GPU-native scene ok: {}x{}",
                 out.size().width,
                 out.size().height
             );

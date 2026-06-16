@@ -57,3 +57,26 @@ pub fn fill_rects_offscreen(
         Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
     }
 }
+
+/// Render a scene **GPU-natively** — box primitives (rounded-rect SDF) plus
+/// text composited from glyph-coverage masks — to an offscreen target of `size`
+/// cleared to `background`, returning the rendered frame. Each text entry is
+/// `(mask, dst, color)`: a white-on-black coverage raster of the glyphs, the
+/// destination rectangle, and the ink color. Errors if the `gl` feature is off
+/// or no GL/EGL device is available.
+pub fn render_offscreen(
+    size: PhysicalSize,
+    background: Color,
+    rects: &[(Rect, Color, f32, f32)],
+    texts: &[(&Pixmap, Rect, Color)],
+) -> Result<Pixmap, String> {
+    #[cfg(all(target_os = "linux", feature = "gl"))]
+    {
+        gl::render_offscreen(size, background, rects, texts)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "gl")))]
+    {
+        let _ = (size, background, rects, texts);
+        Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
+    }
+}
