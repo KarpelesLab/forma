@@ -286,6 +286,13 @@ jobs:
       - name: Build the window example
         run: cargo build --release -p window
 
+      - name: Exercise the raw Direct3D 11 (WARP) backend
+        shell: bash
+        run: |
+          cargo run --release -p d3ddemo --features forma-gpu/d3d | tee d3ddemo.log
+          # WARP is always available on the runner, so a device must come up.
+          grep -q "D3D11 device: WARP device" d3ddemo.log
+
       - name: Launch the Forma window and screenshot the desktop
         shell: powershell
         run: |

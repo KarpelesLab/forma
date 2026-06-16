@@ -1,0 +1,16 @@
+[package]
+name = "d3ddemo"
+description = "Forma example: exercise the raw Direct3D 11 (WARP) backend in forma-gpu and print what it created."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma-gpu.workspace = true
+
+[lints]
+workspace = true

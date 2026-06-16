@@ -23,6 +23,9 @@ mod gl;
 #[cfg(all(target_os = "linux", feature = "vk"))]
 mod vulkan;
 
+#[cfg(all(target_os = "windows", feature = "d3d"))]
+mod d3d;
+
 /// Enumerate the Vulkan physical devices reachable through `libvulkan` (raw FFI,
 /// no helper crate) — the foundation for a future GPU-native Vulkan backend.
 /// Returns each device's name (e.g. `"llvmpipe (...)"` under Mesa lavapipe).
@@ -134,6 +137,22 @@ pub fn vulkan_render_triangle(width: u32, height: u32) -> Result<Vec<u8>, String
     {
         let _ = (width, height);
         Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
+/// Create a Direct3D 11 device on **WARP** (the software rasterizer shipped with
+/// Windows, raw FFI — no `windows` crate) and return its feature level — the
+/// foundation for a GPU-native D3D backend, the Windows analog of
+/// [`vulkan_init_device`]. Errors if the `d3d` feature is off or the device
+/// can't be created.
+pub fn d3d11_device() -> Result<String, String> {
+    #[cfg(all(target_os = "windows", feature = "d3d"))]
+    {
+        d3d::device()
+    }
+    #[cfg(not(all(target_os = "windows", feature = "d3d")))]
+    {
+        Err("forma-gpu: built without the `d3d` feature (Windows-only Direct3D FFI)".to_string())
     }
 }
 
