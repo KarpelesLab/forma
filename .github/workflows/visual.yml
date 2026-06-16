@@ -83,6 +83,66 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Render the window example under a headless wlroots compositor (sway) and
+  # screenshot it with grim, proving the hand-authored Wayland backend connects,
+  # binds the globals, creates an xdg-shell window, and presents via wl_shm.
+  visual-wayland:
+    name: Visual test (Wayland / sway)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install sway, grim, seatd, ImageMagick, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sway grim seatd imagemagick fonts-dejavu-core
+
+      - name: Build the window example
+        run: cargo build --release -p window
+
+      - name: Run under headless sway and screenshot with grim
+        run: |
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdgrt"
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          # Headless wlroots with software (pixman) rendering, no GPU or input.
+          export WLR_BACKENDS=headless
+          export WLR_RENDERER=pixman
+          export WLR_LIBINPUT_NO_DEVICES=1
+          # seatd provides a seat without logind; allow this user's group.
+          sudo seatd -g "$(id -gn)" > seatd.log 2>&1 &
+          sleep 1
+          export LIBSEAT_BACKEND=seatd
+          printf 'output HEADLESS-1 resolution 1024x768\nexec sleep 600\n' > sway.cfg
+          sway -c sway.cfg > sway.log 2>&1 &
+          SWAY_PID=$!
+          sleep 6
+          SOCK=$(ls "$XDG_RUNTIME_DIR" | grep -m1 '^wayland-[0-9]*$' || true)
+          echo "wayland socket: '$SOCK'"
+          export WAYLAND_DISPLAY="$SOCK"
+          export FORMA_WAYLAND_DEBUG=1
+          mkdir -p visual_output
+          ./target/release/window > visual_output/wl.log 2>&1 &
+          sleep 5
+          grim visual_output/forma-wayland.png || echo "grim failed"
+          echo "=== seatd.log ==="; cat seatd.log || true
+          echo "=== sway.log ==="; cat sway.log || true
+          echo "=== wl.log ==="; cat visual_output/wl.log || true
+          identify visual_output/forma-wayland.png || true
+          kill "$SWAY_PID" 2>/dev/null || true
+
+      - name: Upload screenshot + logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-wayland-screenshot
+          path: |
+            visual_output/*
+            sway.log
+            seatd.log
+          if-no-files-found: warn
+
   # Verify *real* native input: launch a "click counter" window under Xvfb,
   # click it with xdotool, and screenshot before/after to confirm the
   # native-event → dispatch → re-present loop works end to end.

@@ -1,0 +1,680 @@
+//! A native Wayland backend implemented directly against the wire protocol.
+//!
+//! No `wayland-client`/`smithay` crate — just a `UnixStream` to the compositor
+//! and the Wayland byte protocol (core `wl_*` plus `xdg-shell`), matching the
+//! hand-authored X11 backend. It connects to `$WAYLAND_DISPLAY`, binds the
+//! `wl_compositor` / `wl_shm` / `xdg_wm_base` globals, creates an `xdg_toplevel`
+//! window, and presents the software [`Pixmap`] through a `wl_shm` buffer the
+//! compositor maps directly.
+//!
+//! Scope (v1): connection, the `xdg-shell` configure/ack handshake, and shared-
+//! memory presentation (window create + paint + close). Pointer/keyboard input
+//! via `wl_seat` is a follow-up — exactly how the Win32/Cocoa backends began.
+//!
+//! The shared-memory buffer needs a small amount of FFI (`memfd_create` / `mmap`
+//! and `SCM_RIGHTS` fd passing), hence the module-level `allow(unsafe_code)`.
+//!
+//! **Verification:** the live socket path is exercised by the `Visual` workflow's
+//! headless-`sway` job (`grim` screenshots the compositor output).
+
+#![allow(unsafe_code)]
+
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+
+use crate::ControlFlow;
+use crate::error::PlatformError;
+use crate::event::Event;
+use crate::window::{Window, WindowAttributes};
+use forma_geometry::{PhysicalSize, ScaleFactor};
+use forma_render::{Pixmap, Surface};
+
+use core::ffi::{c_char, c_void};
+
+// ---- libc FFI for the shared-memory buffer + fd passing ---------------------
+
+unsafe extern "C" {
+    fn memfd_create(name: *const c_char, flags: u32) -> i32;
+    fn ftruncate(fd: i32, length: i64) -> i32;
+    fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64)
+    -> *mut c_void;
+    fn munmap(addr: *mut c_void, len: usize) -> i32;
+    fn close(fd: i32) -> i32;
+    fn sendmsg(sockfd: i32, msg: *const Msghdr, flags: i32) -> isize;
+}
+const PROT_READ: i32 = 1;
+const PROT_WRITE: i32 = 2;
+const MAP_SHARED: i32 = 1;
+const SOL_SOCKET: i32 = 1;
+const SCM_RIGHTS: i32 = 1;
+
+// `sendmsg` scatter/gather + control-message structs (Linux x86_64 layout;
+// `repr(C)` inserts the alignment padding glibc expects).
+#[repr(C)]
+struct Iovec {
+    iov_base: *mut c_void,
+    iov_len: usize,
+}
+#[repr(C)]
+struct Msghdr {
+    msg_name: *mut c_void,
+    msg_namelen: u32,
+    msg_iov: *mut Iovec,
+    msg_iovlen: usize,
+    msg_control: *mut c_void,
+    msg_controllen: usize,
+    msg_flags: i32,
+}
+#[repr(C)]
+struct Cmsghdr {
+    cmsg_len: usize,
+    cmsg_level: i32,
+    cmsg_type: i32,
+}
+
+/// Send `bytes` over `sock` with a single file descriptor attached as an
+/// `SCM_RIGHTS` control message (one `sendmsg`).
+fn sendmsg_fd(sock: i32, bytes: &[u8], fd: i32) -> io::Result<()> {
+    // Control buffer: CMSG_SPACE(sizeof(int)) = align8(sizeof(cmsghdr)) + align8(4).
+    let mut control = [0u8; 24];
+    let cmsg = control.as_mut_ptr() as *mut Cmsghdr;
+    unsafe {
+        (*cmsg).cmsg_len = 20; // CMSG_LEN(4) = 16 + 4
+        (*cmsg).cmsg_level = SOL_SOCKET;
+        (*cmsg).cmsg_type = SCM_RIGHTS;
+        // CMSG_DATA sits after the aligned header (offset 16).
+        let data = control.as_mut_ptr().add(16) as *mut i32;
+        data.write_unaligned(fd);
+    }
+    let mut iov = Iovec {
+        iov_base: bytes.as_ptr() as *mut c_void,
+        iov_len: bytes.len(),
+    };
+    let msg = Msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: control.as_mut_ptr() as *mut c_void,
+        msg_controllen: control.len(),
+        msg_flags: 0,
+    };
+    let n = unsafe { sendmsg(sock, &msg, 0) };
+    if n < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+// ---- Wayland object ids + opcodes -------------------------------------------
+
+const WL_DISPLAY: u32 = 1;
+
+// Request opcodes (client → server).
+const WL_DISPLAY_GET_REGISTRY: u16 = 1;
+const WL_DISPLAY_SYNC: u16 = 0;
+const WL_REGISTRY_BIND: u16 = 0;
+const WL_COMPOSITOR_CREATE_SURFACE: u16 = 0;
+const WL_SHM_CREATE_POOL: u16 = 0;
+const WL_SHM_POOL_CREATE_BUFFER: u16 = 0;
+const WL_SURFACE_ATTACH: u16 = 1;
+const WL_SURFACE_DAMAGE: u16 = 2;
+const WL_SURFACE_COMMIT: u16 = 6;
+const XDG_WM_BASE_PONG: u16 = 3;
+const XDG_WM_BASE_GET_XDG_SURFACE: u16 = 2;
+const XDG_SURFACE_GET_TOPLEVEL: u16 = 1;
+const XDG_SURFACE_ACK_CONFIGURE: u16 = 4;
+const XDG_TOPLEVEL_SET_TITLE: u16 = 2;
+
+// Event opcodes (server → client) for the objects we track.
+const WL_DISPLAY_ERROR: u16 = 0;
+const WL_REGISTRY_GLOBAL: u16 = 0;
+const WL_CALLBACK_DONE: u16 = 0;
+const XDG_WM_BASE_PING: u16 = 0;
+const XDG_SURFACE_CONFIGURE: u16 = 0;
+const XDG_TOPLEVEL_CONFIGURE: u16 = 0;
+const XDG_TOPLEVEL_CLOSE: u16 = 1;
+
+// `wl_shm` pixel format: 32-bit little-endian XRGB → bytes `[B, G, R, X]`.
+const WL_SHM_FORMAT_XRGB8888: u32 = 1;
+
+/// Whether a Wayland compositor is reachable (cheap check of `$WAYLAND_DISPLAY`).
+pub fn available() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+fn dbg(args: std::fmt::Arguments<'_>) {
+    if std::env::var_os("FORMA_WAYLAND_DEBUG").is_some() {
+        eprintln!("forma wayland: {args}");
+    }
+}
+
+fn os(e: io::Error) -> PlatformError {
+    PlatformError::Os(e.to_string())
+}
+
+// ---- Wire connection --------------------------------------------------------
+
+/// The compositor connection plus the client-side object-id allocator.
+struct WlConn {
+    stream: UnixStream,
+    next_id: u32,
+}
+
+impl WlConn {
+    /// Connect to the compositor socket named by `$WAYLAND_DISPLAY` (relative
+    /// names resolve under `$XDG_RUNTIME_DIR`).
+    fn connect() -> Result<Self, PlatformError> {
+        let disp = std::env::var_os("WAYLAND_DISPLAY")
+            .ok_or_else(|| PlatformError::Os("WAYLAND_DISPLAY not set".into()))?;
+        let path = std::path::PathBuf::from(&disp);
+        let full = if path.is_absolute() {
+            path
+        } else {
+            let dir = std::env::var_os("XDG_RUNTIME_DIR")
+                .ok_or_else(|| PlatformError::Os("XDG_RUNTIME_DIR not set".into()))?;
+            std::path::Path::new(&dir).join(path)
+        };
+        let stream = UnixStream::connect(&full).map_err(os)?;
+        Ok(Self { stream, next_id: 2 })
+    }
+
+    /// Allocate the next client object id.
+    fn new_id(&mut self) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Send a request `(object, opcode, args)`; `args` is the already-encoded
+    /// argument block (a multiple of 4 bytes).
+    fn send(&mut self, object: u32, opcode: u16, args: &[u8]) -> io::Result<()> {
+        let size = (8 + args.len()) as u32;
+        let mut msg = Vec::with_capacity(size as usize);
+        msg.extend_from_slice(&object.to_le_bytes());
+        msg.extend_from_slice(&((size << 16) | opcode as u32).to_le_bytes());
+        msg.extend_from_slice(args);
+        self.stream.write_all(&msg)
+    }
+
+    /// Send a request carrying a file descriptor via an `SCM_RIGHTS` control
+    /// message (used by `wl_shm.create_pool`).
+    fn send_with_fd(&mut self, object: u32, opcode: u16, args: &[u8], fd: i32) -> io::Result<()> {
+        let size = (8 + args.len()) as u32;
+        let mut msg = Vec::with_capacity(size as usize);
+        msg.extend_from_slice(&object.to_le_bytes());
+        msg.extend_from_slice(&((size << 16) | opcode as u32).to_le_bytes());
+        msg.extend_from_slice(args);
+        sendmsg_fd(self.stream.as_raw_fd(), &msg, fd)
+    }
+
+    /// Read exactly one message: returns `(object, opcode, args)`.
+    fn recv(&mut self) -> io::Result<(u32, u16, Vec<u8>)> {
+        let mut header = [0u8; 8];
+        self.stream.read_exact(&mut header)?;
+        let object = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        let word = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        let size = (word >> 16) as usize;
+        let opcode = (word & 0xffff) as u16;
+        let mut args = vec![0u8; size.saturating_sub(8)];
+        self.stream.read_exact(&mut args)?;
+        Ok((object, opcode, args))
+    }
+}
+
+// ---- Argument encoding helpers ----------------------------------------------
+
+/// Append a 32-bit argument (int / uint / object / new_id).
+fn arg_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Append a string argument: length (incl NUL) + bytes + NUL, padded to 4.
+fn arg_str(buf: &mut Vec<u8>, s: &str) {
+    let len = s.len() + 1; // include the trailing NUL
+    arg_u32(buf, len as u32);
+    buf.extend_from_slice(s.as_bytes());
+    buf.push(0);
+    while !buf.len().is_multiple_of(4) {
+        buf.push(0);
+    }
+}
+
+/// Read a length-prefixed string from an event arg block at `off`, returning the
+/// text (without the trailing NUL) and the next offset (the string bytes are
+/// padded to a 4-byte boundary).
+fn read_str(args: &[u8], off: usize) -> Option<(String, usize)> {
+    let len = u32::from_le_bytes([
+        *args.get(off)?,
+        *args.get(off + 1)?,
+        *args.get(off + 2)?,
+        *args.get(off + 3)?,
+    ]) as usize;
+    let start = off + 4;
+    let bytes = args.get(start..start + len)?;
+    let text = String::from_utf8_lossy(&bytes[..len.saturating_sub(1)]).into_owned();
+    let next = start + len.div_ceil(4) * 4;
+    Some((text, next))
+}
+
+/// Convert a straight-RGBA8 pixmap into `wl_shm` XRGB8888 bytes (`[B, G, R, 0]`).
+fn rgba_to_xrgb(rgba: &[u8], dst: &mut [u8]) {
+    for (s, d) in rgba.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+        d[0] = s[2];
+        d[1] = s[1];
+        d[2] = s[0];
+        d[3] = 0;
+    }
+}
+
+// ---- Shared-memory buffer ---------------------------------------------------
+
+/// A `memfd`-backed region mapped into this process and shared with the
+/// compositor as a `wl_shm` pool.
+struct ShmBuffer {
+    fd: i32,
+    ptr: *mut u8,
+    capacity: usize,
+    buffer: u32,
+    size: PhysicalSize,
+}
+
+impl ShmBuffer {
+    fn bytes(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.capacity) }
+    }
+}
+
+impl Drop for ShmBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            munmap(self.ptr as *mut c_void, self.capacity);
+            close(self.fd);
+        }
+    }
+}
+
+/// Create a `memfd` of `bytes`, map it, and make a `wl_shm` pool + buffer of
+/// `size` over it (XRGB8888). Sends `create_pool` (with the fd) and
+/// `create_buffer`.
+fn make_shm(conn: &mut WlConn, shm: u32, size: PhysicalSize) -> Result<ShmBuffer, PlatformError> {
+    let stride = size.width as usize * 4;
+    let bytes = stride * size.height as usize;
+    let name = c"forma-wl";
+    let fd = unsafe { memfd_create(name.as_ptr(), 0) };
+    if fd < 0 {
+        return Err(PlatformError::Os("memfd_create failed".into()));
+    }
+    if unsafe { ftruncate(fd, bytes as i64) } < 0 {
+        unsafe { close(fd) };
+        return Err(PlatformError::Os("ftruncate failed".into()));
+    }
+    let addr = unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            bytes,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+    };
+    if addr as isize == -1 {
+        unsafe { close(fd) };
+        return Err(PlatformError::Os("mmap failed".into()));
+    }
+
+    let pool = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, pool);
+    arg_u32(&mut a, bytes as u32);
+    conn.send_with_fd(shm, WL_SHM_CREATE_POOL, &a, fd)
+        .map_err(os)?;
+
+    let buffer = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, buffer);
+    arg_u32(&mut a, 0); // offset
+    arg_u32(&mut a, size.width);
+    arg_u32(&mut a, size.height);
+    arg_u32(&mut a, stride as u32);
+    arg_u32(&mut a, WL_SHM_FORMAT_XRGB8888);
+    conn.send(pool, WL_SHM_POOL_CREATE_BUFFER, &a).map_err(os)?;
+
+    Ok(ShmBuffer {
+        fd,
+        ptr: addr as *mut u8,
+        capacity: bytes,
+        buffer,
+        size,
+    })
+}
+
+// ---- Window + Surface -------------------------------------------------------
+
+type Shared = Arc<Mutex<WlConn>>;
+
+struct WaylandWindow {
+    conn: Shared,
+    surface: u32,
+    shm: u32,
+    size: PhysicalSize,
+}
+
+impl std::fmt::Debug for WaylandWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WaylandWindow")
+            .field("surface", &self.surface)
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
+impl Window for WaylandWindow {
+    fn id(&self) -> crate::WindowId {
+        crate::WindowId(self.surface as u64)
+    }
+    fn inner_size(&self) -> PhysicalSize {
+        self.size
+    }
+    fn scale_factor(&self) -> ScaleFactor {
+        ScaleFactor::IDENTITY
+    }
+    fn request_redraw(&self) {}
+    fn set_title(&self, _title: &str) {}
+    fn create_surface(&self) -> Box<dyn Surface> {
+        Box::new(WaylandSurface {
+            conn: self.conn.clone(),
+            surface: self.surface,
+            shm: self.shm,
+            size: self.size,
+            buffer: None,
+        })
+    }
+}
+
+struct WaylandSurface {
+    conn: Shared,
+    surface: u32,
+    shm: u32,
+    size: PhysicalSize,
+    buffer: Option<ShmBuffer>,
+}
+
+impl std::fmt::Debug for WaylandSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WaylandSurface")
+            .field("surface", &self.surface)
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
+impl Surface for WaylandSurface {
+    fn resize(&mut self, size: PhysicalSize) {
+        if size != self.size {
+            self.size = size;
+            self.buffer = None; // reallocate at the new size on next present
+        }
+    }
+    fn size(&self) -> PhysicalSize {
+        self.size
+    }
+    fn present(&mut self, pixmap: &Pixmap, _damage: &[forma_geometry::Rect]) {
+        let size = pixmap.size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        let mut conn = self.conn.lock().unwrap();
+        // (Re)create the shm buffer if missing or the size changed.
+        if self.buffer.as_ref().map(|b| b.size) != Some(size) {
+            self.buffer = make_shm(&mut conn, self.shm, size).ok();
+        }
+        let Some(buf) = self.buffer.as_mut() else {
+            return;
+        };
+        let stride = size.width as usize * 4;
+        let bytes = stride * size.height as usize;
+        let buffer = buf.buffer;
+        rgba_to_xrgb(pixmap.as_bytes(), &mut buf.bytes()[..bytes]);
+
+        let surface = self.surface;
+        // attach(buffer, 0, 0); damage(0, 0, w, h); commit.
+        let mut a = Vec::new();
+        arg_u32(&mut a, buffer);
+        arg_u32(&mut a, 0);
+        arg_u32(&mut a, 0);
+        let _ = conn.send(surface, WL_SURFACE_ATTACH, &a);
+        let mut a = Vec::new();
+        arg_u32(&mut a, 0);
+        arg_u32(&mut a, 0);
+        arg_u32(&mut a, size.width);
+        arg_u32(&mut a, size.height);
+        let _ = conn.send(surface, WL_SURFACE_DAMAGE, &a);
+        let _ = conn.send(surface, WL_SURFACE_COMMIT, &[]);
+        let _ = conn.stream.flush();
+        dbg(format_args!("present {}x{}", size.width, size.height));
+    }
+}
+
+// ---- Run loop ---------------------------------------------------------------
+
+/// Connect to the compositor, create a window, and drive `handler` over its
+/// event stream until it returns [`ControlFlow::Exit`] or the toplevel closes.
+pub fn run<H>(attrs: WindowAttributes, mut handler: H) -> Result<(), PlatformError>
+where
+    H: FnMut(Event, &dyn Window) -> ControlFlow,
+{
+    let mut conn = WlConn::connect()?;
+    let size = ScaleFactor::IDENTITY.to_physical(attrs.logical_size);
+    let size = PhysicalSize::new(size.width.max(1), size.height.max(1));
+
+    // get_registry, then sync so the compositor flushes all globals before the
+    // sync callback's `done` event.
+    let registry = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, registry);
+    conn.send(WL_DISPLAY, WL_DISPLAY_GET_REGISTRY, &a)
+        .map_err(os)?;
+    let sync_cb = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, sync_cb);
+    conn.send(WL_DISPLAY, WL_DISPLAY_SYNC, &a).map_err(os)?;
+
+    // Collect globals until the sync callback fires.
+    let mut compositor_name = None;
+    let mut shm_name = None;
+    let mut wm_base_name = None;
+    loop {
+        let (object, opcode, args) = conn.recv().map_err(os)?;
+        if object == registry && opcode == WL_REGISTRY_GLOBAL {
+            let name = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            if let Some((iface, _)) = read_str(&args, 4) {
+                match iface.as_str() {
+                    "wl_compositor" => compositor_name = Some(name),
+                    "wl_shm" => shm_name = Some(name),
+                    "xdg_wm_base" => wm_base_name = Some(name),
+                    _ => {}
+                }
+            }
+        } else if object == sync_cb && opcode == WL_CALLBACK_DONE {
+            break;
+        } else if object == WL_DISPLAY && opcode == WL_DISPLAY_ERROR {
+            return Err(PlatformError::Os("wl_display error during setup".into()));
+        }
+    }
+
+    let bind = |conn: &mut WlConn, name: u32, iface: &str, version: u32| -> u32 {
+        let id = conn.new_id();
+        let mut a = Vec::new();
+        arg_u32(&mut a, name);
+        arg_str(&mut a, iface);
+        arg_u32(&mut a, version);
+        arg_u32(&mut a, id);
+        let _ = conn.send(registry, WL_REGISTRY_BIND, &a);
+        id
+    };
+    let compositor = bind(
+        &mut conn,
+        compositor_name.ok_or_else(|| PlatformError::Os("no wl_compositor".into()))?,
+        "wl_compositor",
+        4,
+    );
+    let shm = bind(
+        &mut conn,
+        shm_name.ok_or_else(|| PlatformError::Os("no wl_shm".into()))?,
+        "wl_shm",
+        1,
+    );
+    let wm_base = bind(
+        &mut conn,
+        wm_base_name.ok_or_else(|| PlatformError::Os("no xdg_wm_base".into()))?,
+        "xdg_wm_base",
+        1,
+    );
+
+    // Surface → xdg_surface → xdg_toplevel.
+    let surface = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, surface);
+    conn.send(compositor, WL_COMPOSITOR_CREATE_SURFACE, &a)
+        .map_err(os)?;
+
+    let xdg_surface = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, xdg_surface);
+    arg_u32(&mut a, surface);
+    conn.send(wm_base, XDG_WM_BASE_GET_XDG_SURFACE, &a)
+        .map_err(os)?;
+
+    let toplevel = conn.new_id();
+    let mut a = Vec::new();
+    arg_u32(&mut a, toplevel);
+    conn.send(xdg_surface, XDG_SURFACE_GET_TOPLEVEL, &a)
+        .map_err(os)?;
+
+    let mut a = Vec::new();
+    arg_str(&mut a, &attrs.title);
+    conn.send(toplevel, XDG_TOPLEVEL_SET_TITLE, &a)
+        .map_err(os)?;
+
+    // Initial commit: the compositor responds with an xdg_surface.configure.
+    conn.send(surface, WL_SURFACE_COMMIT, &[]).map_err(os)?;
+    conn.stream.flush().map_err(os)?;
+    dbg(format_args!(
+        "window: surface={surface} xdg={xdg_surface} toplevel={toplevel} size={}x{}",
+        size.width, size.height
+    ));
+
+    let shared: Shared = Arc::new(Mutex::new(conn));
+    let win = WaylandWindow {
+        conn: shared.clone(),
+        surface,
+        shm,
+        size,
+    };
+
+    // Event loop.
+    loop {
+        let (object, opcode, args) = {
+            let mut conn = shared.lock().unwrap();
+            conn.recv().map_err(os)?
+        };
+        if object == wm_base && opcode == XDG_WM_BASE_PING {
+            let serial = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            let mut a = Vec::new();
+            arg_u32(&mut a, serial);
+            let mut conn = shared.lock().unwrap();
+            let _ = conn.send(wm_base, XDG_WM_BASE_PONG, &a);
+            let _ = conn.stream.flush();
+        } else if object == xdg_surface && opcode == XDG_SURFACE_CONFIGURE {
+            let serial = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            {
+                let mut conn = shared.lock().unwrap();
+                let mut a = Vec::new();
+                arg_u32(&mut a, serial);
+                let _ = conn.send(xdg_surface, XDG_SURFACE_ACK_CONFIGURE, &a);
+            }
+            // Paint the frame for this configure.
+            if handler(Event::RedrawRequested, &win) == ControlFlow::Exit {
+                break;
+            }
+        } else if object == toplevel && opcode == XDG_TOPLEVEL_CONFIGURE {
+            // width, height, states[]: a 0 size means "client picks".
+            let w = i32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            let h = i32::from_le_bytes([args[4], args[5], args[6], args[7]]);
+            dbg(format_args!("toplevel configure {w}x{h}"));
+        } else if object == toplevel && opcode == XDG_TOPLEVEL_CLOSE {
+            handler(Event::CloseRequested, &win);
+            break;
+        } else if object == WL_DISPLAY && opcode == WL_DISPLAY_ERROR {
+            return Err(PlatformError::Os("wl_display error".into()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Decode a message header `[object][size<<16|opcode]` as the wire encodes it.
+    fn decode_header(msg: &[u8]) -> (u32, u32, u16) {
+        let object = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]);
+        let word = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]);
+        (object, word >> 16, (word & 0xffff) as u16)
+    }
+
+    #[test]
+    fn message_header_packs_size_and_opcode() {
+        // get_registry(new_id=2): one u32 arg → size 12, opcode 1 on object 1.
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&WL_DISPLAY.to_le_bytes());
+        let mut args = Vec::new();
+        arg_u32(&mut args, 2);
+        let size = (8 + args.len()) as u32;
+        msg.extend_from_slice(&((size << 16) | WL_DISPLAY_GET_REGISTRY as u32).to_le_bytes());
+        msg.extend_from_slice(&args);
+        let (object, sz, opcode) = decode_header(&msg);
+        assert_eq!((object, sz, opcode), (1, 12, 1));
+        assert_eq!(msg.len(), 12);
+    }
+
+    #[test]
+    fn string_arg_pads_to_four_bytes() {
+        let mut buf = Vec::new();
+        arg_str(&mut buf, "wl_shm"); // len 6 + NUL = 7 → padded to 8 bytes of text
+        // 4 (length) + 8 (padded "wl_shm\0") = 12 bytes, length field = 7.
+        assert_eq!(buf.len(), 12);
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 7);
+        assert!(buf.len().is_multiple_of(4));
+        // Round-trips through read_str, leaving the offset at the padded end.
+        let (s, next) = read_str(&buf, 0).unwrap();
+        assert_eq!(s, "wl_shm");
+        assert_eq!(next, 12);
+    }
+
+    #[test]
+    fn read_str_parses_a_registry_global() {
+        // name(uint) + interface(string) + version(uint), as wl_registry.global.
+        let mut args = Vec::new();
+        arg_u32(&mut args, 42);
+        arg_str(&mut args, "xdg_wm_base");
+        arg_u32(&mut args, 3);
+        let name = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+        let (iface, next) = read_str(&args, 4).unwrap();
+        let version =
+            u32::from_le_bytes([args[next], args[next + 1], args[next + 2], args[next + 3]]);
+        assert_eq!((name, iface.as_str(), version), (42, "xdg_wm_base", 3));
+    }
+
+    #[test]
+    fn xrgb_swizzle_drops_alpha() {
+        let mut dst = [0u8; 8];
+        rgba_to_xrgb(&[10, 20, 30, 255, 1, 2, 3, 128], &mut dst);
+        assert_eq!(dst, [30, 20, 10, 0, 3, 2, 1, 0]);
+    }
+}

@@ -25,6 +25,9 @@ use crate::window::{Window, WindowAttributes};
 pub mod headless;
 
 #[cfg(target_os = "linux")]
+pub mod wayland;
+
+#[cfg(target_os = "linux")]
 pub mod x11;
 
 #[cfg(target_os = "windows")]
@@ -44,6 +47,17 @@ where
 {
     #[cfg(target_os = "linux")]
     {
+        // Wayland is preferred; fall back to X11, then headless.
+        if wayland::available() {
+            match wayland::run(attrs.clone(), &mut handler) {
+                Ok(()) => return,
+                Err(err) => {
+                    eprintln!(
+                        "forma: Wayland backend unavailable ({err}); falling back to X11/headless"
+                    );
+                }
+            }
+        }
         if x11::available() {
             match x11::run(attrs.clone(), &mut handler) {
                 Ok(()) => return,
