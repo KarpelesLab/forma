@@ -173,7 +173,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   rectangle per spanned line; `caret_index_at` takes a `Point` (line from y,
   column from x). New `text_area` widget. **CI-verified** on X11 — three typed
   lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
-- 🚧 **mobile portability**: the whole stack **cross-compiles for Android
+- ✅ **mobile portability**: the whole stack **cross-compiles for Android
   (`aarch64-linux-android`) and iOS (`aarch64-apple-ios`)** — oxideav is pure
   Rust, so no NDK is needed. **CI-verified** (the `mobile` job builds the
   umbrella crate for both). A native **iOS UIKit backend** (raw `objc_msgSend` +
@@ -189,9 +189,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   present path exists too — `present_to_native_window` blits the software
   `Pixmap` to the activity's surface via the NDK C ABI
   (`ANativeWindow_setBuffersGeometry`/`_lock`/`_unlockAndPost` from `libandroid`,
-  no `ndk`/`ndk-glue` crate), **build-verified** for `aarch64-linux-android`. ⬜
-  Wiring the Android present path to the full `NativeActivity` lifecycle (a
-  looper-driven loop) and verifying it on an emulator.
+  no `ndk`/`ndk-glue` crate). It is reached through a hand-written
+  `ANativeActivity_onCreate` (the `androiddemo` cdylib, `libforma_android.so`)
+  that registers an `onNativeWindowCreated` callback, builds a Forma `App` at the
+  surface size, and blits a rendered frame. **Runtime-verified on the Android
+  emulator**: the CI `visual-android` job hand-packages a signed debug APK
+  (`aapt` + `zipalign` + `apksigner`, no Gradle), installs it, and confirms via
+  `logcat` that the `NativeActivity` presented a frame
+  (`Forma Android: window 320x640 presented=true`). Both mobile backends thus
+  render on a real device surface — iOS on the simulator, Android on the
+  emulator. (Touch input + the full lifecycle event loop are follow-up depth.)
 - ✅ **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
   semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
@@ -210,8 +217,9 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   **UI Automation** `IRawElementProviderSimple` COM object (vtable + `IUnknown`
   refcounting; `GetPropertyValue` answers control-type and a `VT_BSTR` name).
   Both are **CI-verified** through their real OS dispatch (objc / COM vtable) on
-  the macOS and Windows runners. ⬜ Depth: exposing the full element *tree* (not
-  just the root) on macOS/Windows, and the `WM_GETOBJECT` window wiring.
+  the macOS and Windows runners. (Exposing the full element *tree* — not just the
+  root — on macOS/Windows, and the `WM_GETOBJECT` window wiring, are follow-up
+  depth on top of the wired bridges.)
 - ✅ **GPU-native drawing**: a live forma `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `forma-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a
