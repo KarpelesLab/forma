@@ -94,14 +94,25 @@ impl Font {
         self.chain.primary().line_height_px(size_px as f32) as f64
     }
 
-    /// Measure the rendered size of `text` on a single line at `size_px`:
-    /// summed advance width × line height.
-    pub fn measure(&self, text: &str, size_px: f64) -> Size {
-        let width: f32 = match self.chain.shape(text, size_px as f32) {
-            Ok(glyphs) => glyphs.iter().map(|g| g.x_advance).sum(),
+    /// Summed advance width of a single line (no newlines) at `size_px`.
+    fn line_width(&self, line: &str, size_px: f64) -> f64 {
+        match self.chain.shape(line, size_px as f32) {
+            Ok(glyphs) => glyphs.iter().map(|g| g.x_advance).sum::<f32>() as f64,
             Err(_) => 0.0,
-        };
-        Size::new(width as f64, self.line_height(size_px))
+        }
+    }
+
+    /// Measure the rendered size of `text` at `size_px`: the widest line's
+    /// advance width × the number of newline-separated lines times line height.
+    /// A trailing newline counts as an extra (empty) line.
+    pub fn measure(&self, text: &str, size_px: f64) -> Size {
+        let mut max_w: f64 = 0.0;
+        let mut lines = 0usize;
+        for line in text.split('\n') {
+            lines += 1;
+            max_w = max_w.max(self.line_width(line, size_px));
+        }
+        Size::new(max_w, self.line_height(size_px) * lines as f64)
     }
 
     pub(crate) fn chain(&self) -> &FaceChain {
@@ -141,7 +152,8 @@ fn recolor(node: Node, color: Color) -> Node {
 
 impl Scene {
     /// Shape and paint `text` with `font` at `origin` (the top-left of the text
-    /// box, logical pixels), `size_px`, and `color`.
+    /// box, logical pixels), `size_px`, and `color`. Newlines (`\n`) start a new
+    /// line, each dropped by one `line_height` from the last.
     ///
     /// Glyphs are emitted as scene-graph nodes under a group translated to the
     /// baseline, so they rasterize and composite like any other primitive.
@@ -156,26 +168,31 @@ impl Scene {
         if text.is_empty() || size_px <= 0.0 {
             return;
         }
-        let glyphs = Shaper::shape_to_paths(font.chain(), text, size_px as f32);
-        if glyphs.is_empty() {
-            return;
+        let line_height = font.line_height(size_px);
+        let ascent = font.ascent(size_px);
+        for (i, line) in text.split('\n').enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let glyphs = Shaper::shape_to_paths(font.chain(), line, size_px as f32);
+            if glyphs.is_empty() {
+                continue;
+            }
+            let mut run = Vec::with_capacity(glyphs.len());
+            for (_face_idx, node, transform) in glyphs {
+                let glyph = Group::new()
+                    .with_transform(transform)
+                    .with_child(recolor(node, color));
+                run.push(Node::Group(glyph));
+            }
+            // Pen starts at origin.x; the baseline drops by the ascent plus this
+            // line's offset so the text box top aligns to origin.y.
+            let baseline = (origin.y + i as f64 * line_height + ascent) as f32;
+            let placed = Group::new()
+                .with_transform(Transform2D::translate(origin.x as f32, baseline))
+                .with_children(run);
+            self.push_node(Node::Group(placed));
         }
-
-        let mut run = Vec::with_capacity(glyphs.len());
-        for (_face_idx, node, transform) in glyphs {
-            let glyph = Group::new()
-                .with_transform(transform)
-                .with_child(recolor(node, color));
-            run.push(Node::Group(glyph));
-        }
-
-        // Place the whole run: pen starts at origin.x, baseline drops by the
-        // ascent so the text box top aligns to origin.y.
-        let baseline = (origin.y + font.ascent(size_px)) as f32;
-        let placed = Group::new()
-            .with_transform(Transform2D::translate(origin.x as f32, baseline))
-            .with_children(run);
-        self.push_node(Node::Group(placed));
     }
 }
 
@@ -195,6 +212,23 @@ mod tests {
         let long = font.measure("internationalization", 16.0);
         assert!(long.width > short.width);
         assert!(short.height > 0.0);
+    }
+
+    #[test]
+    fn measure_counts_newline_separated_lines() {
+        let Some(font) = Font::system_default() else {
+            eprintln!("skipping: no system font found");
+            return;
+        };
+        let one = font.measure("Hello", 16.0);
+        let two = font.measure("Hello\nWorld!", 16.0);
+        // Two lines are about twice as tall as one (within rounding).
+        assert!((two.height - 2.0 * one.height).abs() < 1.0);
+        // Width is the widest line ("World!" > "Hello").
+        assert!(two.width >= one.width);
+        // A trailing newline adds an (empty) third line of height.
+        let trailing = font.measure("Hello\nWorld!\n", 16.0);
+        assert!((trailing.height - 3.0 * one.height).abs() < 1.0);
     }
 
     #[test]
