@@ -429,6 +429,8 @@ jobs:
           # create a logical device + graphics queue.
           grep -q "Vulkan devices:" gpudemo.log
           grep -q "Vulkan init: logical device" gpudemo.log
+          # ...and allocate a DEVICE_LOCAL color image (offscreen render target).
+          grep -q "Vulkan image: .* color image bound" gpudemo.log
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4

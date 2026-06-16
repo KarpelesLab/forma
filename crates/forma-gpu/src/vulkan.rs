@@ -23,9 +23,24 @@ const VK_STRUCTURE_TYPE_APPLICATION_INFO: i32 = 0;
 const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: i32 = 1;
 const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: i32 = 2;
 const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: i32 = 3;
+const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: i32 = 5;
+const VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO: i32 = 14;
 const VK_QUEUE_GRAPHICS_BIT: u32 = 0x1;
 // VkQueueFamilyProperties is 24 bytes; queueFlags is its first u32.
 const QUEUE_FAMILY_PROPS_SIZE: usize = 24;
+const VK_FORMAT_R8G8B8A8_UNORM: u32 = 37;
+const VK_IMAGE_TYPE_2D: u32 = 1;
+const VK_IMAGE_TILING_OPTIMAL: u32 = 0;
+const VK_IMAGE_USAGE_TRANSFER_SRC_BIT: u32 = 0x1;
+const VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: u32 = 0x10;
+const VK_SHARING_MODE_EXCLUSIVE: u32 = 0;
+const VK_IMAGE_LAYOUT_UNDEFINED: u32 = 0;
+const VK_SAMPLE_COUNT_1_BIT: u32 = 1;
+const VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT: u32 = 0x1;
+// VkPhysicalDeviceMemoryProperties: memoryTypeCount (u32) then memoryTypes[32]
+// of VkMemoryType { propertyFlags: u32, heapIndex: u32 } (8 bytes each).
+const MEM_TYPES_OFFSET: usize = 4;
+const MEM_TYPE_STRIDE: usize = 8;
 // VK_API_VERSION_1_0 = VK_MAKE_API_VERSION(0, 1, 0, 0) = 1 << 22.
 const VK_API_VERSION_1_0: u32 = 1 << 22;
 // VkPhysicalDeviceProperties.deviceName follows five u32 fields (apiVersion,
@@ -80,6 +95,50 @@ struct VkDeviceCreateInfo {
     pEnabledFeatures: *const c_void,
 }
 
+type VkImage = u64;
+type VkDeviceMemory = u64;
+
+#[repr(C)]
+struct VkExtent3D {
+    width: u32,
+    height: u32,
+    depth: u32,
+}
+
+#[repr(C)]
+struct VkImageCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    imageType: u32,
+    format: u32,
+    extent: VkExtent3D,
+    mipLevels: u32,
+    arrayLayers: u32,
+    samples: u32,
+    tiling: u32,
+    usage: u32,
+    sharingMode: u32,
+    queueFamilyIndexCount: u32,
+    pQueueFamilyIndices: *const u32,
+    initialLayout: u32,
+}
+
+#[repr(C)]
+struct VkMemoryRequirements {
+    size: u64,
+    alignment: u64,
+    memoryTypeBits: u32,
+}
+
+#[repr(C)]
+struct VkMemoryAllocateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    allocationSize: u64,
+    memoryTypeIndex: u32,
+}
+
 #[link(name = "vulkan")]
 unsafe extern "C" {
     fn vkCreateInstance(
@@ -114,6 +173,37 @@ unsafe extern "C" {
         queueIndex: u32,
         pQueue: *mut VkQueue,
     );
+    fn vkCreateImage(
+        device: VkDevice,
+        pCreateInfo: *const VkImageCreateInfo,
+        pAllocator: *const c_void,
+        pImage: *mut VkImage,
+    ) -> VkResult;
+    fn vkDestroyImage(device: VkDevice, image: VkImage, pAllocator: *const c_void);
+    fn vkGetImageMemoryRequirements(
+        device: VkDevice,
+        image: VkImage,
+        pMemoryRequirements: *mut VkMemoryRequirements,
+    );
+    // Writes a VkPhysicalDeviceMemoryProperties (~520 bytes); we hand it a
+    // generous byte buffer and read the memoryType property flags out of it.
+    fn vkGetPhysicalDeviceMemoryProperties(
+        physicalDevice: VkPhysicalDevice,
+        pMemoryProperties: *mut c_void,
+    );
+    fn vkAllocateMemory(
+        device: VkDevice,
+        pAllocateInfo: *const VkMemoryAllocateInfo,
+        pAllocator: *const c_void,
+        pMemory: *mut VkDeviceMemory,
+    ) -> VkResult;
+    fn vkFreeMemory(device: VkDevice, memory: VkDeviceMemory, pAllocator: *const c_void);
+    fn vkBindImageMemory(
+        device: VkDevice,
+        image: VkImage,
+        memory: VkDeviceMemory,
+        memoryOffset: u64,
+    ) -> VkResult;
 }
 
 /// Create a Vulkan instance and return the name of each physical device the
@@ -169,110 +259,243 @@ pub fn devices() -> Result<Vec<String>, String> {
     }
 }
 
+/// A live Vulkan instance + logical device on the first physical device, with a
+/// graphics queue family selected. Owns the raw handles; callers destroy them
+/// via [`Gpu::destroy`] once done (we keep this manual rather than wiring `Drop`,
+/// to keep the FFI surface explicit).
+struct Gpu {
+    instance: VkInstance,
+    phys: VkPhysicalDevice,
+    device: VkDevice,
+    family: u32,
+}
+
+impl Gpu {
+    /// Create an instance, pick the first physical device, find a graphics queue
+    /// family, and create a logical device with one queue from it.
+    unsafe fn create() -> Result<Gpu, String> {
+        unsafe {
+            let app = VkApplicationInfo {
+                sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                pNext: core::ptr::null(),
+                pApplicationName: c"forma".as_ptr(),
+                applicationVersion: 0,
+                pEngineName: c"forma".as_ptr(),
+                engineVersion: 0,
+                apiVersion: VK_API_VERSION_1_0,
+            };
+            let create = VkInstanceCreateInfo {
+                sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                pApplicationInfo: &app,
+                enabledLayerCount: 0,
+                ppEnabledLayerNames: core::ptr::null(),
+                enabledExtensionCount: 0,
+                ppEnabledExtensionNames: core::ptr::null(),
+            };
+            let mut instance: VkInstance = core::ptr::null_mut();
+            if vkCreateInstance(&create, core::ptr::null(), &mut instance) != VK_SUCCESS {
+                return Err("vkCreateInstance failed".into());
+            }
+
+            let mut count: u32 = 0;
+            vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut());
+            if count == 0 {
+                vkDestroyInstance(instance, core::ptr::null());
+                return Err("no Vulkan physical devices".into());
+            }
+            let mut handles: Vec<VkPhysicalDevice> = vec![core::ptr::null_mut(); count as usize];
+            vkEnumeratePhysicalDevices(instance, &mut count, handles.as_mut_ptr());
+            let phys = handles[0];
+
+            // Find a queue family that supports graphics.
+            let mut qcount: u32 = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(phys, &mut qcount, core::ptr::null_mut());
+            let mut qbuf = vec![0u8; qcount as usize * QUEUE_FAMILY_PROPS_SIZE];
+            vkGetPhysicalDeviceQueueFamilyProperties(
+                phys,
+                &mut qcount,
+                qbuf.as_mut_ptr() as *mut c_void,
+            );
+            let mut family: Option<u32> = None;
+            for i in 0..qcount as usize {
+                let off = i * QUEUE_FAMILY_PROPS_SIZE;
+                let flags =
+                    u32::from_ne_bytes([qbuf[off], qbuf[off + 1], qbuf[off + 2], qbuf[off + 3]]);
+                if flags & VK_QUEUE_GRAPHICS_BIT != 0 {
+                    family = Some(i as u32);
+                    break;
+                }
+            }
+            let Some(family) = family else {
+                vkDestroyInstance(instance, core::ptr::null());
+                return Err("no graphics queue family".into());
+            };
+
+            // Create a logical device with one queue from that family.
+            let priority: f32 = 1.0;
+            let qci = VkDeviceQueueCreateInfo {
+                sType: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                queueFamilyIndex: family,
+                queueCount: 1,
+                pQueuePriorities: &priority,
+            };
+            let dci = VkDeviceCreateInfo {
+                sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                queueCreateInfoCount: 1,
+                pQueueCreateInfos: &qci,
+                enabledLayerCount: 0,
+                ppEnabledLayerNames: core::ptr::null(),
+                enabledExtensionCount: 0,
+                ppEnabledExtensionNames: core::ptr::null(),
+                pEnabledFeatures: core::ptr::null(),
+            };
+            let mut device: VkDevice = core::ptr::null_mut();
+            if vkCreateDevice(phys, &dci, core::ptr::null(), &mut device) != VK_SUCCESS {
+                vkDestroyInstance(instance, core::ptr::null());
+                return Err("vkCreateDevice failed".into());
+            }
+            Ok(Gpu {
+                instance,
+                phys,
+                device,
+                family,
+            })
+        }
+    }
+
+    unsafe fn destroy(self) {
+        unsafe {
+            vkDestroyDevice(self.device, core::ptr::null());
+            vkDestroyInstance(self.instance, core::ptr::null());
+        }
+    }
+}
+
 /// Create an instance, pick the first physical device, select a graphics queue
 /// family, and create a logical device with that queue — the core a Vulkan
 /// render backend builds on. Returns a one-line summary. Errors if any step
 /// fails or no graphics-capable device exists.
 pub fn init_device() -> Result<String, String> {
     unsafe {
-        let app = VkApplicationInfo {
-            sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
-            pNext: core::ptr::null(),
-            pApplicationName: c"forma".as_ptr(),
-            applicationVersion: 0,
-            pEngineName: c"forma".as_ptr(),
-            engineVersion: 0,
-            apiVersion: VK_API_VERSION_1_0,
-        };
-        let create = VkInstanceCreateInfo {
-            sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            pNext: core::ptr::null(),
-            flags: 0,
-            pApplicationInfo: &app,
-            enabledLayerCount: 0,
-            ppEnabledLayerNames: core::ptr::null(),
-            enabledExtensionCount: 0,
-            ppEnabledExtensionNames: core::ptr::null(),
-        };
-        let mut instance: VkInstance = core::ptr::null_mut();
-        if vkCreateInstance(&create, core::ptr::null(), &mut instance) != VK_SUCCESS {
-            return Err("vkCreateInstance failed".into());
-        }
-
-        let mut count: u32 = 0;
-        vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut());
-        if count == 0 {
-            vkDestroyInstance(instance, core::ptr::null());
-            return Err("no Vulkan physical devices".into());
-        }
-        let mut handles: Vec<VkPhysicalDevice> = vec![core::ptr::null_mut(); count as usize];
-        vkEnumeratePhysicalDevices(instance, &mut count, handles.as_mut_ptr());
-        let phys = handles[0];
-
-        // Find a queue family that supports graphics.
-        let mut qcount: u32 = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(phys, &mut qcount, core::ptr::null_mut());
-        let mut qbuf = vec![0u8; qcount as usize * QUEUE_FAMILY_PROPS_SIZE];
-        vkGetPhysicalDeviceQueueFamilyProperties(
-            phys,
-            &mut qcount,
-            qbuf.as_mut_ptr() as *mut c_void,
-        );
-        let mut family: Option<u32> = None;
-        for i in 0..qcount as usize {
-            let off = i * QUEUE_FAMILY_PROPS_SIZE;
-            let flags =
-                u32::from_ne_bytes([qbuf[off], qbuf[off + 1], qbuf[off + 2], qbuf[off + 3]]);
-            if flags & VK_QUEUE_GRAPHICS_BIT != 0 {
-                family = Some(i as u32);
-                break;
-            }
-        }
-        let Some(family) = family else {
-            vkDestroyInstance(instance, core::ptr::null());
-            return Err("no graphics queue family".into());
-        };
-
-        // Create a logical device with one queue from that family.
-        let priority: f32 = 1.0;
-        let qci = VkDeviceQueueCreateInfo {
-            sType: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            pNext: core::ptr::null(),
-            flags: 0,
-            queueFamilyIndex: family,
-            queueCount: 1,
-            pQueuePriorities: &priority,
-        };
-        let dci = VkDeviceCreateInfo {
-            sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            pNext: core::ptr::null(),
-            flags: 0,
-            queueCreateInfoCount: 1,
-            pQueueCreateInfos: &qci,
-            enabledLayerCount: 0,
-            ppEnabledLayerNames: core::ptr::null(),
-            enabledExtensionCount: 0,
-            ppEnabledExtensionNames: core::ptr::null(),
-            pEnabledFeatures: core::ptr::null(),
-        };
-        let mut device: VkDevice = core::ptr::null_mut();
-        if vkCreateDevice(phys, &dci, core::ptr::null(), &mut device) != VK_SUCCESS {
-            vkDestroyInstance(instance, core::ptr::null());
-            return Err("vkCreateDevice failed".into());
-        }
+        let gpu = Gpu::create()?;
         let mut queue: VkQueue = core::ptr::null_mut();
-        vkGetDeviceQueue(device, family, 0, &mut queue);
+        vkGetDeviceQueue(gpu.device, gpu.family, 0, &mut queue);
         let ok = !queue.is_null();
-
-        vkDestroyDevice(device, core::ptr::null());
-        vkDestroyInstance(instance, core::ptr::null());
-
+        let family = gpu.family;
+        gpu.destroy();
         if ok {
             Ok(format!(
                 "logical device + graphics queue (family {family}) created"
             ))
         } else {
             Err("vkGetDeviceQueue returned null".into())
+        }
+    }
+}
+
+/// Allocate a GPU-resident render target: create a `width`×`height`
+/// `R8G8B8A8_UNORM` color-attachment [`VkImage`], query its memory
+/// requirements, choose a `DEVICE_LOCAL` memory type, and back it with a
+/// [`VkDeviceMemory`] allocation — the offscreen target a Vulkan render pass
+/// draws into. Returns a one-line summary (size + chosen memory type). Errors if
+/// any step fails.
+pub fn init_image(width: u32, height: u32) -> Result<String, String> {
+    unsafe {
+        let gpu = Gpu::create()?;
+
+        let ici = VkImageCreateInfo {
+            sType: VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            imageType: VK_IMAGE_TYPE_2D,
+            format: VK_FORMAT_R8G8B8A8_UNORM,
+            extent: VkExtent3D {
+                width,
+                height,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: VK_SAMPLE_COUNT_1_BIT,
+            tiling: VK_IMAGE_TILING_OPTIMAL,
+            usage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            sharingMode: VK_SHARING_MODE_EXCLUSIVE,
+            queueFamilyIndexCount: 0,
+            pQueueFamilyIndices: core::ptr::null(),
+            initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        let mut image: VkImage = 0;
+        if vkCreateImage(gpu.device, &ici, core::ptr::null(), &mut image) != VK_SUCCESS {
+            gpu.destroy();
+            return Err("vkCreateImage failed".into());
+        }
+
+        let mut req = VkMemoryRequirements {
+            size: 0,
+            alignment: 0,
+            memoryTypeBits: 0,
+        };
+        vkGetImageMemoryRequirements(gpu.device, image, &mut req);
+
+        // Read the device's memory types and pick the first DEVICE_LOCAL one
+        // permitted by the image's memoryTypeBits mask.
+        let mut memprops = vec![0u8; 1024];
+        vkGetPhysicalDeviceMemoryProperties(gpu.phys, memprops.as_mut_ptr() as *mut c_void);
+        let type_count = u32::from_ne_bytes([memprops[0], memprops[1], memprops[2], memprops[3]]);
+        let mut chosen: Option<u32> = None;
+        for i in 0..type_count as usize {
+            if req.memoryTypeBits & (1 << i) == 0 {
+                continue;
+            }
+            let off = MEM_TYPES_OFFSET + i * MEM_TYPE_STRIDE;
+            let flags = u32::from_ne_bytes([
+                memprops[off],
+                memprops[off + 1],
+                memprops[off + 2],
+                memprops[off + 3],
+            ]);
+            if flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT != 0 {
+                chosen = Some(i as u32);
+                break;
+            }
+        }
+        let Some(mem_type) = chosen else {
+            vkDestroyImage(gpu.device, image, core::ptr::null());
+            gpu.destroy();
+            return Err("no DEVICE_LOCAL memory type for the image".into());
+        };
+
+        let mai = VkMemoryAllocateInfo {
+            sType: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            pNext: core::ptr::null(),
+            allocationSize: req.size,
+            memoryTypeIndex: mem_type,
+        };
+        let mut memory: VkDeviceMemory = 0;
+        if vkAllocateMemory(gpu.device, &mai, core::ptr::null(), &mut memory) != VK_SUCCESS {
+            vkDestroyImage(gpu.device, image, core::ptr::null());
+            gpu.destroy();
+            return Err("vkAllocateMemory failed".into());
+        }
+        let bound = vkBindImageMemory(gpu.device, image, memory, 0) == VK_SUCCESS;
+
+        let bytes = req.size;
+        vkFreeMemory(gpu.device, memory, core::ptr::null());
+        vkDestroyImage(gpu.device, image, core::ptr::null());
+        gpu.destroy();
+
+        if bound {
+            Ok(format!(
+                "{width}x{height} color image bound to {bytes}B of DEVICE_LOCAL memory (type {mem_type})"
+            ))
+        } else {
+            Err("vkBindImageMemory failed".into())
         }
     }
 }

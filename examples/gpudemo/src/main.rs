@@ -153,4 +153,8 @@ fn main() {
         Ok(summary) => println!("Vulkan init: {summary}"),
         Err(e) => println!("Vulkan init unavailable: {e}"),
     }
+    match forma_gpu::vulkan_init_image(W as u32, H as u32) {
+        Ok(summary) => println!("Vulkan image: {summary}"),
+        Err(e) => println!("Vulkan image unavailable: {e}"),
+    }
 }

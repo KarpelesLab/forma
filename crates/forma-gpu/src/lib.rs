@@ -52,6 +52,22 @@ pub fn vulkan_init_device() -> Result<String, String> {
     }
 }
 
+/// Allocate a `width`×`height` `R8G8B8A8` color-attachment Vulkan image backed by
+/// `DEVICE_LOCAL` device memory (raw FFI) — the offscreen render target a Vulkan
+/// render pass draws into. Returns a one-line summary. Errors if the `vk` feature
+/// is off or allocation fails.
+pub fn vulkan_init_image(width: u32, height: u32) -> Result<String, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::init_image(width, height)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.
