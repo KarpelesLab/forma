@@ -173,6 +173,7 @@ mod tests {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             children,
         }
     }
@@ -191,6 +192,7 @@ mod tests {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             children: Vec::new(),
         }
     }

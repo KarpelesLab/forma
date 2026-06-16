@@ -39,8 +39,9 @@ pub use forma_style as style;
 pub use forma_widgets as widgets;
 
 use forma_core::{
-    ActionId, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode,
-    collect_focusables, drag_at, focus_at, hit_test, layout, paint, paint_focus, paint_hover,
+    ActionId, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode, TextPosId,
+    caret_index_at, collect_focusables, drag_at, find_text_pos, focus_at, hit_test, layout, paint,
+    paint_focus, paint_hover, text_pos_at,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{
@@ -77,6 +78,8 @@ where
     focused: Option<FocusId>,
     hovered: Option<ActionId>,
     dragging: Option<(DragId, Rect)>,
+    // The text element currently being selected by a pointer drag.
+    text_selecting: Option<TextPosId>,
     // Set when state/focus/hover changed so the next build rebuilds the tree.
     dirty: bool,
     // The tree + overlay state that is currently on screen, used as the diff
@@ -120,6 +123,7 @@ where
             focused: None,
             hovered: None,
             dragging: None,
+            text_selecting: None,
             dirty: true,
             presented: None,
             painted_hovered: None,
@@ -355,6 +359,61 @@ where
         self.dragging = None;
     }
 
+    /// Begin a pointer text interaction at `pos` (logical pixels): if an editable
+    /// text element is under the cursor, focus it, resolve the caret byte index
+    /// from the pointer x, place the caret there (clearing any selection), and
+    /// latch a drag-selection. Returns `true` if a text element was hit.
+    pub fn text_press_at(&mut self, pos: Point) -> bool {
+        self.ensure_tree();
+        let font = self.font.as_ref();
+        let Some((id, index, foc)) = self.tree.as_ref().and_then(|t| {
+            let (id, node) = text_pos_at(t, pos)?;
+            let index = caret_index_at(node, pos.x, font)?;
+            Some((id, index, focus_at(t, pos)))
+        }) else {
+            return false;
+        };
+        if foc != self.focused {
+            self.focused = foc;
+        }
+        self.text_selecting = Some(id);
+        self.handlers
+            .dispatch_text_pos(id, index, false, &mut self.state);
+        self.dirty = true;
+        true
+    }
+
+    /// Continue a latched text drag-selection at `pos`: resolve the caret index
+    /// from the pointer x and extend the selection to it. Returns `true` if a
+    /// selection is active and was updated.
+    pub fn text_drag_at(&mut self, pos: Point) -> bool {
+        let Some(id) = self.text_selecting else {
+            return false;
+        };
+        self.ensure_tree();
+        let font = self.font.as_ref();
+        let Some(index) = self
+            .tree
+            .as_ref()
+            .and_then(|t| find_text_pos(t, id))
+            .and_then(|node| caret_index_at(node, pos.x, font))
+        else {
+            return false;
+        };
+        let ran = self
+            .handlers
+            .dispatch_text_pos(id, index, true, &mut self.state);
+        if ran {
+            self.dirty = true;
+        }
+        ran
+    }
+
+    /// End the current pointer text selection (pointer released).
+    pub fn end_text_select(&mut self) {
+        self.text_selecting = None;
+    }
+
     /// Update the hovered element to whatever tappable sits under `pos`.
     /// Returns `true` if the hovered element changed (the UI should repaint).
     pub fn hover_at(&mut self, pos: Point) -> bool {
@@ -417,14 +476,19 @@ where
                 ..
             } => {
                 self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
-                // Latch a drag if a draggable sits under the cursor.
-                if self.drag_at_point(position) {
+                // Editable text under the cursor starts a click/drag selection;
+                // otherwise latch a drag if a draggable sits there.
+                if self.text_press_at(position) || self.drag_at_point(position) {
                     present(&mut self, window, false);
                 }
                 ControlFlow::Wait
             }
             Event::PointerMoved { position } => {
-                if self.dragging.is_some() {
+                if self.text_selecting.is_some() {
+                    if self.text_drag_at(position) {
+                        present(&mut self, window, false);
+                    }
+                } else if self.dragging.is_some() {
                     if self.drag_at_point(position) {
                         present(&mut self, window, false);
                     }
@@ -438,7 +502,9 @@ where
                 position,
                 ..
             } => {
-                if self.dragging.is_some() {
+                if self.text_selecting.is_some() {
+                    self.end_text_select();
+                } else if self.dragging.is_some() {
                     self.end_drag();
                 } else {
                     let down = self.pressed.take();

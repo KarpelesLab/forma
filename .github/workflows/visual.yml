@@ -136,8 +136,13 @@ jobs:
           xdotool type --delay 80 "XY"
           sleep 2
           import -window root visual_output/text-typed.png
-          # Selection: go Home, Shift+End to select the whole line, screenshot
-          # the highlight behind the text.
+          # Pointer drag-selection: press inside the field near the text start and
+          # drag right to select the leading characters, then screenshot.
+          xdotool mousemove 46 90 mousedown 1; sleep 0.3
+          xdotool mousemove 96 90; sleep 0.3
+          xdotool mouseup 1; sleep 1
+          import -window root visual_output/text-dragselect.png
+          # Keyboard selection: Home, Shift+End to select the whole line.
           xdotool key Home; sleep 0.3
           xdotool key shift+End; sleep 1
           import -window root visual_output/text-selected.png

@@ -5,7 +5,7 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
-use crate::runtime::{ActionId, Cx, DragId, FocusId, KeyInput};
+use crate::runtime::{ActionId, Cx, DragId, FocusId, KeyInput, TextPosId};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -97,6 +97,9 @@ pub struct Element {
     /// editable text leaf. `None` when there is no selection. Set via
     /// [`Element::selection`]; the focus overlay highlights it.
     pub selection: Option<(usize, usize)>,
+    /// Text-pointer handle: pointer presses/drags on this element resolve to a
+    /// byte index in its text. Set via [`Element::on_text_pos`].
+    pub text_pos: Option<TextPosId>,
     pub kind: ElementKind,
 }
 
@@ -111,6 +114,7 @@ impl Element {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             kind: ElementKind::Leaf,
         }
     }
@@ -125,6 +129,7 @@ impl Element {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -143,6 +148,7 @@ impl Element {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -194,6 +200,19 @@ impl Element {
         handler: impl FnMut(&mut S, f64) + 'static,
     ) -> Self {
         self.drag = Some(cx.register_drag(handler));
+        self
+    }
+
+    /// Resolve pointer presses/drags on this element to a byte index in its
+    /// text. The `handler` receives the resolved index and an `extend` flag
+    /// (`false` = initial press / place caret, `true` = drag / extend
+    /// selection). Registers in `cx` and stamps the resulting [`TextPosId`].
+    pub fn on_text_pos<S>(
+        mut self,
+        cx: &mut Cx<'_, S>,
+        handler: impl FnMut(&mut S, usize, bool) + 'static,
+    ) -> Self {
+        self.text_pos = Some(cx.register_text_pos(handler));
         self
     }
 

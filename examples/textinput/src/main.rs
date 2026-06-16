@@ -15,11 +15,9 @@ struct Form {
 
 fn view(state: &Form, cx: &mut Cx<Form>) -> Element {
     let theme = *cx.theme();
-    let field = text_editor(cx, &theme, &state.buffer, |s: &mut Form, k| {
-        s.buffer.apply(k)
-    })
-    .width(560.0)
-    .height(64.0);
+    let field = text_editor(cx, &theme, &state.buffer, |s: &mut Form| &mut s.buffer)
+        .width(560.0)
+        .height(64.0);
     panel(
         &theme,
         vec![label(&theme, "Type here (Tab to focus):"), field],

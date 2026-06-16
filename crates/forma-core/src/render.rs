@@ -83,6 +83,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         drag: el.drag,
         caret: el.caret,
         selection: el.selection,
+        text_pos: el.text_pos,
         children: Vec::new(),
     };
 
@@ -200,6 +201,38 @@ pub fn paint_focus(
     scene.fill_rect(Rect::from_xywh(cx, bounds.min_y(), 2.0, h), caret);
 }
 
+/// Resolve a pointer x position (logical pixels, absolute) to the nearest caret
+/// byte index within `node`'s first text leaf. Walks char boundaries, measuring
+/// each prefix, and returns the boundary whose x is closest to `x`. Returns
+/// `None` if `node` has no text or no `font`. Single-line text only.
+pub fn caret_index_at(node: &LayoutNode, x: f64, font: Option<&Font>) -> Option<usize> {
+    let leaf = first_text(node)?;
+    let NodeContent::Text { text, size, .. } = &leaf.content else {
+        return None;
+    };
+    let font = font?;
+    let local = x - leaf.bounds.min_x();
+    if local <= 0.0 {
+        return Some(0);
+    }
+    // Evaluate every char boundary; pick the one nearest the pointer.
+    let mut best = 0usize;
+    let mut best_dist = f64::INFINITY;
+    for (i, _) in text
+        .char_indices()
+        .map(|(i, _)| (i, ()))
+        .chain(std::iter::once((text.len(), ())))
+    {
+        let w = font.measure(&text[..i], *size).width;
+        let d = (w - local).abs();
+        if d < best_dist {
+            best_dist = d;
+            best = i;
+        }
+    }
+    Some(best)
+}
+
 /// Overlay a `highlight` (typically translucent) on the hovered tappable
 /// element, matching its corner radius. No-op if `hovered` isn't in the tree.
 pub fn paint_hover(tree: &LayoutNode, hovered: ActionId, scene: &mut Scene, highlight: Color) {
@@ -277,6 +310,27 @@ mod tests {
         // main (vertical): 3*10 + 2*5 + 2*4 = 48; cross (width): 20 + 2*4 = 28
         let size = measure(&stack, Size::new(1000.0, 1000.0), None);
         assert_eq!(size, Size::new(28.0, 48.0));
+    }
+
+    #[test]
+    fn caret_index_at_resolves_pointer_to_byte_index() {
+        let Some(font) = Font::system_default() else {
+            eprintln!("skipping: no system font found");
+            return;
+        };
+        // A text leaf "hello" at x origin 10.
+        let el = Element::text("hello", 16.0, Color::BLACK);
+        let node = layout(&el, Rect::from_xywh(10.0, 0.0, 200.0, 20.0), Some(&font));
+        // Far left → index 0; far right → end (5).
+        assert_eq!(caret_index_at(&node, 0.0, Some(&font)), Some(0));
+        assert_eq!(caret_index_at(&node, 9.0, Some(&font)), Some(0));
+        assert_eq!(caret_index_at(&node, 10_000.0, Some(&font)), Some(5));
+        // A point near the middle lands on an interior boundary (1..=4).
+        let mid = node.bounds.min_x() + font.measure("hel", 16.0).width;
+        let i = caret_index_at(&node, mid, Some(&font)).unwrap();
+        assert!((1..=4).contains(&i), "mid index {i} out of range");
+        // Without a font, no resolution is possible.
+        assert_eq!(caret_index_at(&node, mid, None), None);
     }
 
     #[test]

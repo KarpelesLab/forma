@@ -25,6 +25,10 @@ type KeyFn<S> = Box<dyn FnMut(&mut S, &KeyInput)>;
 /// A boxed drag handler: receives the pointer position as a fraction (0..=1)
 /// along the element's width.
 type DragFn<S> = Box<dyn FnMut(&mut S, f64)>;
+/// A boxed text-pointer handler: receives a resolved byte index into the
+/// element's text and whether the gesture *extends* a selection (drag) or
+/// *places* the caret (initial press).
+type TextPosFn<S> = Box<dyn FnMut(&mut S, usize, bool)>;
 
 /// An opaque handle to a registered tap handler, stamped onto the element that
 /// owns it and resolved against the [`Cx`] tap table on dispatch.
@@ -38,6 +42,11 @@ pub struct FocusId(pub(crate) u32);
 /// An opaque handle to an element with a registered drag handler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DragId(pub(crate) u32);
+
+/// An opaque handle to an editable text element with a registered text-pointer
+/// handler (click-to-position / drag-to-select).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextPosId(pub(crate) u32);
 
 /// A platform-neutral keyboard input, delivered to the focused element. The
 /// app/platform layer translates raw key events into these.
@@ -74,6 +83,7 @@ pub struct Cx<'a, S> {
     taps: Vec<TapFn<S>>,
     keys: Vec<KeyFn<S>>,
     drags: Vec<DragFn<S>>,
+    text_pos: Vec<TextPosFn<S>>,
 }
 
 impl<'a, S> Cx<'a, S> {
@@ -84,6 +94,7 @@ impl<'a, S> Cx<'a, S> {
             taps: Vec::new(),
             keys: Vec::new(),
             drags: Vec::new(),
+            text_pos: Vec::new(),
         }
     }
 
@@ -115,12 +126,25 @@ impl<'a, S> Cx<'a, S> {
         id
     }
 
+    /// Register a text-pointer handler, returning its [`TextPosId`]. The handler
+    /// receives a resolved byte index into the element's text and an `extend`
+    /// flag (`false` = place caret, `true` = extend selection).
+    pub fn register_text_pos(
+        &mut self,
+        handler: impl FnMut(&mut S, usize, bool) + 'static,
+    ) -> TextPosId {
+        let id = TextPosId(self.text_pos.len() as u32);
+        self.text_pos.push(Box::new(handler));
+        id
+    }
+
     /// Consume the context, yielding the accumulated [`Handlers`] table.
     pub fn into_handlers(self) -> Handlers<S> {
         Handlers {
             taps: self.taps,
             keys: self.keys,
             drags: self.drags,
+            text_pos: self.text_pos,
         }
     }
 }
@@ -142,6 +166,7 @@ pub struct Handlers<S> {
     taps: Vec<TapFn<S>>,
     keys: Vec<KeyFn<S>>,
     drags: Vec<DragFn<S>>,
+    text_pos: Vec<TextPosFn<S>>,
 }
 
 impl<S> Handlers<S> {
@@ -177,13 +202,33 @@ impl<S> Handlers<S> {
         }
     }
 
-    /// Total number of registered handlers (taps + keys + drags).
+    /// Invoke the text-pointer handler for `id` with a resolved byte `index` and
+    /// the `extend` flag. Returns `true` if one existed and ran.
+    pub fn dispatch_text_pos(
+        &mut self,
+        id: TextPosId,
+        index: usize,
+        extend: bool,
+        state: &mut S,
+    ) -> bool {
+        if let Some(handler) = self.text_pos.get_mut(id.0 as usize) {
+            handler(state, index, extend);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Total number of registered handlers (taps + keys + drags + text-pointer).
     pub fn len(&self) -> usize {
-        self.taps.len() + self.keys.len() + self.drags.len()
+        self.taps.len() + self.keys.len() + self.drags.len() + self.text_pos.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.taps.is_empty() && self.keys.is_empty() && self.drags.is_empty()
+        self.taps.is_empty()
+            && self.keys.is_empty()
+            && self.drags.is_empty()
+            && self.text_pos.is_empty()
     }
 }
 
@@ -193,6 +238,7 @@ impl<S> Default for Handlers<S> {
             taps: Vec::new(),
             keys: Vec::new(),
             drags: Vec::new(),
+            text_pos: Vec::new(),
         }
     }
 }
@@ -203,6 +249,7 @@ impl<S> core::fmt::Debug for Handlers<S> {
             .field("taps", &self.taps.len())
             .field("keys", &self.keys.len())
             .field("drags", &self.drags.len())
+            .field("text_pos", &self.text_pos.len())
             .finish()
     }
 }
@@ -238,6 +285,9 @@ pub struct LayoutNode {
     /// Selected byte range `[start, end)` for an editable text leaf (the focus
     /// overlay highlights it).
     pub selection: Option<(usize, usize)>,
+    /// Text-pointer handle: this element resolves pointer presses/drags to a
+    /// byte index in its text (click-to-position / drag-to-select).
+    pub text_pos: Option<TextPosId>,
     pub children: Vec<LayoutNode>,
 }
 
@@ -255,6 +305,21 @@ pub fn hit_test(node: &LayoutNode, point: Point) -> Option<ActionId> {
         node.action
     } else {
         None
+    }
+}
+
+/// Find the top-most text-pointer node containing `point`, returning its
+/// [`TextPosId`] and the node (so the caller can resolve a byte index from the
+/// node's text and bounds).
+pub fn text_pos_at(node: &LayoutNode, point: Point) -> Option<(TextPosId, &LayoutNode)> {
+    for child in node.children.iter().rev() {
+        if let Some(hit) = text_pos_at(child, point) {
+            return Some(hit);
+        }
+    }
+    match node.text_pos {
+        Some(id) if node.bounds.contains(point) => Some((id, node)),
+        _ => None,
     }
 }
 
@@ -303,6 +368,15 @@ pub fn find_action(node: &LayoutNode, id: ActionId) -> Option<&LayoutNode> {
     node.children.iter().find_map(|c| find_action(c, id))
 }
 
+/// Find the node carrying text-pointer `id`, if present (for continuing a
+/// drag-selection after the pointer leaves the element bounds).
+pub fn find_text_pos(node: &LayoutNode, id: TextPosId) -> Option<&LayoutNode> {
+    if node.text_pos == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|c| find_text_pos(c, id))
+}
+
 /// The first text-bearing [`LayoutNode`] at or under `node`, in tree order.
 /// Used to position the caret and selection highlight inside a focused text
 /// field (read its `content` text/size plus `bounds`/`caret`/`selection`).
@@ -337,6 +411,7 @@ mod tests {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             children: Vec::new(),
         }
     }
@@ -379,6 +454,7 @@ mod tests {
             drag: None,
             caret: None,
             selection: None,
+            text_pos: None,
             children: vec![
                 leaf(
                     Rect::from_xywh(10.0, 10.0, 30.0, 30.0),

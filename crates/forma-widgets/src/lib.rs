@@ -304,6 +304,33 @@ impl EditBuffer {
         self.caret = self.text.len();
     }
 
+    /// Place the caret at byte index `i` (snapped to a char boundary) and clear
+    /// any selection. For click-to-position from a pointer hit-test.
+    pub fn place_caret(&mut self, i: usize) {
+        self.caret = self.snap(i);
+        self.anchor = None;
+    }
+
+    /// Move the caret (the selection's moving end) to byte index `i`, anchoring
+    /// the selection at the prior caret if not already selecting. For
+    /// drag-to-select from a pointer hit-test.
+    pub fn extend_to(&mut self, i: usize) {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.caret);
+        }
+        self.caret = self.snap(i);
+    }
+
+    /// Snap a byte index to the nearest char boundary at or below it, clamped to
+    /// the text length.
+    fn snap(&self, i: usize) -> usize {
+        let mut i = i.min(self.text.len());
+        while !self.text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+
     /// Apply a [`KeyInput`]: insert/replace text, delete, or move/extend the
     /// caret. Enter/Escape are ignored (single-line).
     pub fn apply(&mut self, input: &KeyInput) {
@@ -378,15 +405,29 @@ pub fn text_field<S>(
 }
 
 /// A single-line editable field backed by an [`EditBuffer`], rendering the text
-/// with the caret at the buffer's caret position (shown while focused). Route
-/// keyboard input to `on_key`, whose body typically calls
-/// [`EditBuffer::apply`]. Default width 200 logical px; override with
-/// `.width(..)` on the returned element.
+/// with the caret and selection at the buffer's positions (shown while focused).
+///
+/// `field` is an accessor that returns the `&mut EditBuffer` inside the app
+/// state; the field wires both keyboard input (`EditBuffer::apply`) and pointer
+/// interaction (click to place the caret, drag to select) to it. Default width
+/// 200 logical px; override with `.width(..)` on the returned element.
+///
+/// ```
+/// # use forma_widgets::{text_editor, EditBuffer};
+/// # use forma_core::runtime::Cx;
+/// # use forma_style::Theme;
+/// struct App { name: EditBuffer }
+/// let theme = Theme::light();
+/// let mut cx = Cx::new(&theme);
+/// let state = App { name: EditBuffer::from_text("hi") };
+/// let field = text_editor(&mut cx, &theme, &state.name, |s: &mut App| &mut s.name);
+/// assert!(field.focus.is_some() && field.text_pos.is_some());
+/// ```
 pub fn text_editor<S>(
     cx: &mut Cx<S>,
     theme: &Theme,
     buffer: &EditBuffer,
-    on_key: impl FnMut(&mut S, &KeyInput) + 'static,
+    field: impl Fn(&mut S) -> &mut EditBuffer + Copy + 'static,
 ) -> Element {
     // A leading space keeps an empty field from collapsing to zero height; the
     // caret then sits at index 0 of that placeholder.
@@ -405,7 +446,15 @@ pub fn text_editor<S>(
         .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
         .align(Align::Start, Align::Center)
         .width(200.0)
-        .on_key(cx, on_key)
+        .on_key(cx, move |s, k| field(s).apply(k))
+        .on_text_pos(cx, move |s, index, extend| {
+            let b = field(s);
+            if extend {
+                b.extend_to(index);
+            } else {
+                b.place_caret(index);
+            }
+        })
 }
 
 /// A toggleable checkbox: a small square showing a check mark when `checked`,
@@ -674,12 +723,32 @@ mod tests {
     }
 
     #[test]
+    fn edit_buffer_place_caret_and_extend() {
+        let mut b = EditBuffer::from_text("hello");
+        b.place_caret(2); // click between "he" and "llo"
+        assert_eq!((b.caret(), b.selection()), (2, None));
+        b.extend_to(4); // drag right to select "ll"
+        assert_eq!(b.selection(), Some((2, 4)));
+        b.extend_to(0); // drag left past the anchor
+        assert_eq!(b.selection(), Some((0, 2)));
+        // Out-of-range / mid-codepoint indices snap safely.
+        let mut u = EditBuffer::from_text("é🦀");
+        u.place_caret(999);
+        assert_eq!(u.caret(), "é🦀".len());
+        u.place_caret(1); // inside "é" -> snaps down to 0
+        assert_eq!(u.caret(), 0);
+    }
+
+    #[test]
     fn text_editor_carries_caret_on_its_text_leaf() {
         let theme = Theme::light();
         let mut cx = Cx::new(&theme);
         let buf = EditBuffer::from_text("hello");
-        let field = text_editor(&mut cx, &theme, &buf, |_: &mut (), _| {});
-        // The inner text leaf carries the caret byte index for the focus overlay.
+        let field = text_editor(&mut cx, &theme, &buf, |s: &mut EditBuffer| s);
+        // The inner text leaf carries the caret byte index for the focus overlay;
+        // the field itself carries focus + text-pointer handles.
+        assert!(field.focus.is_some());
+        assert!(field.text_pos.is_some());
         let ElementKind::Stack { children, .. } = &field.kind else {
             panic!("text_editor should be a stack");
         };
