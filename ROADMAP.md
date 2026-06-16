@@ -117,10 +117,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   caret bar at that index (prefix-measured), and the reconciler treats a caret
   move as damage. `text_editor` renders it; **CI-verified** on X11 (type
   "Forma", arrow-left ×2, insert "XY" → "ForXYma" with a mid-string caret).
+- ✅ **Text selection**: `EditBuffer` gains a selection anchor — Shift+arrows /
+  Home / End extend the selection, plain motions collapse it, typing/delete
+  replace it, and Ctrl/Cmd+A selects all (UTF-8-boundary-safe). The X11 backend
+  reports key modifiers (shift/ctrl) and Home/End/Delete; `map_key` maps
+  Shift+motion to `Select*`. The IR carries a selection byte range, `paint_focus`
+  draws a themed translucent highlight behind the selected glyphs, and the
+  reconciler treats a selection change as damage. **CI-verified** on X11
+  (`docs/screenshots/forma-x11-selection.png`).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
-  state to skip unchanged subtrees on rebuild; ⬜ multi-line + text selection
-  (shift-select, mouse drag); ⬜ a11y.
+  state to skip unchanged subtrees on rebuild; ⬜ multi-line text (wrapping +
+  newline editing); ⬜ pointer-drag text selection; ⬜ a11y.
 
 ---
 
