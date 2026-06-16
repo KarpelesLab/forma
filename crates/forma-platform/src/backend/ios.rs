@@ -256,14 +256,17 @@ extern "C" fn did_finish_launching(_this: Id, _cmd: Sel, _app: Id, _opts: Id) ->
         msg_void(window, sel("makeKeyAndVisible"));
         msg_void_bool(view, sel("setNeedsDisplay"), true);
 
-        // Runtime marker for CI (captured via `simctl launch --console-pty`):
-        // confirms the UIKit backend booted, built the window, and the handler
-        // rendered a frame into the shared framebuffer.
+        // Runtime marker for CI: confirms the UIKit backend booted, built the
+        // window, and the handler rendered a frame into the shared framebuffer.
+        // Written to the app's tmp dir (which CI reads back from the simulator
+        // container) since app stdout isn't reliably captured headlessly.
         let (w, h) = CTX.with(|c| {
             let c = c.borrow();
             (c.w, c.h)
         });
-        println!("Forma iOS: window shown, framebuffer {w}x{h}");
+        let marker = format!("Forma iOS: window shown, framebuffer {w}x{h}");
+        println!("{marker}");
+        let _ = std::fs::write(std::env::temp_dir().join("forma-ios.txt"), &marker);
     }
     true
 }

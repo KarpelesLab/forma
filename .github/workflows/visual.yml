@@ -796,24 +796,26 @@ jobs:
           xcrun simctl bootstatus "$DEV" -b || true
           xcrun simctl install "$DEV" Forma.app
 
-          # Launch with the app's stdout streamed back; the app runs forever, so
-          # capture for a bit then stop. The backend prints its marker on launch.
-          ( xcrun simctl launch --console-pty "$DEV" com.karpeleslab.forma > ios.log 2>&1 & echo $! > launch.pid ) || true
-          sleep 20
-          kill "$(cat launch.pid)" 2>/dev/null || true
-          echo "=== ios.log ==="; cat ios.log || true
+          # Launch the app (it runs forever) and give it a moment to render.
+          xcrun simctl launch "$DEV" com.karpeleslab.forma || true
+          sleep 12
           xcrun simctl io "$DEV" screenshot visual_output/forma-ios.png || true
           (sips -g pixelWidth -g pixelHeight visual_output/forma-ios.png || true)
+          # The backend writes a runtime marker into the app's tmp dir; read it
+          # back from the simulator's data container (app stdout isn't reliably
+          # captured headlessly).
+          DATA=$(xcrun simctl get_app_container "$DEV" com.karpeleslab.forma data)
+          echo "data container: $DATA"
+          ls -la "$DATA/tmp" || true
+          cat "$DATA/tmp/forma-ios.txt" || true
           # The native UIKit backend booted via UIApplicationMain, created the
           # window, and the Forma handler rendered a non-empty frame.
-          grep -qE "Forma iOS: window shown, framebuffer [1-9][0-9]*x[1-9][0-9]*" ios.log
+          grep -qE "Forma iOS: window shown, framebuffer [1-9][0-9]*x[1-9][0-9]*" "$DATA/tmp/forma-ios.txt"
 
       - name: Upload screenshot + log
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: forma-ios-screenshot
-          path: |
-            visual_output/*.png
-            ios.log
+          path: visual_output/*.png
           if-no-files-found: warn
