@@ -138,10 +138,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `place_caret`/`extend_to`; `text_editor` takes a `&mut EditBuffer` accessor and
   wires keyboard + pointer together. **CI-verified** on X11 — mouse drag selects
   "ForXYm" (`docs/screenshots/forma-x11-dragselect.png`).
+- ✅ **Word-wrapping**: `Font::wrap` greedily wraps text to a max width (breaking
+  at spaces, honoring hard newlines, shaping each word once); a `wrap` flag on
+  text elements wraps to the laid-out content width in both measure (growing
+  height) and paint. New `paragraph` widget. **CI-verified** — the `window`
+  example's paragraph wraps across three lines (`docs/screenshots/forma-x11.png`).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
-  state to skip unchanged subtrees on rebuild; ⬜ word-wrapping + multi-line
-  editing (caret/selection across lines); ⬜ a11y.
+  state to skip unchanged subtrees on rebuild; ⬜ multi-line *editing*
+  (caret/selection across lines); ⬜ a11y.
 
 ---
 
