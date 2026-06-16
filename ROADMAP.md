@@ -179,7 +179,13 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   headless backend there. **CI-verified** (the `mobile` job builds the umbrella
   crate for both). ⬜ Native windowing backends (`ANativeWindow` / UIKit
   `CALayer`) so they render to a real device surface.
-- ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ a11y.
+- 🚧 **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
+  semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
+  focus) from the layout tree; `App::accessibility_tree()` exposes it.
+  Unit-tested. ⬜ Wiring it to the OS APIs (AT-SPI / UI Automation /
+  `NSAccessibility`).
+- ⬜ **GPU-native drawing** (tessellate the scene on Vulkan/Metal/D3D/WebGPU
+  rather than compositing the CPU frame).
 
 ---
 
