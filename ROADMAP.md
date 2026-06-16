@@ -179,7 +179,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   headless backend there. **CI-verified** (the `mobile` job builds the umbrella
   crate for both). ⬜ Native windowing backends (`ANativeWindow` / UIKit
   `CALayer`) so they render to a real device surface.
-- 🚧 **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
+- ✅ **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
   semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
   Unit-tested. On **Linux** the tree is wired to the OS accessibility API:
@@ -190,8 +190,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   **serves the accessibility tree over `org.a11y.atspi.Accessible`** —
   hand-marshalling method returns, properties, and variants. **CI-verified**: a
   `dbus-send` client reads the Forma UI's root as AT-SPI role 27 (Window→FRAME),
-  `ChildCount` 2, and `Name` "Forma" from our server. ⬜ The Windows
-  (UI Automation) and macOS (`NSAccessibility`) bridges.
+  `ChildCount` 2, and `Name` "Forma" from our server. The **macOS** and
+  **Windows** bridges are wired too, each hand-written with no helper crate: the
+  Cocoa `FormaView` overrides the **NSAccessibility** protocol (an accessible
+  `AXGroup` with the window's label), and `forma_platform::uia` is a by-hand
+  **UI Automation** `IRawElementProviderSimple` COM object (vtable + `IUnknown`
+  refcounting; `GetPropertyValue` answers control-type and a `VT_BSTR` name).
+  Both are **CI-verified** through their real OS dispatch (objc / COM vtable) on
+  the macOS and Windows runners. ⬜ Depth: exposing the full element *tree* (not
+  just the root) on macOS/Windows, and the `WM_GETOBJECT` window wiring.
 - ✅ **GPU-native drawing**: a live forma `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `forma-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a
