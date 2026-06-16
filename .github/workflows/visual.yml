@@ -94,11 +94,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Xvfb, Mesa GL/EGL, ImageMagick, x11-utils, a font
+      - name: Install Xvfb, Mesa GL/EGL (+ dev symlinks), ImageMagick, x11-utils, a font
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick x11-utils fonts-dejavu-core \
-            libgl1-mesa-dri libegl1 libgl1 libglx-mesa0
+            libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1
 
       - name: Build the GPU window example (GLES backend)
         run: cargo build --release -p gpuwindow --features forma-gpu/gl
