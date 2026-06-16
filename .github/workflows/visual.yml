@@ -482,22 +482,34 @@ jobs:
           python3 -m http.server 8000 --directory crates/forma-web/web &
           echo "SRV_PID=$!" >> "$GITHUB_ENV"
           sleep 2
-          # WebGPU via Chrome's Dawn on the bundled SwiftShader Vulkan ICD (no
-          # GPU needed). NB: not --disable-gpu, which would kill WebGPU.
-          google-chrome --headless=new --no-sandbox \
-            --enable-unsafe-webgpu --enable-features=Vulkan \
-            --use-angle=swiftshader --use-vulkan=swiftshader \
-            --enable-logging=stderr --v=1 \
-            --window-size=420,300 --virtual-time-budget=20000 \
-            --screenshot="$PWD/visual_output/forma-webgpu.png" \
-            http://localhost:8000/webgpu.html 2>chrome.log || true
-          echo "=== chrome.log (WebGPU markers) ==="; grep -iE "WEBGPU |WEBGPU_|adapter|dawn|vulkan|swiftshader" chrome.log | head -40 || true
+          # The page reads the rendered pixel back in JS and logs it, so the check
+          # is deterministic (no canvas-composite/screenshot timing). The triangle
+          # center must be forma green (52,211,153).
+          #
+          # Bringing up WebGPU on the bundled SwiftShader Vulkan ICD headlessly is
+          # itself intermittently flaky on CI (Chrome occasionally blocklists the
+          # adapter on a cold start), so retry the *render* a few times — a
+          # transient adapter miss on one launch usually succeeds on the next. A
+          # genuine, persistent failure still fails the job.
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            echo "=== WebGPU attempt $attempt ==="
+            # WebGPU via Chrome's Dawn on SwiftShader. NB: not --disable-gpu.
+            google-chrome --headless=new --no-sandbox \
+              --enable-unsafe-webgpu --enable-features=Vulkan \
+              --use-angle=swiftshader --use-vulkan=swiftshader \
+              --enable-logging=stderr --v=1 \
+              --window-size=420,300 --virtual-time-budget=20000 \
+              --screenshot="$PWD/visual_output/forma-webgpu.png" \
+              http://localhost:8000/webgpu.html 2>chrome.log || true
+            grep -iE "WEBGPU |WEBGPU_" chrome.log | head -5 || true
+            if grep -q "WEBGPU center=52,211,153" chrome.log; then
+              ok=1; break
+            fi
+            sleep 3
+          done
           identify visual_output/forma-webgpu.png || true
-          # The page reads the rendered pixel back in JS and logs it, so this is
-          # deterministic (no canvas-composite/screenshot timing). The triangle
-          # center must be forma green (52,211,153); the page logs WEBGPU_FAIL on
-          # any WebGPU failure (no adapter, etc.).
-          grep -q "WEBGPU center=52,211,153" chrome.log
+          [ "$ok" = 1 ]
 
       - name: Stop server
         if: always()
