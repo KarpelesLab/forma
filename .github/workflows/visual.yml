@@ -678,14 +678,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install D-Bus
-        run: sudo apt-get update && sudo apt-get install -y dbus
+      - name: Install D-Bus + AT-SPI core
+        run: sudo apt-get update && sudo apt-get install -y dbus at-spi2-core
 
       - name: Build the a11y demo
         run: cargo build --release -p a11ydemo
 
-      - name: Connect to a private session bus and read the unique name
+      - name: Connect to the session + AT-SPI buses and read the unique names
         run: |
           dbus-run-session -- ./target/release/a11ydemo | tee a11y.log
-          # The bus assigns every connection a ":1.N" unique name on Hello.
+          # The session bus assigns every connection a ":1.N" unique name...
           grep -qE "D-Bus connected: unique name :1\." a11y.log
+          # ...and we can reach the separate AT-SPI bus via org.a11y.Bus.
+          grep -qE "AT-SPI bus connected: unique name :1\." a11y.log

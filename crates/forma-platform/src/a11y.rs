@@ -90,6 +90,28 @@ impl DBus {
         &self.unique_name
     }
 
+    /// Ask the session bus's accessibility broker (`org.a11y.Bus`) for the
+    /// address of the separate **AT-SPI** bus that screen readers listen on.
+    /// Activates `at-spi-bus-launcher` on demand.
+    pub fn a11y_bus_address(&mut self) -> Result<String, String> {
+        let reply = self.call(
+            "org.a11y.Bus",
+            "/org/a11y/bus",
+            "org.a11y.Bus",
+            "GetAddress",
+        )?;
+        read_string(&reply, &mut 0)
+    }
+
+    /// Connect to the **AT-SPI** accessibility bus: a second D-Bus connection to
+    /// the address the session bus's `org.a11y.Bus` broker hands out. This is the
+    /// bus an app exports its accessibility tree on.
+    pub fn connect_a11y() -> Result<DBus, String> {
+        let mut session = Self::connect_session()?;
+        let addr = session.a11y_bus_address()?;
+        Self::connect_address(&addr)
+    }
+
     /// Send a no-argument method call and return the reply's body bytes. Errors
     /// on a D-Bus `ERROR` reply or I/O failure.
     fn call(
