@@ -2,13 +2,14 @@
 //! ES 2 (raw EGL + GLES FFI — no `ash`/`glutin`/`khronos` crate; linking the
 //! OS's GL driver fits the "close to the OS" policy in `ROADMAP.md` §1).
 //!
-//! [`present_offscreen`] uploads the pixmap as a texture, draws a fullscreen
-//! quad into an offscreen framebuffer, and reads the result back — the GPU half
-//! of the [`Surface`](forma_render::Surface) seam. v1 just composites the CPU
-//! frame on the GPU (a pass-through shader); GPU-native scene tessellation /
-//! glyph atlases, and Vulkan/Metal/D3D/WebGPU productionization, are future
-//! work. The EGL context is **surfaceless**, so it runs headlessly under Mesa's
-//! software GL in CI.
+//! Two paths share the seam: [`present_offscreen`] composites a finished CPU
+//! [`Pixmap`] on the GPU (a pass-through shader), while [`render_scene`] renders
+//! a live forma [`Scene`] **GPU-natively** — box primitives via a rounded-rect
+//! SDF shader and text from a packed per-glyph atlas. Both read back to a
+//! `Pixmap`, the GPU half of the [`Surface`](forma_render::Surface) seam.
+//! Productionizing this onto Vulkan/Metal/D3D/WebGPU is future work. The EGL
+//! context is **surfaceless**, so it runs headlessly under Mesa's software GL in
+//! CI.
 //!
 //! Linux-only for now (EGL/GLESv2); other targets return an error so the
 //! workspace still builds everywhere.
