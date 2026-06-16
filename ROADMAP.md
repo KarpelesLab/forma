@@ -184,12 +184,14 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
   Unit-tested. ⬜ Wiring it to the OS APIs (AT-SPI / UI Automation /
   `NSAccessibility`).
-- 🚧 **GPU-native drawing**: `forma-gpu::fill_rects_offscreen` draws the full box
-  primitive set — sharp/rounded fills **and stroked borders** — as tessellated
-  GPU geometry through a GLES2 shader that evaluates a rounded-rect
-  signed-distance field per pixel (not by compositing a CPU pixmap). **CI-verified**
-  on Mesa (`docs/screenshots/forma-gpu-rects.png`). ⬜ A glyph atlas for text,
-  wiring the full `Scene` through it, and Vulkan/Metal/D3D/WebGPU backends.
+- 🚧 **GPU-native drawing**: `forma-gpu::render_offscreen` draws a full scene on
+  the GPU — the box primitive set (sharp/rounded fills + stroked borders) as
+  tessellated geometry through a rounded-rect signed-distance-field GLES2 shader,
+  **plus text** by alpha-blending glyph-coverage masks as recolored quads (not by
+  compositing a whole CPU pixmap). **CI-verified** on Mesa: boxes + a "FORMA -
+  GPU" label (`docs/screenshots/forma-gpu-rects.png`). ⬜ A per-glyph atlas
+  cache, wiring the live `Scene`'s primitives through it, and
+  Vulkan/Metal/D3D/WebGPU backends.
 
 ---
 
