@@ -130,6 +130,7 @@ const WL_SURFACE_ATTACH: u16 = 1;
 const WL_SURFACE_DAMAGE: u16 = 2;
 const WL_SURFACE_COMMIT: u16 = 6;
 const WL_SEAT_GET_KEYBOARD: u16 = 1;
+const WL_KEYBOARD_RELEASE: u16 = 0;
 const XDG_WM_BASE_PONG: u16 = 3;
 const XDG_WM_BASE_GET_XDG_SURFACE: u16 = 2;
 const XDG_SURFACE_GET_TOPLEVEL: u16 = 1;
@@ -855,14 +856,22 @@ where
         if Some(object) == seat && opcode == WL_SEAT_CAPABILITIES {
             let caps = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
             let mut conn = shared.lock().unwrap();
-            if keyboard.is_none() && caps & WL_SEAT_CAP_KEYBOARD != 0 {
-                let kbd = conn.new_id();
-                let mut a = Vec::new();
-                arg_u32(&mut a, kbd);
-                if conn.send(seat.unwrap(), WL_SEAT_GET_KEYBOARD, &a).is_ok() {
-                    keyboard = Some(kbd);
-                    dbg(format_args!("keyboard={kbd} (caps={caps})"));
+            if caps & WL_SEAT_CAP_KEYBOARD != 0 {
+                if keyboard.is_none() {
+                    let kbd = conn.new_id();
+                    let mut a = Vec::new();
+                    arg_u32(&mut a, kbd);
+                    if conn.send(seat.unwrap(), WL_SEAT_GET_KEYBOARD, &a).is_ok() {
+                        keyboard = Some(kbd);
+                        dbg(format_args!("keyboard={kbd} (caps={caps})"));
+                    }
                 }
+            } else if let Some(kbd) = keyboard.take() {
+                // The keyboard went away (e.g. a virtual keyboard was destroyed);
+                // release the stale object so a later one is picked up fresh.
+                let _ = conn.send(kbd, WL_KEYBOARD_RELEASE, &[]);
+                keymap = None;
+                dbg(format_args!("keyboard released (caps={caps})"));
             }
             if pointer.is_none() && caps & WL_SEAT_CAP_POINTER != 0 {
                 let ptr = conn.new_id();
