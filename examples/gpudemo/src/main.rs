@@ -161,4 +161,8 @@ fn main() {
         Ok(summary) => println!("Vulkan framebuffer: {summary}"),
         Err(e) => println!("Vulkan framebuffer unavailable: {e}"),
     }
+    match forma_gpu::vulkan_clear(W as u32, H as u32) {
+        Ok(summary) => println!("Vulkan clear: {summary}"),
+        Err(e) => println!("Vulkan clear unavailable: {e}"),
+    }
 }

@@ -85,6 +85,23 @@ pub fn vulkan_init_framebuffer(width: u32, height: u32) -> Result<String, String
     }
 }
 
+/// Execute a real Vulkan command-buffer round-trip (raw FFI): record a primary
+/// command buffer that runs a render pass clearing a `width`×`height` color
+/// image, submit it to the graphics queue, and block on a fence until the GPU
+/// finishes — the first GPU execution the draw pipeline will extend. Returns a
+/// one-line summary. Errors if the `vk` feature is off or any step fails.
+pub fn vulkan_clear(width: u32, height: u32) -> Result<String, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::init_clear(width, height)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.
