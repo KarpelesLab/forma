@@ -786,14 +786,14 @@ jobs:
           </dict></plist>
           PLIST
 
-          # Pick the newest available iOS runtime + an iPhone device type.
-          RT=$(xcrun simctl list runtimes -j | python3 -c "import sys,json;rs=[r for r in json.load(sys.stdin)['runtimes'] if r.get('isAvailable') and 'iOS' in r['name']];print(rs[-1]['identifier'])")
-          DT=$(xcrun simctl list devicetypes -j | python3 -c "import sys,json;ds=[d for d in json.load(sys.stdin)['devicetypes'] if 'iPhone' in d['name']];print(ds[-1]['identifier'])")
-          echo "runtime=$RT devicetype=$DT"
-          DEV=$(xcrun simctl create forma-test "$DT" "$RT")
+          # Use an iPhone simulator the runner already provisioned for its
+          # installed runtime (avoids device/runtime incompatibility from picking
+          # an arbitrary device type).
+          DEV=$(xcrun simctl list devices available -j | python3 -c "import sys,json;d=json.load(sys.stdin)['devices'];ids=[x['udid'] for rt,devs in d.items() if 'iOS' in rt for x in devs if x.get('isAvailable') and 'iPhone' in x['name']];print(ids[0] if ids else '')")
           echo "device=$DEV"
-          xcrun simctl boot "$DEV"
-          xcrun simctl bootstatus "$DEV" -b
+          [ -n "$DEV" ]
+          xcrun simctl boot "$DEV" || true
+          xcrun simctl bootstatus "$DEV" -b || true
           xcrun simctl install "$DEV" Forma.app
 
           # Launch with the app's stdout streamed back; the app runs forever, so
