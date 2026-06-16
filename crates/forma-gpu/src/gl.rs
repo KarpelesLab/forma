@@ -179,11 +179,13 @@ uniform vec4 u_color;\n\
 uniform vec2 u_center;\n\
 uniform vec2 u_half;\n\
 uniform float u_radius;\n\
+uniform float u_border;\n\
 void main() {\n\
   vec2 p = gl_FragCoord.xy - u_center;\n\
   vec2 d = abs(p) - (u_half - vec2(u_radius));\n\
   float dist = length(max(d, vec2(0.0))) - u_radius;\n\
   if (dist > 0.5) discard;\n\
+  if (u_border > 0.0 && dist < -u_border) discard;\n\
   gl_FragColor = u_color;\n\
 }\n\0";
 
@@ -416,15 +418,16 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
 /// through a flat-color shader (not by compositing a CPU pixmap) — onto a
 /// `background`-cleared offscreen framebuffer, and read the result back.
 ///
-/// Each entry is `(rect, color, corner_radius)` in logical pixels with a
-/// top-left origin (mapped to GL NDC); the fragment shader evaluates a
-/// rounded-rectangle SDF, so a radius of `0.0` is a sharp rect. This is the
-/// first step of the GPU-native scene renderer: borders and a glyph atlas are
-/// future work.
+/// Each entry is `(rect, color, corner_radius, border_width)` in logical pixels
+/// with a top-left origin (mapped to GL NDC); the fragment shader evaluates a
+/// rounded-rectangle SDF, so a radius of `0.0` is a sharp rect and a
+/// `border_width` of `0.0` is a solid fill (a positive width strokes the outline
+/// instead). This is the first step of the GPU-native scene renderer; a glyph
+/// atlas for text is future work.
 pub fn fill_rects_offscreen(
     size: PhysicalSize,
     background: Color,
-    rects: &[(Rect, Color, f32)],
+    rects: &[(Rect, Color, f32, f32)],
 ) -> Result<Pixmap, String> {
     let (w, h) = (size.width as GLsizei, size.height as GLsizei);
     if w == 0 || h == 0 {
@@ -485,6 +488,7 @@ pub fn fill_rects_offscreen(
         let center_loc = glGetUniformLocation(prog, c"u_center".as_ptr());
         let half_loc = glGetUniformLocation(prog, c"u_half".as_ptr());
         let radius_loc = glGetUniformLocation(prog, c"u_radius".as_ptr());
+        let border_loc = glGetUniformLocation(prog, c"u_border".as_ptr());
         if pos_loc < 0 {
             return Err("flat attribute location not found".into());
         }
@@ -514,7 +518,7 @@ pub fn fill_rects_offscreen(
 
         // logical (top-left origin) → GL NDC.
         let ndc = |x: f64, y: f64| (2.0 * x as f32 / wf - 1.0, 1.0 - 2.0 * y as f32 / hf);
-        for (rect, color, radius) in rects {
+        for (rect, color, radius, border) in rects {
             let (x0, y0) = ndc(rect.min_x(), rect.min_y());
             let (x1, y1) = ndc(rect.max_x(), rect.max_y());
             // SDF uniforms in framebuffer pixels (origin bottom-left, so flip y).
@@ -525,6 +529,7 @@ pub fn fill_rects_offscreen(
             glUniform2f(center_loc, cx, cy);
             glUniform2f(half_loc, rw / 2.0, rh / 2.0);
             glUniform1f(radius_loc, r);
+            glUniform1f(border_loc, *border); // 0 = solid fill, >0 = stroke ring
             #[rustfmt::skip]
             let verts: [f32; 12] = [
                 x0, y0,  x1, y0,  x0, y1,

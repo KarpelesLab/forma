@@ -37,13 +37,15 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
 /// Draw solid-color `rects` **GPU-natively** (as tessellated geometry through a
 /// flat-color shader, not by compositing a CPU frame) on a `background`-cleared
 /// target of `size`, returning the rendered frame — the first step toward a
-/// GPU-native scene renderer. Each entry is `(rect, color, corner_radius)`; the
-/// shader evaluates a rounded-rectangle SDF, so a radius of `0.0` is a sharp
-/// rect. Errors if the `gl` feature is off or no GL/EGL device is available.
+/// GPU-native scene renderer. Each entry is
+/// `(rect, color, corner_radius, border_width)`; the shader evaluates a
+/// rounded-rectangle SDF (radius `0.0` = sharp), and a positive `border_width`
+/// strokes the outline instead of filling. Errors if the `gl` feature is off or
+/// no GL/EGL device is available.
 pub fn fill_rects_offscreen(
     size: PhysicalSize,
     background: Color,
-    rects: &[(Rect, Color, f32)],
+    rects: &[(Rect, Color, f32, f32)],
 ) -> Result<Pixmap, String> {
     #[cfg(all(target_os = "linux", feature = "gl"))]
     {
