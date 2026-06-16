@@ -27,6 +27,15 @@ pub fn measure(el: &Element, avail: Size, font: Option<&Font>) -> Size {
     let content = match &el.kind {
         ElementKind::Leaf => Size::ZERO,
         ElementKind::Text { text, size, .. } => match font {
+            // Wrapping text takes the available width and grows in height.
+            Some(f) if el.wrap && inner.width.is_finite() => {
+                let lines = f.wrap(text, *size, inner.width);
+                let w = lines
+                    .iter()
+                    .map(|l| f.measure(l, *size).width)
+                    .fold(0.0_f64, f64::max);
+                Size::new(w, f.line_height(*size) * lines.len() as f64)
+            }
             Some(f) => f.measure(text, *size),
             None => Size::ZERO,
         },
@@ -84,6 +93,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         caret: el.caret,
         selection: el.selection,
         text_pos: el.text_pos,
+        wrap: el.wrap,
         children: Vec::new(),
     };
 
@@ -251,7 +261,13 @@ pub fn paint(node: &LayoutNode, scene: &mut Scene, font: Option<&Font>) {
     if let NodeContent::Text { text, size, color } = &node.content
         && let Some(f) = font
     {
-        scene.fill_text(f, text, node.bounds.origin, *size, *color);
+        if node.wrap {
+            // Wrap to the laid-out width; fill_text renders the \n-joined lines.
+            let wrapped = f.wrap(text, *size, node.bounds.width()).join("\n");
+            scene.fill_text(f, &wrapped, node.bounds.origin, *size, *color);
+        } else {
+            scene.fill_text(f, text, node.bounds.origin, *size, *color);
+        }
     }
     for child in &node.children {
         paint(child, scene, font);

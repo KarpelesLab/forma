@@ -115,6 +115,37 @@ impl Font {
         Size::new(max_w, self.line_height(size_px) * lines as f64)
     }
 
+    /// Greedily wrap `text` to lines no wider than `max_width` logical pixels at
+    /// `size_px`, breaking at spaces. Existing `\n` are hard breaks. A single
+    /// word wider than `max_width` is kept on its own (over-long) line rather
+    /// than split mid-word. Returns at least one line.
+    pub fn wrap(&self, text: &str, size_px: f64, max_width: f64) -> Vec<String> {
+        let mut out = Vec::new();
+        for hard in text.split('\n') {
+            let mut line = String::new();
+            for word in hard.split(' ') {
+                if line.is_empty() {
+                    line.push_str(word);
+                    continue;
+                }
+                // Does `line + " " + word` still fit?
+                let candidate_w = self.line_width(&format!("{line} {word}"), size_px);
+                if candidate_w <= max_width {
+                    line.push(' ');
+                    line.push_str(word);
+                } else {
+                    out.push(std::mem::take(&mut line));
+                    line.push_str(word);
+                }
+            }
+            out.push(line);
+        }
+        if out.is_empty() {
+            out.push(String::new());
+        }
+        out
+    }
+
     pub(crate) fn chain(&self) -> &FaceChain {
         &self.chain
     }
@@ -229,6 +260,25 @@ mod tests {
         // A trailing newline adds an (empty) third line of height.
         let trailing = font.measure("Hello\nWorld!\n", 16.0);
         assert!((trailing.height - 3.0 * one.height).abs() < 1.0);
+    }
+
+    #[test]
+    fn wrap_breaks_at_spaces_within_width() {
+        let Some(font) = Font::system_default() else {
+            eprintln!("skipping: no system font found");
+            return;
+        };
+        let text = "the quick brown fox jumps over the lazy dog";
+        let full = font.measure(text, 16.0).width;
+        // Wrapping to half the natural width yields more than one line, and no
+        // wrapped line exceeds that width (each individual word fits).
+        let lines = font.wrap(text, 16.0, full / 2.0);
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(font.measure(line, 16.0).width <= full / 2.0 + 0.5);
+        }
+        // Hard newlines are preserved as breaks.
+        assert_eq!(font.wrap("a\nb", 16.0, 10_000.0), vec!["a", "b"]);
     }
 
     #[test]

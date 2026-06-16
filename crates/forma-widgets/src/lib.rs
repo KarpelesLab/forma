@@ -70,6 +70,13 @@ pub fn heading(theme: &Theme, text: impl Into<String>) -> Element {
     Element::text(text, theme.typography.heading, theme.palette.text)
 }
 
+/// A block of body text that word-wraps to its container width across as many
+/// lines as needed. Place it in a cross-stretch container (like [`panel`]) so it
+/// takes the full width.
+pub fn paragraph(theme: &Theme, text: impl Into<String>) -> Element {
+    Element::text(text, theme.typography.body, theme.palette.text).wrap()
+}
+
 /// Visual emphasis level for a button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {

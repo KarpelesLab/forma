@@ -100,6 +100,10 @@ pub struct Element {
     /// Text-pointer handle: pointer presses/drags on this element resolve to a
     /// byte index in its text. Set via [`Element::on_text_pos`].
     pub text_pos: Option<TextPosId>,
+    /// When `true` on a text element, the text greedily word-wraps to the
+    /// element's content width instead of laying out on one line. Set via
+    /// [`Element::wrap`].
+    pub wrap: bool,
     pub kind: ElementKind,
 }
 
@@ -115,6 +119,7 @@ impl Element {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             kind: ElementKind::Leaf,
         }
     }
@@ -130,6 +135,7 @@ impl Element {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -149,6 +155,7 @@ impl Element {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -267,6 +274,14 @@ impl Element {
     /// focus overlay highlights it. An empty or reversed range is ignored.
     pub fn selection(mut self, range: Option<(usize, usize)>) -> Self {
         self.selection = range.filter(|(s, e)| e > s);
+        self
+    }
+
+    /// Enable word-wrapping for a text element: the text wraps to the element's
+    /// content width across as many lines as needed. No effect on non-text
+    /// elements.
+    pub fn wrap(mut self) -> Self {
+        self.wrap = true;
         self
     }
 

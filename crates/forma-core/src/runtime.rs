@@ -288,6 +288,8 @@ pub struct LayoutNode {
     /// Text-pointer handle: this element resolves pointer presses/drags to a
     /// byte index in its text (click-to-position / drag-to-select).
     pub text_pos: Option<TextPosId>,
+    /// When `true`, the text content word-wraps to `bounds.width` when painted.
+    pub wrap: bool,
     pub children: Vec<LayoutNode>,
 }
 
@@ -412,6 +414,7 @@ mod tests {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             children: Vec::new(),
         }
     }
@@ -455,6 +458,7 @@ mod tests {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             children: vec![
                 leaf(
                     Rect::from_xywh(10.0, 10.0, 30.0, 30.0),

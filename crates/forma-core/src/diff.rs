@@ -174,6 +174,7 @@ mod tests {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             children,
         }
     }
@@ -193,6 +194,7 @@ mod tests {
             caret: None,
             selection: None,
             text_pos: None,
+            wrap: false,
             children: Vec::new(),
         }
     }

@@ -586,8 +586,8 @@ pub mod prelude {
     pub use forma_style::{Palette, Spacing, Typography};
     pub use forma_widgets::{
         EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
-        edit_string, heading, label, panel, row, setting_row, slider, spacer, swatch, switch,
-        text_editor, text_field,
+        edit_string, heading, label, panel, paragraph, row, setting_row, slider, spacer, swatch,
+        switch, text_editor, text_field,
     };
 }
 
