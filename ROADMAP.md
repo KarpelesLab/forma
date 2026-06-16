@@ -184,8 +184,11 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
   Unit-tested. ⬜ Wiring it to the OS APIs (AT-SPI / UI Automation /
   `NSAccessibility`).
-- ⬜ **GPU-native drawing** (tessellate the scene on Vulkan/Metal/D3D/WebGPU
-  rather than compositing the CPU frame).
+- 🚧 **GPU-native drawing**: `forma-gpu::fill_rects_offscreen` draws solid
+  rectangles as tessellated GPU geometry through a flat-color GLES2 shader (not
+  by compositing a CPU pixmap) — the first step of a GPU-native scene renderer.
+  **CI-verified** on Mesa (`docs/screenshots/forma-gpu-rects.png`). ⬜ Rounded
+  rects, borders, a glyph atlas, and Vulkan/Metal/D3D/WebGPU backends.
 
 ---
 
