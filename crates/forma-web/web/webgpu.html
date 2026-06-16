@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+  Standalone WebGPU triangle — the browser GPU backend for Forma's "GPU-native
+  drawing" track. No wgpu/bindgen: hand-written WGSL + the WebGPU JS API (the one
+  sanctioned web exception in ROADMAP.md §1). Draws a forma-green triangle on a
+  dark clear into a 420x300 canvas. CI screenshots it under headless Chrome with
+  WebGPU on SwiftShader and checks the center pixel; on any failure the page turns
+  red so the artifact shows it plainly.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>forma webgpu</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #141518; }
+      #c { display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="420" height="300"></canvas>
+    <script>
+      function fail(msg) {
+        document.body.style.background = "red";
+        document.title = "WEBGPU_FAIL " + msg;
+        console.log("WEBGPU_FAIL " + msg);
+      }
+
+      async function main() {
+        if (!navigator.gpu) return fail("navigator.gpu missing");
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) return fail("no adapter");
+        const device = await adapter.requestDevice();
+        const canvas = document.getElementById("c");
+        const ctx = canvas.getContext("webgpu");
+        if (!ctx) return fail("no webgpu context");
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        ctx.configure({ device, format, alphaMode: "opaque" });
+
+        const shader = device.createShaderModule({
+          code: `
+            @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+              var p = array<vec2f, 3>(vec2f(0.0, 0.6), vec2f(0.6, -0.6), vec2f(-0.6, -0.6));
+              return vec4f(p[i], 0.0, 1.0);
+            }
+            @fragment fn fs() -> @location(0) vec4f {
+              return vec4f(52.0 / 255.0, 211.0 / 255.0, 153.0 / 255.0, 1.0);
+            }
+          `,
+        });
+        const pipeline = device.createRenderPipeline({
+          layout: "auto",
+          vertex: { module: shader, entryPoint: "vs" },
+          fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
+          primitive: { topology: "triangle-list" },
+        });
+
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: ctx.getCurrentTexture().createView(),
+              clearValue: { r: 0x14 / 255, g: 0x15 / 255, b: 0x18 / 255, a: 1 },
+              loadOp: "clear",
+              storeOp: "store",
+            },
+          ],
+        });
+        pass.setPipeline(pipeline);
+        pass.draw(3);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        document.title = "WEBGPU_OK";
+        console.log("WEBGPU_OK");
+      }
+
+      main().catch((e) => fail(String(e)));
+    </script>
+  </body>
+</html>
