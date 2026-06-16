@@ -139,6 +139,9 @@ pub fn edit_string(value: &mut String, input: &KeyInput) {
 pub struct EditBuffer {
     text: String,
     caret: usize,
+    /// The fixed end of an active selection (the caret is the moving end);
+    /// `None` when nothing is selected.
+    anchor: Option<usize>,
 }
 
 impl EditBuffer {
@@ -151,7 +154,11 @@ impl EditBuffer {
     pub fn from_text(text: impl Into<String>) -> Self {
         let text = text.into();
         let caret = text.len();
-        Self { text, caret }
+        Self {
+            text,
+            caret,
+            anchor: None,
+        }
     }
 
     /// The current text.
@@ -169,53 +176,136 @@ impl EditBuffer {
         self.text.is_empty()
     }
 
-    /// Insert `s` at the caret and advance the caret past it.
+    /// The selected byte range `[start, end)`, or `None` when nothing is
+    /// selected (the anchor is unset or collapsed onto the caret).
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        match self.anchor {
+            Some(a) if a != self.caret => Some((a.min(self.caret), a.max(self.caret))),
+            _ => None,
+        }
+    }
+
+    /// Delete the active selection (if any), leaving the caret at its start.
+    /// Returns `true` if something was removed.
+    fn delete_selection(&mut self) -> bool {
+        if let Some((s, e)) = self.selection() {
+            self.text.replace_range(s..e, "");
+            self.caret = s;
+            self.anchor = None;
+            true
+        } else {
+            self.anchor = None;
+            false
+        }
+    }
+
+    /// Insert `s`, replacing the selection first, and advance the caret past it.
     pub fn insert(&mut self, s: &str) {
+        self.delete_selection();
         self.text.insert_str(self.caret, s);
         self.caret += s.len();
     }
 
-    /// Delete the character before the caret (Backspace); no-op at the start.
+    /// Delete the selection, or the character before the caret (Backspace).
     pub fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if let Some(prev) = self.prev_boundary(self.caret) {
             self.text.replace_range(prev..self.caret, "");
             self.caret = prev;
         }
     }
 
-    /// Delete the character at the caret (Delete); no-op at the end.
+    /// Delete the selection, or the character at the caret (Delete).
     pub fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if let Some(next) = self.next_boundary(self.caret) {
             self.text.replace_range(self.caret..next, "");
         }
     }
 
-    /// Move the caret one character left.
+    /// Move the caret one character left, collapsing any selection to its start.
     pub fn move_left(&mut self) {
-        if let Some(prev) = self.prev_boundary(self.caret) {
+        if let Some((s, _)) = self.selection() {
+            self.caret = s;
+        } else if let Some(prev) = self.prev_boundary(self.caret) {
             self.caret = prev;
         }
+        self.anchor = None;
     }
 
-    /// Move the caret one character right.
+    /// Move the caret one character right, collapsing any selection to its end.
     pub fn move_right(&mut self) {
-        if let Some(next) = self.next_boundary(self.caret) {
+        if let Some((_, e)) = self.selection() {
+            self.caret = e;
+        } else if let Some(next) = self.next_boundary(self.caret) {
             self.caret = next;
         }
+        self.anchor = None;
     }
 
-    /// Move the caret to the start.
+    /// Move the caret to the start, clearing the selection.
     pub fn home(&mut self) {
         self.caret = 0;
+        self.anchor = None;
     }
 
-    /// Move the caret to the end.
+    /// Move the caret to the end, clearing the selection.
     pub fn end(&mut self) {
+        self.caret = self.text.len();
+        self.anchor = None;
+    }
+
+    /// Begin or extend a selection: anchor at the current caret if not already
+    /// selecting, then run `motion` to move the caret (the moving end).
+    fn extend(&mut self, motion: impl FnOnce(&mut Self)) {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.caret);
+        }
+        let anchor = self.anchor;
+        motion(self);
+        self.anchor = anchor; // motion's `move_*` clears it; restore.
+    }
+
+    /// Extend the selection one character left.
+    pub fn select_left(&mut self) {
+        self.extend(|b| {
+            if let Some(prev) = b.prev_boundary(b.caret) {
+                b.caret = prev;
+            }
+        });
+    }
+
+    /// Extend the selection one character right.
+    pub fn select_right(&mut self) {
+        self.extend(|b| {
+            if let Some(next) = b.next_boundary(b.caret) {
+                b.caret = next;
+            }
+        });
+    }
+
+    /// Extend the selection to the start.
+    pub fn select_home(&mut self) {
+        self.extend(|b| b.caret = 0);
+    }
+
+    /// Extend the selection to the end.
+    pub fn select_end(&mut self) {
+        self.extend(|b| b.caret = b.text.len());
+    }
+
+    /// Select the entire text.
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
         self.caret = self.text.len();
     }
 
-    /// Apply a [`KeyInput`]: insert text, delete at the caret, or move it.
-    /// Enter/Escape are ignored (single-line).
+    /// Apply a [`KeyInput`]: insert/replace text, delete, or move/extend the
+    /// caret. Enter/Escape are ignored (single-line).
     pub fn apply(&mut self, input: &KeyInput) {
         match input {
             KeyInput::Text(t) => self.insert(t),
@@ -225,6 +315,11 @@ impl EditBuffer {
             KeyInput::Right => self.move_right(),
             KeyInput::Home => self.home(),
             KeyInput::End => self.end(),
+            KeyInput::SelectLeft => self.select_left(),
+            KeyInput::SelectRight => self.select_right(),
+            KeyInput::SelectHome => self.select_home(),
+            KeyInput::SelectEnd => self.select_end(),
+            KeyInput::SelectAll => self.select_all(),
             KeyInput::Enter | KeyInput::Escape => {}
         }
     }
@@ -300,7 +395,9 @@ pub fn text_editor<S>(
     } else {
         buffer.text().to_string()
     };
-    let text = Element::text(shown, theme.font_size, theme.palette.text).caret(buffer.caret());
+    let text = Element::text(shown, theme.font_size, theme.palette.text)
+        .caret(buffer.caret())
+        .selection(buffer.selection());
     Element::stack(Axis::Horizontal, vec![text])
         .fill(theme.palette.surface)
         .radius(theme.radius)
@@ -529,6 +626,51 @@ mod tests {
             b.apply(&k);
         }
         assert_eq!((b.text(), b.caret()), ("hXi", 2));
+    }
+
+    #[test]
+    fn edit_buffer_shift_select_and_replace() {
+        let mut b = EditBuffer::from_text("hello");
+        b.home(); // caret at 0, no selection
+        assert_eq!(b.selection(), None);
+        b.select_right();
+        b.select_right();
+        b.select_right(); // select "hel"
+        assert_eq!(b.selection(), Some((0, 3)));
+        // Typing replaces the selection.
+        b.insert("X");
+        assert_eq!((b.text(), b.caret(), b.selection()), ("Xlo", 1, None));
+    }
+
+    #[test]
+    fn edit_buffer_select_all_then_backspace_clears() {
+        let mut b = EditBuffer::from_text("abc");
+        b.select_all();
+        assert_eq!(b.selection(), Some((0, 3)));
+        b.backspace(); // deletes the whole selection
+        assert!(b.is_empty());
+        assert_eq!(b.selection(), None);
+    }
+
+    #[test]
+    fn edit_buffer_plain_motion_collapses_selection() {
+        let mut b = EditBuffer::from_text("abcd");
+        b.home();
+        b.select_right();
+        b.select_right(); // select "ab", caret at 2
+        assert_eq!(b.selection(), Some((0, 2)));
+        b.move_left(); // collapse to selection start
+        assert_eq!((b.caret(), b.selection()), (0, None));
+    }
+
+    #[test]
+    fn edit_buffer_select_respects_utf8() {
+        let mut b = EditBuffer::from_text("é🦀");
+        b.home();
+        b.select_right(); // selects "é" (2 bytes), not a partial byte
+        assert_eq!(b.selection(), Some((0, "é".len())));
+        b.select_right(); // extends over "🦀"
+        assert_eq!(b.selection(), Some((0, "é🦀".len())));
     }
 
     #[test]

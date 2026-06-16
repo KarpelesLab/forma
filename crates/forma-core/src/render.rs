@@ -82,6 +82,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         focus: el.focus,
         drag: el.drag,
         caret: el.caret,
+        selection: el.selection,
         children: Vec::new(),
     };
 
@@ -151,8 +152,9 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
 }
 
 /// Overlay focus affordances for the focused element: a `ring` around its
-/// bounds, and — if it contains text — a `caret` bar at the text's caret index
-/// (or its end when no caret is set). No-op if `focused` isn't in the tree.
+/// bounds, a `selection` highlight behind any selected text range, and a
+/// `caret` bar at the text's caret index (or its end when no caret is set).
+/// No-op if `focused` isn't in the tree.
 pub fn paint_focus(
     tree: &LayoutNode,
     focused: FocusId,
@@ -160,31 +162,42 @@ pub fn paint_focus(
     font: Option<&Font>,
     ring: Color,
     caret: Color,
+    selection: Color,
 ) {
     let Some(node) = find_focus(tree, focused) else {
         return;
     };
     scene.stroke_rect(node.bounds, ring, 2.0);
 
-    if let Some((text, size, bounds, caret_idx)) = first_text(node) {
-        // Measure the text up to the caret (clamped to a char boundary) so the
-        // bar sits between glyphs; default to the end when no caret is set.
-        let upto = match caret_idx {
-            Some(i) => {
-                let i = i.min(text.len());
-                if text.is_char_boundary(i) {
-                    &text[..i]
-                } else {
-                    text
-                }
-            }
-            None => text,
+    let Some(leaf) = first_text(node) else { return };
+    let NodeContent::Text { text, size, .. } = &leaf.content else {
+        return;
+    };
+    let bounds = leaf.bounds;
+    let size = *size;
+    // Logical-pixel x of byte offset `i` within the text (prefix advance).
+    let x_at = |i: usize| -> f64 {
+        let upto = if text.is_char_boundary(i.min(text.len())) {
+            &text[..i.min(text.len())]
+        } else {
+            text.as_str()
         };
-        let advance = font.map(|f| f.measure(upto, size).width).unwrap_or(0.0);
-        let x = (bounds.min_x() + advance + 1.0).min(bounds.max_x().max(bounds.min_x() + 1.0));
-        let h = bounds.height().max(size);
-        scene.fill_rect(Rect::from_xywh(x, bounds.min_y(), 2.0, h), caret);
+        bounds.min_x() + font.map(|f| f.measure(upto, size).width).unwrap_or(0.0)
+    };
+    let h = bounds.height().max(size);
+
+    // Selection highlight (drawn under the caret; translucent so text reads).
+    if let Some((s, e)) = leaf.selection
+        && e > s
+    {
+        let (x0, x1) = (x_at(s), x_at(e));
+        scene.fill_rect(Rect::from_xywh(x0, bounds.min_y(), x1 - x0, h), selection);
     }
+
+    // Caret bar at the caret index (or end of text when unset).
+    let cx = (x_at(leaf.caret.unwrap_or(text.len())) + 1.0)
+        .min(bounds.max_x().max(bounds.min_x() + 1.0));
+    scene.fill_rect(Rect::from_xywh(cx, bounds.min_y(), 2.0, h), caret);
 }
 
 /// Overlay a `highlight` (typically translucent) on the hovered tappable

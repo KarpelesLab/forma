@@ -93,6 +93,10 @@ pub struct Element {
     /// text leaf. `None` for non-editable text and non-text elements. Set via
     /// [`Element::caret`]; the focus overlay draws the caret bar there.
     pub caret: Option<usize>,
+    /// Selected byte range `[start, end)` into this element's text, for an
+    /// editable text leaf. `None` when there is no selection. Set via
+    /// [`Element::selection`]; the focus overlay highlights it.
+    pub selection: Option<(usize, usize)>,
     pub kind: ElementKind,
 }
 
@@ -106,6 +110,7 @@ impl Element {
             focus: None,
             drag: None,
             caret: None,
+            selection: None,
             kind: ElementKind::Leaf,
         }
     }
@@ -119,6 +124,7 @@ impl Element {
             focus: None,
             drag: None,
             caret: None,
+            selection: None,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -136,6 +142,7 @@ impl Element {
             focus: None,
             drag: None,
             caret: None,
+            selection: None,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -234,6 +241,13 @@ impl Element {
     /// effect on non-text elements.
     pub fn caret(mut self, byte_index: usize) -> Self {
         self.caret = Some(byte_index);
+        self
+    }
+
+    /// Mark a selected byte range `[start, end)` into this text element, so the
+    /// focus overlay highlights it. An empty or reversed range is ignored.
+    pub fn selection(mut self, range: Option<(usize, usize)>) -> Self {
+        self.selection = range.filter(|(s, e)| e > s);
         self
     }
 

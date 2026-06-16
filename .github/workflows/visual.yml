@@ -136,6 +136,11 @@ jobs:
           xdotool type --delay 80 "XY"
           sleep 2
           import -window root visual_output/text-typed.png
+          # Selection: go Home, Shift+End to select the whole line, screenshot
+          # the highlight behind the text.
+          xdotool key Home; sleep 0.3
+          xdotool key shift+End; sleep 1
+          import -window root visual_output/text-selected.png
           echo "=== textinput.log ==="; cat visual_output/textinput.log || true
           kill "$APP_PID" 2>/dev/null || true
 

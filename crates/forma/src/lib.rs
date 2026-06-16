@@ -43,7 +43,9 @@ use forma_core::{
     collect_focusables, drag_at, focus_at, hit_test, layout, paint, paint_focus, paint_hover,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
-use forma_platform::{ButtonState, ControlFlow, Event, KeyCode, WindowAttributes, backend};
+use forma_platform::{
+    ButtonState, ControlFlow, Event, KeyCode, Modifiers, WindowAttributes, backend,
+};
 use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
@@ -192,6 +194,7 @@ where
                 font,
                 self.theme.palette.focus_ring,
                 self.theme.palette.text,
+                self.theme.palette.selection,
             );
         }
         self.tree = Some(tree);
@@ -465,9 +468,9 @@ where
             Event::Key {
                 code,
                 state: ButtonState::Pressed,
-                ..
+                modifiers,
             } => {
-                if let Some(input) = map_key(code)
+                if let Some(input) = map_key(code, modifiers)
                     && self.press_key(input)
                 {
                     present(&mut self, window, false);
@@ -480,14 +483,26 @@ where
     }
 }
 
-/// Translate a platform [`KeyCode`] into a core [`KeyInput`] editing command.
-/// Character input arrives via [`Event::Text`], so only editing/navigation keys
-/// map here.
-fn map_key(code: KeyCode) -> Option<KeyInput> {
+/// Translate a platform [`KeyCode`] (plus active `modifiers`) into a core
+/// [`KeyInput`] editing command. Character input arrives via [`Event::Text`], so
+/// only editing/navigation keys map here. Shift turns caret motions into
+/// selection-extending motions; Ctrl/Cmd+A selects all.
+fn map_key(code: KeyCode, modifiers: Modifiers) -> Option<KeyInput> {
+    let shift = modifiers.shift;
     Some(match code {
         KeyCode::Backspace => KeyInput::Backspace,
+        KeyCode::Delete => KeyInput::Delete,
+        KeyCode::ArrowLeft if shift => KeyInput::SelectLeft,
         KeyCode::ArrowLeft => KeyInput::Left,
+        KeyCode::ArrowRight if shift => KeyInput::SelectRight,
         KeyCode::ArrowRight => KeyInput::Right,
+        KeyCode::Home if shift => KeyInput::SelectHome,
+        KeyCode::Home => KeyInput::Home,
+        KeyCode::End if shift => KeyInput::SelectEnd,
+        KeyCode::End => KeyInput::End,
+        KeyCode::Char('a') | KeyCode::Char('A') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::SelectAll
+        }
         KeyCode::Enter => KeyInput::Enter,
         KeyCode::Escape => KeyInput::Escape,
         _ => return None,

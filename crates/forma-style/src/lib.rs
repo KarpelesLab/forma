@@ -44,6 +44,8 @@ pub struct Palette {
     pub focus_ring: Color,
     /// Translucent overlay the App composites on a hovered element.
     pub hover_overlay: Color,
+    /// Translucent highlight behind selected text.
+    pub selection: Color,
 }
 
 /// A type scale, in logical pixels.
@@ -131,6 +133,7 @@ impl Theme {
                 danger: Color::rgb(0xdc, 0x3a, 0x3a),
                 focus_ring: primary,
                 hover_overlay: Color::rgba(0, 0, 0, 18),
+                selection: Color::rgba(0x3b, 0x82, 0xf6, 60),
             },
             typography: Typography::default(),
             spacing: Spacing::default(),
@@ -159,6 +162,7 @@ impl Theme {
                 danger: Color::rgb(0xf2, 0x55, 0x55),
                 focus_ring: primary,
                 hover_overlay: Color::rgba(255, 255, 255, 28),
+                selection: Color::rgba(0x60, 0x9c, 0xff, 80),
             },
             typography: Typography::default(),
             spacing: Spacing::default(),
@@ -177,6 +181,9 @@ impl Theme {
         self.palette.primary_active = active;
         self.palette.on_primary = accent.on_color();
         self.palette.focus_ring = accent;
+        // Tint the text selection with the accent, keeping the prior opacity.
+        let a = self.palette.selection.a;
+        self.palette.selection = Color::rgba(accent.r, accent.g, accent.b, a);
         self
     }
 

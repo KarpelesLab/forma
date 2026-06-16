@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::ControlFlow;
 use crate::error::PlatformError;
-use crate::event::{ButtonState, Event, KeyCode, PointerButton, ScrollDelta, WindowId};
+use crate::event::{ButtonState, Event, KeyCode, Modifiers, PointerButton, ScrollDelta, WindowId};
 use crate::window::{Window, WindowAttributes};
 use forma_geometry::{PhysicalSize, Point, ScaleFactor};
 use forma_render::{Pixmap, Surface};
@@ -878,11 +878,17 @@ where
                 } else {
                     ButtonState::Released
                 };
-                // buf[1] = keycode; buf[28..30] = modifier mask (bit 0 = Shift).
+                // buf[1] = keycode; buf[28..30] = modifier mask
+                // (bit 0 = Shift, bit 2 = Control).
                 let keycode = buf[1];
-                let shift = rd_u16(&buf, 28).unwrap_or(0) & 0x0001 != 0;
-                let ks = keymap.keysym(keycode, shift);
-                match keysym_to_event(ks, state) {
+                let mask = rd_u16(&buf, 28).unwrap_or(0);
+                let modifiers = Modifiers {
+                    shift: mask & 0x0001 != 0,
+                    ctrl: mask & 0x0004 != 0,
+                    ..Default::default()
+                };
+                let ks = keymap.keysym(keycode, modifiers.shift);
+                match keysym_to_event(ks, state, modifiers) {
                     Some(ev) => handler(ev, &win),
                     None => ControlFlow::Wait,
                 }
@@ -950,9 +956,9 @@ fn fetch_keymap(conn: &mut Conn) -> io::Result<Keymap> {
 }
 
 /// Translate an X11 keysym into a Forma event: editing/navigation keys become
-/// [`Event::Key`]; printable Latin-1 / Unicode keysyms become [`Event::Text`]
-/// (on press only).
-fn keysym_to_event(ks: u32, state: ButtonState) -> Option<Event> {
+/// [`Event::Key`] (carrying `modifiers`); printable Latin-1 / Unicode keysyms
+/// become [`Event::Text`] (on press only).
+fn keysym_to_event(ks: u32, state: ButtonState, modifiers: Modifiers) -> Option<Event> {
     let code = match ks {
         0xff08 => Some(KeyCode::Backspace),
         0xff09 => Some(KeyCode::Tab),
@@ -962,13 +968,16 @@ fn keysym_to_event(ks: u32, state: ButtonState) -> Option<Event> {
         0xff52 => Some(KeyCode::ArrowUp),
         0xff53 => Some(KeyCode::ArrowRight),
         0xff54 => Some(KeyCode::ArrowDown),
+        0xff50 => Some(KeyCode::Home),
+        0xff57 => Some(KeyCode::End),
+        0xffff => Some(KeyCode::Delete),
         _ => None,
     };
     if let Some(code) = code {
         return Some(Event::Key {
             code,
             state,
-            modifiers: Default::default(),
+            modifiers,
         });
     }
     if state != ButtonState::Pressed {

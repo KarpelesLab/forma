@@ -53,6 +53,9 @@ pub enum KeyCode {
     ArrowRight,
     ArrowUp,
     ArrowDown,
+    Home,
+    End,
+    Delete,
     /// A printable character key, identified by its base character.
     Char(char),
     /// Anything not yet mapped, carrying the backend's raw scancode.

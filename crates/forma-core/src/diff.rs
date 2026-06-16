@@ -92,13 +92,15 @@ pub fn diff_trees(old: &LayoutNode, new: &LayoutNode) -> Damage {
 
 /// `true` if two nodes paint the same pixels for themselves (ignoring children).
 ///
-/// `caret` is included because the focus overlay draws the caret bar from it, so
-/// a caret move (with text otherwise unchanged) must still damage the node.
+/// `caret` and `selection` are included because the focus overlay paints them,
+/// so moving the caret or changing the selection (text otherwise unchanged) must
+/// still damage the node.
 fn visuals_equal(a: &LayoutNode, b: &LayoutNode) -> bool {
     a.bounds == b.bounds
         && a.decoration == b.decoration
         && a.content == b.content
         && a.caret == b.caret
+        && a.selection == b.selection
 }
 
 fn diff_node(old: &LayoutNode, new: &LayoutNode, out: &mut Vec<Rect>) {
@@ -170,6 +172,7 @@ mod tests {
             focus: None,
             drag: None,
             caret: None,
+            selection: None,
             children,
         }
     }
@@ -187,6 +190,7 @@ mod tests {
             focus: None,
             drag: None,
             caret: None,
+            selection: None,
             children: Vec::new(),
         }
     }
@@ -233,6 +237,23 @@ mod tests {
         a.children[0].caret = Some(2);
         let mut b = a.clone();
         b.children[0].caret = Some(1);
+        assert_eq!(
+            diff_trees(&a, &b),
+            Damage::Regions(vec![Rect::from_xywh(0.0, 0.0, 40.0, 20.0)])
+        );
+    }
+
+    #[test]
+    fn selection_change_alone_is_damage() {
+        // Text + caret unchanged, only the selection range differs — must
+        // repaint so the highlight redraws.
+        let mut a = root(vec![text_node(
+            Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
+            "abc",
+        )]);
+        a.children[0].selection = Some((0, 1));
+        let mut b = a.clone();
+        b.children[0].selection = Some((0, 3));
         assert_eq!(
             diff_trees(&a, &b),
             Damage::Regions(vec![Rect::from_xywh(0.0, 0.0, 40.0, 20.0)])

@@ -51,6 +51,14 @@ pub enum KeyInput {
     Right,
     Home,
     End,
+    /// Caret motion that *extends the selection* (Shift held). The `Select*`
+    /// variants mirror the plain motions but keep the selection anchor.
+    SelectLeft,
+    SelectRight,
+    SelectHome,
+    SelectEnd,
+    /// Select everything (e.g. Ctrl/Cmd+A).
+    SelectAll,
     Enter,
     Escape,
 }
@@ -227,6 +235,9 @@ pub struct LayoutNode {
     pub drag: Option<DragId>,
     /// Caret byte index for an editable text leaf (drawn by the focus overlay).
     pub caret: Option<usize>,
+    /// Selected byte range `[start, end)` for an editable text leaf (the focus
+    /// overlay highlights it).
+    pub selection: Option<(usize, usize)>,
     pub children: Vec<LayoutNode>,
 }
 
@@ -292,12 +303,12 @@ pub fn find_action(node: &LayoutNode, id: ActionId) -> Option<&LayoutNode> {
     node.children.iter().find_map(|c| find_action(c, id))
 }
 
-/// The first text content `(text, size, bounds, caret)` at or under `node`, in
-/// tree order. Used to position a caret inside a focused text field; `caret` is
-/// the byte index to draw the caret bar at, or `None` to default to the end.
-pub fn first_text(node: &LayoutNode) -> Option<(&str, f64, Rect, Option<usize>)> {
-    if let NodeContent::Text { text, size, .. } = &node.content {
-        return Some((text, *size, node.bounds, node.caret));
+/// The first text-bearing [`LayoutNode`] at or under `node`, in tree order.
+/// Used to position the caret and selection highlight inside a focused text
+/// field (read its `content` text/size plus `bounds`/`caret`/`selection`).
+pub fn first_text(node: &LayoutNode) -> Option<&LayoutNode> {
+    if matches!(node.content, NodeContent::Text { .. }) {
+        return Some(node);
     }
     node.children.iter().find_map(first_text)
 }
@@ -325,6 +336,7 @@ mod tests {
             focus,
             drag: None,
             caret: None,
+            selection: None,
             children: Vec::new(),
         }
     }
@@ -366,6 +378,7 @@ mod tests {
             focus: None,
             drag: None,
             caret: None,
+            selection: None,
             children: vec![
                 leaf(
                     Rect::from_xywh(10.0, 10.0, 30.0, 30.0),
