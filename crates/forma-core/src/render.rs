@@ -15,7 +15,7 @@ use crate::element::{Align, BoxStyle, Element, ElementKind};
 use crate::runtime::{
     ActionId, FocusId, LayoutNode, NodeContent, find_action, find_focus, first_text,
 };
-use forma_geometry::{Rect, Size};
+use forma_geometry::{Point, Rect, Size};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
 use forma_render::{Color, Font, Scene};
 
@@ -186,58 +186,98 @@ pub fn paint_focus(
     };
     let bounds = leaf.bounds;
     let size = *size;
-    // Logical-pixel x of byte offset `i` within the text (prefix advance).
-    let x_at = |i: usize| -> f64 {
-        let upto = if text.is_char_boundary(i.min(text.len())) {
-            &text[..i.min(text.len())]
-        } else {
-            text.as_str()
-        };
-        bounds.min_x() + font.map(|f| f.measure(upto, size).width).unwrap_or(0.0)
+    let line_h = font.map(|f| f.line_height(size)).unwrap_or(size);
+    // Width of a text slice (0 without a font).
+    let width = |slice: &str| font.map(|f| f.measure(slice, size).width).unwrap_or(0.0);
+    // Map a byte index to its (x, line) on screen.
+    let pos = |i: usize| -> (f64, usize) {
+        let i = i.min(text.len());
+        let ls = text[..i].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        let line = text[..ls].bytes().filter(|&b| b == b'\n').count();
+        (bounds.min_x() + width(&text[ls..i]), line)
     };
-    let h = bounds.height().max(size);
 
-    // Selection highlight (drawn under the caret; translucent so text reads).
+    // Selection highlight, drawn as one rectangle per spanned line (under the
+    // caret; translucent so the text reads through).
     if let Some((s, e)) = leaf.selection
         && e > s
     {
-        let (x0, x1) = (x_at(s), x_at(e));
-        scene.fill_rect(Rect::from_xywh(x0, bounds.min_y(), x1 - x0, h), selection);
+        let mut ls = 0usize;
+        let mut line = 0usize;
+        loop {
+            let le = text[ls..].find('\n').map(|n| ls + n).unwrap_or(text.len());
+            // Intersect [s, e) with this line, including the trailing '\n' when
+            // the selection continues onto the next line.
+            let nl = if le < text.len() { 1 } else { 0 };
+            let sel_s = s.max(ls);
+            let sel_e = e.min(le + nl);
+            if sel_e > sel_s && sel_s <= le {
+                let x0 = bounds.min_x() + width(&text[ls..sel_s.min(le)]);
+                let x1 = bounds.min_x() + width(&text[ls..sel_e.min(le)]);
+                let extra = if sel_e > le { 6.0 } else { 0.0 }; // hint the newline
+                let y = bounds.min_y() + line as f64 * line_h;
+                scene.fill_rect(Rect::from_xywh(x0, y, (x1 - x0) + extra, line_h), selection);
+            }
+            if le >= text.len() {
+                break;
+            }
+            ls = le + 1;
+            line += 1;
+        }
     }
 
-    // Caret bar at the caret index (or end of text when unset).
-    let cx = (x_at(leaf.caret.unwrap_or(text.len())) + 1.0)
-        .min(bounds.max_x().max(bounds.min_x() + 1.0));
-    scene.fill_rect(Rect::from_xywh(cx, bounds.min_y(), 2.0, h), caret);
+    // Caret bar on its line (or end of text when unset).
+    let (cx, cline) = pos(leaf.caret.unwrap_or(text.len()));
+    let cx = (cx + 1.0).min(bounds.max_x().max(bounds.min_x() + 1.0));
+    let cy = bounds.min_y() + cline as f64 * line_h;
+    scene.fill_rect(Rect::from_xywh(cx, cy, 2.0, line_h), caret);
 }
 
-/// Resolve a pointer x position (logical pixels, absolute) to the nearest caret
-/// byte index within `node`'s first text leaf. Walks char boundaries, measuring
-/// each prefix, and returns the boundary whose x is closest to `x`. Returns
-/// `None` if `node` has no text or no `font`. Single-line text only.
-pub fn caret_index_at(node: &LayoutNode, x: f64, font: Option<&Font>) -> Option<usize> {
+/// Resolve a pointer position (logical pixels, absolute) to the nearest caret
+/// byte index within `node`'s first text leaf. The `y` picks the line and the
+/// `x` the column within it; returns the boundary whose x is closest. Returns
+/// `None` if `node` has no text or no `font`.
+pub fn caret_index_at(node: &LayoutNode, point: Point, font: Option<&Font>) -> Option<usize> {
     let leaf = first_text(node)?;
     let NodeContent::Text { text, size, .. } = &leaf.content else {
         return None;
     };
     let font = font?;
-    let local = x - leaf.bounds.min_x();
-    if local <= 0.0 {
-        return Some(0);
+    let line_h = font.line_height(*size).max(1.0);
+    let line = ((point.y - leaf.bounds.min_y()) / line_h).floor().max(0.0) as usize;
+
+    // Byte range [ls, le) of the chosen line (clamped to the last line if
+    // `line` overruns the line count).
+    let (mut ls, mut le) = (0usize, text.len());
+    let mut start = 0usize;
+    for (i, part) in text.split('\n').enumerate() {
+        let end = start + part.len();
+        ls = start;
+        le = end;
+        if i == line {
+            break;
+        }
+        start = end + 1; // skip the '\n'
     }
-    // Evaluate every char boundary; pick the one nearest the pointer.
-    let mut best = 0usize;
+
+    let local = point.x - leaf.bounds.min_x();
+    if local <= 0.0 {
+        return Some(ls);
+    }
+    // Pick the char boundary in [ls, le] whose x is nearest the pointer.
+    let line_text = &text[ls..le];
+    let mut best = ls;
     let mut best_dist = f64::INFINITY;
-    for (i, _) in text
+    for (off, _) in line_text
         .char_indices()
         .map(|(i, _)| (i, ()))
-        .chain(std::iter::once((text.len(), ())))
+        .chain(std::iter::once((line_text.len(), ())))
     {
-        let w = font.measure(&text[..i], *size).width;
+        let w = font.measure(&line_text[..off], *size).width;
         let d = (w - local).abs();
         if d < best_dist {
             best_dist = d;
-            best = i;
+            best = ls + off;
         }
     }
     Some(best)
@@ -337,16 +377,26 @@ mod tests {
         // A text leaf "hello" at x origin 10.
         let el = Element::text("hello", 16.0, Color::BLACK);
         let node = layout(&el, Rect::from_xywh(10.0, 0.0, 200.0, 20.0), Some(&font));
+        let y = node.bounds.min_y() + 1.0;
         // Far left → index 0; far right → end (5).
-        assert_eq!(caret_index_at(&node, 0.0, Some(&font)), Some(0));
-        assert_eq!(caret_index_at(&node, 9.0, Some(&font)), Some(0));
-        assert_eq!(caret_index_at(&node, 10_000.0, Some(&font)), Some(5));
+        assert_eq!(
+            caret_index_at(&node, Point::new(0.0, y), Some(&font)),
+            Some(0)
+        );
+        assert_eq!(
+            caret_index_at(&node, Point::new(9.0, y), Some(&font)),
+            Some(0)
+        );
+        assert_eq!(
+            caret_index_at(&node, Point::new(10_000.0, y), Some(&font)),
+            Some(5)
+        );
         // A point near the middle lands on an interior boundary (1..=4).
         let mid = node.bounds.min_x() + font.measure("hel", 16.0).width;
-        let i = caret_index_at(&node, mid, Some(&font)).unwrap();
+        let i = caret_index_at(&node, Point::new(mid, y), Some(&font)).unwrap();
         assert!((1..=4).contains(&i), "mid index {i} out of range");
         // Without a font, no resolution is possible.
-        assert_eq!(caret_index_at(&node, mid, None), None);
+        assert_eq!(caret_index_at(&node, Point::new(mid, y), None), None);
     }
 
     #[test]

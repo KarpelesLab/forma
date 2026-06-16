@@ -58,12 +58,16 @@ pub enum KeyInput {
     Delete,
     Left,
     Right,
+    Up,
+    Down,
     Home,
     End,
     /// Caret motion that *extends the selection* (Shift held). The `Select*`
     /// variants mirror the plain motions but keep the selection anchor.
     SelectLeft,
     SelectRight,
+    SelectUp,
+    SelectDown,
     SelectHome,
     SelectEnd,
     /// Select everything (e.g. Ctrl/Cmd+A).

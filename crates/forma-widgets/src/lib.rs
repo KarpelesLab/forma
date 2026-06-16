@@ -254,16 +254,67 @@ impl EditBuffer {
         self.anchor = None;
     }
 
-    /// Move the caret to the start, clearing the selection.
+    /// Move the caret to the start of the current line, clearing the selection.
     pub fn home(&mut self) {
-        self.caret = 0;
+        self.caret = self.line_start(self.caret);
         self.anchor = None;
     }
 
-    /// Move the caret to the end, clearing the selection.
+    /// Move the caret to the end of the current line, clearing the selection.
     pub fn end(&mut self) {
-        self.caret = self.text.len();
+        self.caret = self.line_end(self.caret);
         self.anchor = None;
+    }
+
+    /// Move the caret up one line (same byte column), clearing the selection.
+    pub fn up(&mut self) {
+        self.caret = self.caret_up(self.caret);
+        self.anchor = None;
+    }
+
+    /// Move the caret down one line (same byte column), clearing the selection.
+    pub fn down(&mut self) {
+        self.caret = self.caret_down(self.caret);
+        self.anchor = None;
+    }
+
+    /// Byte index of the start of the line containing `byte` (after the
+    /// preceding `\n`, or 0).
+    fn line_start(&self, byte: usize) -> usize {
+        self.text[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0)
+    }
+
+    /// Byte index of the end of the line containing `byte` (before the next
+    /// `\n`, or the text end).
+    fn line_end(&self, byte: usize) -> usize {
+        self.text[byte..]
+            .find('\n')
+            .map(|i| byte + i)
+            .unwrap_or(self.text.len())
+    }
+
+    /// The caret position one line above `byte`, keeping the byte column.
+    fn caret_up(&self, byte: usize) -> usize {
+        let start = self.line_start(byte);
+        if start == 0 {
+            return 0; // already on the first line
+        }
+        let col = byte - start;
+        let prev_start = self.line_start(start - 1);
+        let prev_end = start - 1; // the '\n' ending the previous line
+        self.snap((prev_start + col).min(prev_end))
+    }
+
+    /// The caret position one line below `byte`, keeping the byte column.
+    fn caret_down(&self, byte: usize) -> usize {
+        let end = self.line_end(byte);
+        if end == self.text.len() {
+            return self.text.len(); // already on the last line
+        }
+        let col = byte - self.line_start(byte);
+        let next_start = end + 1;
+        let next_end = self.line_end(next_start);
+        self.snap((next_start + col).min(next_end))
     }
 
     /// Begin or extend a selection: anchor at the current caret if not already
@@ -295,14 +346,14 @@ impl EditBuffer {
         });
     }
 
-    /// Extend the selection to the start.
+    /// Extend the selection to the start of the current line.
     pub fn select_home(&mut self) {
-        self.extend(|b| b.caret = 0);
+        self.extend(|b| b.caret = b.line_start(b.caret));
     }
 
-    /// Extend the selection to the end.
+    /// Extend the selection to the end of the current line.
     pub fn select_end(&mut self) {
-        self.extend(|b| b.caret = b.text.len());
+        self.extend(|b| b.caret = b.line_end(b.caret));
     }
 
     /// Select the entire text.
@@ -347,14 +398,20 @@ impl EditBuffer {
             KeyInput::Delete => self.delete(),
             KeyInput::Left => self.move_left(),
             KeyInput::Right => self.move_right(),
+            KeyInput::Up => self.up(),
+            KeyInput::Down => self.down(),
             KeyInput::Home => self.home(),
             KeyInput::End => self.end(),
             KeyInput::SelectLeft => self.select_left(),
             KeyInput::SelectRight => self.select_right(),
+            KeyInput::SelectUp => self.extend(|b| b.caret = b.caret_up(b.caret)),
+            KeyInput::SelectDown => self.extend(|b| b.caret = b.caret_down(b.caret)),
             KeyInput::SelectHome => self.select_home(),
             KeyInput::SelectEnd => self.select_end(),
             KeyInput::SelectAll => self.select_all(),
-            KeyInput::Enter | KeyInput::Escape => {}
+            // Enter inserts a newline (the buffer is multi-line capable).
+            KeyInput::Enter => self.insert("\n"),
+            KeyInput::Escape => {}
         }
     }
 
@@ -453,6 +510,44 @@ pub fn text_editor<S>(
         .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
         .align(Align::Start, Align::Center)
         .width(200.0)
+        .on_key(cx, move |s, k| field(s).apply(k))
+        .on_text_pos(cx, move |s, index, extend| {
+            let b = field(s);
+            if extend {
+                b.extend_to(index);
+            } else {
+                b.place_caret(index);
+            }
+        })
+}
+
+/// A multi-line editable text area backed by an [`EditBuffer`]: the same
+/// keyboard + pointer wiring as [`text_editor`], but top-aligned so wrapped and
+/// `\n`-separated lines stack from the top. Enter inserts a newline, and
+/// Up/Down move between lines. Default size 280×120 logical px; override with
+/// `.width(..)`/`.height(..)`.
+pub fn text_area<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    buffer: &EditBuffer,
+    field: impl Fn(&mut S) -> &mut EditBuffer + Copy + 'static,
+) -> Element {
+    let shown = if buffer.is_empty() {
+        String::from(" ")
+    } else {
+        buffer.text().to_string()
+    };
+    let text = Element::text(shown, theme.font_size, theme.palette.text)
+        .caret(buffer.caret())
+        .selection(buffer.selection());
+    Element::stack(Axis::Horizontal, vec![text])
+        .fill(theme.palette.surface)
+        .radius(theme.radius)
+        .border(theme.palette.border, 1.0)
+        .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
+        .align(Align::Start, Align::Start)
+        .width(280.0)
+        .height(120.0)
         .on_key(cx, move |s, k| field(s).apply(k))
         .on_text_pos(cx, move |s, index, extend| {
             let b = field(s);
@@ -744,6 +839,38 @@ mod tests {
         assert_eq!(u.caret(), "é🦀".len());
         u.place_caret(1); // inside "é" -> snaps down to 0
         assert_eq!(u.caret(), 0);
+    }
+
+    #[test]
+    fn edit_buffer_enter_and_line_navigation() {
+        let mut b = EditBuffer::new();
+        b.apply(&KeyInput::Text("ab".into()));
+        b.apply(&KeyInput::Enter); // newline → "ab\n", caret at 3
+        b.apply(&KeyInput::Text("cde".into())); // "ab\ncde", caret at end (6)
+        assert_eq!((b.text(), b.caret()), ("ab\ncde", 6));
+        // Up keeps the byte column (3 → clamped to line 0 length 2).
+        b.up();
+        assert_eq!(b.caret(), 2);
+        // Home/End are line-aware.
+        b.home();
+        assert_eq!(b.caret(), 0);
+        b.end();
+        assert_eq!(b.caret(), 2); // end of line 0, before '\n'
+        // Down returns to line 1 at the same column.
+        b.down();
+        assert_eq!(b.caret(), 5); // "ab\ncd|e"
+    }
+
+    #[test]
+    fn edit_buffer_shift_down_selects_across_lines() {
+        let mut b = EditBuffer::from_text("ab\ncd");
+        b.home(); // caret to start of line 1 ("cd")
+        b.up(); // line 0
+        b.home(); // caret 0
+        b.apply(&KeyInput::SelectDown); // extend down one line
+        let (s, e) = b.selection().expect("selection");
+        assert_eq!(s, 0);
+        assert!(e >= 3, "selection should reach into line 1, got {e}");
     }
 
     #[test]

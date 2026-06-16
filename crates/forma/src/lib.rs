@@ -368,7 +368,7 @@ where
         let font = self.font.as_ref();
         let Some((id, index, foc)) = self.tree.as_ref().and_then(|t| {
             let (id, node) = text_pos_at(t, pos)?;
-            let index = caret_index_at(node, pos.x, font)?;
+            let index = caret_index_at(node, pos, font)?;
             Some((id, index, focus_at(t, pos)))
         }) else {
             return false;
@@ -396,7 +396,7 @@ where
             .tree
             .as_ref()
             .and_then(|t| find_text_pos(t, id))
-            .and_then(|node| caret_index_at(node, pos.x, font))
+            .and_then(|node| caret_index_at(node, pos, font))
         else {
             return false;
         };
@@ -562,6 +562,10 @@ fn map_key(code: KeyCode, modifiers: Modifiers) -> Option<KeyInput> {
         KeyCode::ArrowLeft => KeyInput::Left,
         KeyCode::ArrowRight if shift => KeyInput::SelectRight,
         KeyCode::ArrowRight => KeyInput::Right,
+        KeyCode::ArrowUp if shift => KeyInput::SelectUp,
+        KeyCode::ArrowUp => KeyInput::Up,
+        KeyCode::ArrowDown if shift => KeyInput::SelectDown,
+        KeyCode::ArrowDown => KeyInput::Down,
         KeyCode::Home if shift => KeyInput::SelectHome,
         KeyCode::Home => KeyInput::Home,
         KeyCode::End if shift => KeyInput::SelectEnd,
@@ -587,7 +591,7 @@ pub mod prelude {
     pub use forma_widgets::{
         EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
         edit_string, heading, label, panel, paragraph, row, setting_row, slider, spacer, swatch,
-        switch, text_editor, text_field,
+        switch, text_area, text_editor, text_field,
     };
 }
 
