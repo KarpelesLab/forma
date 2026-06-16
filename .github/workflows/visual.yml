@@ -491,13 +491,13 @@ jobs:
             --window-size=420,300 --virtual-time-budget=20000 \
             --screenshot="$PWD/visual_output/forma-webgpu.png" \
             http://localhost:8000/webgpu.html 2>chrome.log || true
-          echo "=== chrome.log (WebGPU markers) ==="; grep -iE "WEBGPU_|webgpu|dawn|vulkan|swiftshader" chrome.log | head -40 || true
+          echo "=== chrome.log (WebGPU markers) ==="; grep -iE "WEBGPU |WEBGPU_|adapter|dawn|vulkan|swiftshader" chrome.log | head -40 || true
           identify visual_output/forma-webgpu.png || true
-          # The triangle center must be forma green (52,211,153); the page paints
-          # itself red on any WebGPU failure, so this also catches no-adapter.
-          px=$(convert visual_output/forma-webgpu.png -format '%[pixel:p{210,150}]' info:)
-          echo "WebGPU center pixel: $px"
-          echo "$px" | grep -q "52,211,153"
+          # The page reads the rendered pixel back in JS and logs it, so this is
+          # deterministic (no canvas-composite/screenshot timing). The triangle
+          # center must be forma green (52,211,153); the page logs WEBGPU_FAIL on
+          # any WebGPU failure (no adapter, etc.).
+          grep -q "WEBGPU center=52,211,153" chrome.log
 
       - name: Stop server
         if: always()

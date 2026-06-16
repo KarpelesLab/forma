@@ -2,10 +2,11 @@
 <!--
   Standalone WebGPU triangle — the browser GPU backend for Forma's "GPU-native
   drawing" track. No wgpu/bindgen: hand-written WGSL + the WebGPU JS API (the one
-  sanctioned web exception in ROADMAP.md §1). Draws a forma-green triangle on a
-  dark clear into a 420x300 canvas. CI screenshots it under headless Chrome with
-  WebGPU on SwiftShader and checks the center pixel; on any failure the page turns
-  red so the artifact shows it plainly.
+  sanctioned web exception in ROADMAP.md §1). Renders a forma-green triangle on a
+  dark clear into an *offscreen* texture, copies it back to the CPU, and prints
+  the center pixel via console.log — so CI checks the actual rendered pixel
+  deterministically (no flaky canvas-composite-vs-screenshot timing). The frame
+  is also blitted to a canvas as a human-viewable artifact.
 -->
 <html>
   <head>
@@ -19,6 +20,8 @@
   <body>
     <canvas id="c" width="420" height="300"></canvas>
     <script>
+      const W = 420, H = 300;
+
       function fail(msg) {
         document.body.style.background = "red";
         document.title = "WEBGPU_FAIL " + msg;
@@ -30,11 +33,13 @@
         const adapter = await navigator.gpu.requestAdapter();
         if (!adapter) return fail("no adapter");
         const device = await adapter.requestDevice();
-        const canvas = document.getElementById("c");
-        const ctx = canvas.getContext("webgpu");
-        if (!ctx) return fail("no webgpu context");
-        const format = navigator.gpu.getPreferredCanvasFormat();
-        ctx.configure({ device, format, alphaMode: "opaque" });
+
+        const format = "rgba8unorm";
+        const target = device.createTexture({
+          size: [W, H],
+          format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        });
 
         const shader = device.createShaderModule({
           code: `
@@ -54,11 +59,18 @@
           primitive: { topology: "triangle-list" },
         });
 
+        // bytesPerRow must be a multiple of 256 for copyTextureToBuffer.
+        const bytesPerRow = Math.ceil((W * 4) / 256) * 256;
+        const readback = device.createBuffer({
+          size: bytesPerRow * H,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+
         const encoder = device.createCommandEncoder();
         const pass = encoder.beginRenderPass({
           colorAttachments: [
             {
-              view: ctx.getCurrentTexture().createView(),
+              view: target.createView(),
               clearValue: { r: 0x14 / 255, g: 0x15 / 255, b: 0x18 / 255, a: 1 },
               loadOp: "clear",
               storeOp: "store",
@@ -68,10 +80,33 @@
         pass.setPipeline(pipeline);
         pass.draw(3);
         pass.end();
+        encoder.copyTextureToBuffer({ texture: target }, { buffer: readback, bytesPerRow }, [W, H, 1]);
         device.queue.submit([encoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
-        document.title = "WEBGPU_OK";
-        console.log("WEBGPU_OK");
+
+        await readback.mapAsync(GPUMapMode.READ);
+        const data = new Uint8Array(readback.getMappedRange());
+        const i = (H >> 1) * bytesPerRow + (W >> 1) * 4;
+        const px = `${data[i]},${data[i + 1]},${data[i + 2]}`;
+        console.log("WEBGPU center=" + px);
+        document.title = "WEBGPU center=" + px;
+
+        // Blit to the canvas as a viewable artifact (best-effort).
+        try {
+          const ctx = document.getElementById("c").getContext("2d");
+          const img = ctx.createImageData(W, H);
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              const s = y * bytesPerRow + x * 4;
+              const d = (y * W + x) * 4;
+              img.data[d] = data[s];
+              img.data[d + 1] = data[s + 1];
+              img.data[d + 2] = data[s + 2];
+              img.data[d + 3] = 255;
+            }
+          }
+          ctx.putImageData(img, 0, 0);
+        } catch (e) {}
+        readback.unmap();
       }
 
       main().catch((e) => fail(String(e)));
