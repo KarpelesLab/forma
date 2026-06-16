@@ -190,9 +190,11 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   rounded-rect signed-distance-field GLES2 shader, and composites each text run
   as an alpha-blended glyph-coverage mask (not by compositing a whole CPU
   pixmap). **CI-verified** on Mesa: the box/text primitives
-  (`docs/screenshots/forma-gpu-rects.png`) and the actual widget-tree `Scene`
-  (`docs/screenshots/forma-gpu-scene.png`). ⬜ A per-glyph atlas cache (this
-  rasterizes whole text runs) and Vulkan/Metal/D3D/WebGPU backends.
+  (`docs/screenshots/forma-gpu-rects.png`) and the actual widget-tree `Scene`,
+  whose text is drawn from a packed **per-glyph atlas** (each unique glyph
+  rasterized once into one shared texture; repeats reuse the slot)
+  (`docs/screenshots/forma-gpu-scene.png`). ⬜ Vulkan/Metal/D3D/WebGPU backends
+  (each a from-scratch graphics-API implementation).
 
 ---
 
