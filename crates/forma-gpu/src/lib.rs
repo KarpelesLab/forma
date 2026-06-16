@@ -13,7 +13,8 @@
 //! Linux-only for now (EGL/GLESv2); other targets return an error so the
 //! workspace still builds everywhere.
 
-use forma_render::Pixmap;
+use forma_geometry::{PhysicalSize, Rect};
+use forma_render::{Color, Pixmap};
 
 #[cfg(all(target_os = "linux", feature = "gl"))]
 mod gl;
@@ -29,6 +30,27 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
     #[cfg(not(all(target_os = "linux", feature = "gl")))]
     {
         let _ = input;
+        Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
+    }
+}
+
+/// Draw solid-color `rects` **GPU-natively** (as tessellated geometry through a
+/// flat-color shader, not by compositing a CPU frame) on a `background`-cleared
+/// target of `size`, returning the rendered frame — the first step toward a
+/// GPU-native scene renderer. Errors if the `gl` feature is off or no GL/EGL
+/// device is available.
+pub fn fill_rects_offscreen(
+    size: PhysicalSize,
+    background: Color,
+    rects: &[(Rect, Color)],
+) -> Result<Pixmap, String> {
+    #[cfg(all(target_os = "linux", feature = "gl"))]
+    {
+        gl::fill_rects_offscreen(size, background, rects)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "gl")))]
+    {
+        let _ = (size, background, rects);
         Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
     }
 }

@@ -3,8 +3,8 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use core::ffi::{c_char, c_void};
-use forma_geometry::PhysicalSize;
-use forma_render::Pixmap;
+use forma_geometry::{PhysicalSize, Rect};
+use forma_render::{Color, Pixmap};
 
 // ---- EGL / GL scalar types --------------------------------------------------
 
@@ -57,6 +57,7 @@ const GL_FRAGMENT_SHADER: GLenum = 0x8B30;
 const GL_COMPILE_STATUS: GLenum = 0x8B81;
 const GL_LINK_STATUS: GLenum = 0x8B82;
 const GL_TRIANGLE_STRIP: GLenum = 0x0005;
+const GL_TRIANGLES: GLenum = 0x0004;
 const GL_COLOR_BUFFER_BIT: GLbitfield = 0x4000;
 
 #[link(name = "EGL")]
@@ -149,6 +150,7 @@ unsafe extern "C" {
     );
     fn glGetUniformLocation(program: GLuint, name: *const c_char) -> GLint;
     fn glUniform1i(location: GLint, v0: GLint);
+    fn glUniform4f(location: GLint, v0: f32, v1: f32, v2: f32, v3: f32);
     fn glDrawArrays(mode: GLenum, first: GLint, count: GLsizei);
     fn glReadPixels(
         x: GLint,
@@ -165,6 +167,12 @@ unsafe extern "C" {
 const VERTEX_SRC: &[u8] = b"attribute vec2 pos;\nattribute vec2 uv;\nvarying vec2 v_uv;\nvoid main() {\n  v_uv = uv;\n  gl_Position = vec4(pos, 0.0, 1.0);\n}\n\0";
 const FRAGMENT_SRC: &[u8] = b"precision mediump float;\nvarying vec2 v_uv;\nuniform sampler2D tex;\nvoid main() {\n  gl_FragColor = texture2D(tex, v_uv);\n}\n\0";
 
+// Flat-color program for GPU-native geometry (solid rectangles).
+const FLAT_VERTEX_SRC: &[u8] =
+    b"attribute vec2 pos;\nvoid main() {\n  gl_Position = vec4(pos, 0.0, 1.0);\n}\n\0";
+const FLAT_FRAGMENT_SRC: &[u8] =
+    b"precision mediump float;\nuniform vec4 u_color;\nvoid main() {\n  gl_FragColor = u_color;\n}\n\0";
+
 unsafe fn compile(kind: GLenum, src: &[u8]) -> Result<GLuint, String> {
     unsafe {
         let sh = glCreateShader(kind);
@@ -180,17 +188,10 @@ unsafe fn compile(kind: GLenum, src: &[u8]) -> Result<GLuint, String> {
     }
 }
 
-/// Upload `input` to a texture, draw it to an offscreen framebuffer with a
-/// pass-through shader, and read the result back as a new [`Pixmap`].
-pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
-    let size = input.size();
-    let (w, h) = (size.width as GLsizei, size.height as GLsizei);
-    if w == 0 || h == 0 {
-        return Err("empty pixmap".into());
-    }
-
+/// Create a surfaceless EGL display + GLES2 context and make it current. Shared
+/// by the present and GPU-native-draw paths; runs headlessly under Mesa.
+unsafe fn egl_make_current() -> Result<(), String> {
     unsafe {
-        // --- EGL surfaceless context ---
         let dpy = eglGetPlatformDisplay(
             EGL_PLATFORM_SURFACELESS_MESA,
             core::ptr::null_mut(),
@@ -216,8 +217,6 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
             8,
             EGL_NONE,
         ];
-        // (alpha omitted from the attrib list above for brevity; 8-bit RGB is
-        // enough for the offscreen target.)
         let mut config: EGLConfig = core::ptr::null_mut();
         let mut num: EGLint = 0;
         if eglChooseConfig(dpy, cfg_attribs.as_ptr(), &mut config, 1, &mut num) == 0 || num == 0 {
@@ -237,6 +236,46 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
                 eglGetError()
             ));
         }
+        Ok(())
+    }
+}
+
+/// Read the current framebuffer back as a top-first [`Pixmap`] (GL is
+/// bottom-up, so rows are flipped).
+unsafe fn read_back(w: GLsizei, h: GLsizei) -> Pixmap {
+    unsafe {
+        let row = (w as usize) * 4;
+        let mut raw = vec![0u8; row * h as usize];
+        glReadPixels(
+            0,
+            0,
+            w,
+            h,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            raw.as_mut_ptr() as *mut c_void,
+        );
+        let mut out = vec![0u8; raw.len()];
+        for y in 0..h as usize {
+            let src = &raw[y * row..(y + 1) * row];
+            let dst_y = h as usize - 1 - y;
+            out[dst_y * row..(dst_y + 1) * row].copy_from_slice(src);
+        }
+        Pixmap::from_rgba8(PhysicalSize::new(w as u32, h as u32), out)
+    }
+}
+
+/// Upload `input` to a texture, draw it to an offscreen framebuffer with a
+/// pass-through shader, and read the result back as a new [`Pixmap`].
+pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
+    let size = input.size();
+    let (w, h) = (size.width as GLsizei, size.height as GLsizei);
+    if w == 0 || h == 0 {
+        return Err("empty pixmap".into());
+    }
+
+    unsafe {
+        egl_make_current()?;
 
         // --- input texture ---
         let mut src_tex: GLuint = 0;
@@ -355,28 +394,139 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
         glClear(GL_COLOR_BUFFER_BIT);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glFinish();
+        Ok(read_back(w, h))
+    }
+}
 
-        // --- read back (GL is bottom-up; flip rows to top-first) ---
-        let row = (w as usize) * 4;
-        let mut raw = vec![0u8; row * h as usize];
-        glReadPixels(
+/// Draw solid-color rectangles **GPU-natively** — as tessellated geometry
+/// through a flat-color shader (not by compositing a CPU pixmap) — onto a
+/// `background`-cleared offscreen framebuffer, and read the result back.
+///
+/// Rectangles are given in logical pixels with a top-left origin (mapped to GL
+/// NDC). This is the first step of the GPU-native scene renderer: rounded rects,
+/// borders, and a glyph atlas are future work.
+pub fn fill_rects_offscreen(
+    size: PhysicalSize,
+    background: Color,
+    rects: &[(Rect, Color)],
+) -> Result<Pixmap, String> {
+    let (w, h) = (size.width as GLsizei, size.height as GLsizei);
+    if w == 0 || h == 0 {
+        return Err("empty target".into());
+    }
+    let (wf, hf) = (size.width as f32, size.height as f32);
+
+    unsafe {
+        egl_make_current()?;
+
+        // --- offscreen color target + FBO ---
+        let mut dst_tex: GLuint = 0;
+        glGenTextures(1, &mut dst_tex);
+        glBindTexture(GL_TEXTURE_2D, dst_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(
+            GL_TEXTURE_2D,
             0,
-            0,
+            GL_RGBA as GLint,
             w,
             h,
+            0,
             GL_RGBA,
             GL_UNSIGNED_BYTE,
-            raw.as_mut_ptr() as *mut c_void,
+            core::ptr::null(),
         );
-        let mut out = vec![0u8; raw.len()];
-        for y in 0..h as usize {
-            let src = &raw[y * row..(y + 1) * row];
-            let dst_y = h as usize - 1 - y;
-            out[dst_y * row..(dst_y + 1) * row].copy_from_slice(src);
+        let mut fbo: GLuint = 0;
+        glGenFramebuffers(1, &mut fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D,
+            dst_tex,
+            0,
+        );
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
+            return Err("framebuffer incomplete".into());
         }
-        Ok(Pixmap::from_rgba8(
-            PhysicalSize::new(w as u32, h as u32),
-            out,
-        ))
+        glViewport(0, 0, w, h);
+
+        // --- flat-color program ---
+        let vs = compile(GL_VERTEX_SHADER, FLAT_VERTEX_SRC)?;
+        let fs = compile(GL_FRAGMENT_SHADER, FLAT_FRAGMENT_SRC)?;
+        let prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        let mut linked: GLint = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &mut linked);
+        if linked == 0 {
+            return Err("flat program link failed".into());
+        }
+        glUseProgram(prog);
+        let pos_loc = glGetAttribLocation(prog, c"pos".as_ptr());
+        let color_loc = glGetUniformLocation(prog, c"u_color".as_ptr());
+        if pos_loc < 0 {
+            return Err("flat attribute location not found".into());
+        }
+
+        let mut vbo: GLuint = 0;
+        glGenBuffers(1, &mut vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableVertexAttribArray(pos_loc as GLuint);
+        glVertexAttribPointer(
+            pos_loc as GLuint,
+            2,
+            GL_FLOAT,
+            GL_FALSE,
+            0,
+            core::ptr::null(),
+        );
+
+        // Clear to the background, then draw each rect as two triangles.
+        let bg = [
+            background.r as f32 / 255.0,
+            background.g as f32 / 255.0,
+            background.b as f32 / 255.0,
+            background.a as f32 / 255.0,
+        ];
+        glClearColor(bg[0], bg[1], bg[2], bg[3]);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // logical (top-left origin) → GL NDC.
+        let ndc = |x: f64, y: f64| (2.0 * x as f32 / wf - 1.0, 1.0 - 2.0 * y as f32 / hf);
+        for (rect, color) in rects {
+            let (x0, y0) = ndc(rect.min_x(), rect.min_y());
+            let (x1, y1) = ndc(rect.max_x(), rect.max_y());
+            #[rustfmt::skip]
+            let verts: [f32; 12] = [
+                x0, y0,  x1, y0,  x0, y1,
+                x0, y1,  x1, y0,  x1, y1,
+            ];
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                std::mem::size_of_val(&verts) as isize,
+                verts.as_ptr() as *const c_void,
+                GL_STATIC_DRAW,
+            );
+            glVertexAttribPointer(
+                pos_loc as GLuint,
+                2,
+                GL_FLOAT,
+                GL_FALSE,
+                0,
+                core::ptr::null(),
+            );
+            glUniform4f(
+                color_loc,
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            );
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        glFinish();
+        Ok(read_back(w, h))
     }
 }

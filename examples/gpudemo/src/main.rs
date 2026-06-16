@@ -54,4 +54,36 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    // GPU-native drawing: three solid rectangles tessellated and filled by the
+    // GPU (no CPU pixmap), on a dark background.
+    let size = forma::geometry::PhysicalSize::new(W as u32, H as u32);
+    let rects = [
+        (
+            Rect::from_xywh(40.0, 40.0, 120.0, 80.0),
+            Color::rgb(0xef, 0x68, 0x68),
+        ),
+        (
+            Rect::from_xywh(180.0, 90.0, 120.0, 80.0),
+            Color::rgb(0x34, 0xd3, 0x99),
+        ),
+        (
+            Rect::from_xywh(110.0, 170.0, 120.0, 80.0),
+            Color::rgb(0x60, 0x9c, 0xff),
+        ),
+    ];
+    match forma_gpu::fill_rects_offscreen(size, Color::rgb(0x14, 0x15, 0x18), &rects) {
+        Ok(out) => {
+            std::fs::write("gpu-rects.raw", out.as_bytes()).expect("write raw");
+            println!(
+                "GPU-native rects ok: {}x{}",
+                out.size().width,
+                out.size().height
+            );
+        }
+        Err(e) => {
+            eprintln!("GPU rects failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }
