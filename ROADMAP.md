@@ -203,8 +203,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   **SPIR-V** shader modules that `vkCmdDraw`s a triangle. **CI-verified** on Mesa
   lavapipe: the read-back clear is forma blue (`docs/screenshots/forma-gpu-vk.png`)
   and the shader-drawn triangle's center pixel is forma green
-  (`docs/screenshots/forma-gpu-vk-tri.png`). ⬜ Wiring this Vulkan path behind the
-  `Surface` trait for on-screen present, and the Metal/D3D/WebGPU backends.
+  (`docs/screenshots/forma-gpu-vk-tri.png`). The **Metal** (macOS) and
+  **Direct3D 11** (Windows) backends now match it: each is hand-written raw FFI
+  (no `metal`/`objc`/`windows` crate — `objc_msgSend` by hand for Metal, COM
+  vtable slots by hand for D3D), creates a device, clears a render target to
+  forma blue, and draws a triangle through a real shader pipeline (a runtime-
+  compiled `.metal` library for Metal; `D3DCompile`d HLSL for D3D), reading each
+  frame back to the CPU. **CI-verified** on the macOS runner's Metal device and
+  the Windows runner's **WARP** software rasterizer: both read back forma blue for
+  the clear and forma green at the triangle's center pixel. ⬜ Wiring these GPU
+  paths behind the `Surface` trait for on-screen present, and a WebGPU backend.
 
 ---
 
