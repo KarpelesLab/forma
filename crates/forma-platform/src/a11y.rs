@@ -112,6 +112,91 @@ impl DBus {
         Self::connect_address(&addr)
     }
 
+    /// Claim a well-known bus `name` via `org.freedesktop.DBus.RequestName`
+    /// (flags 0). Returns the reply code (1 = primary owner). Apps that export an
+    /// accessibility tree own a name so clients can address them.
+    pub fn request_name(&mut self, name: &str) -> Result<u32, String> {
+        self.serial += 1;
+        let serial = self.serial;
+        let mut fields = Vec::new();
+        put_field(&mut fields, 1, b'o', "/org/freedesktop/DBus");
+        put_field(&mut fields, 6, b's', "org.freedesktop.DBus");
+        put_field(&mut fields, 2, b's', "org.freedesktop.DBus");
+        put_field(&mut fields, 3, b's', "RequestName");
+        put_field_sig(&mut fields, 8, "su");
+        let mut body = Vec::new();
+        put_string(&mut body, name);
+        align(&mut body, 4);
+        body.extend_from_slice(&0u32.to_le_bytes()); // flags
+        let msg = build_message(1, serial, &fields, &body);
+        self.stream.write_all(&msg).map_err(io)?;
+        loop {
+            let m = self.read_message()?;
+            match m.mtype {
+                2 if m.reply_serial == serial => return read_u32(&m.body, &mut 0),
+                3 if m.reply_serial == serial => return Err("RequestName error".into()),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Serve incoming method calls forever (until the connection drops),
+    /// answering the standard `org.freedesktop.DBus.Peer` and
+    /// `Introspectable.Introspect` interfaces — the minimal surface a D-Bus
+    /// object must expose. `introspect_xml` is returned for `Introspect`. This is
+    /// the bidirectional half the AT-SPI tree export builds on (the registry
+    /// calls back into us). Unknown methods get an `UnknownMethod` error.
+    pub fn serve(&mut self, introspect_xml: &str) -> Result<(), String> {
+        loop {
+            let m = self.read_message()?;
+            if m.mtype != 1 {
+                continue; // only method calls
+            }
+            match (m.interface.as_str(), m.member.as_str()) {
+                ("org.freedesktop.DBus.Peer", "Ping") => self.send_return(&m, "", &[])?,
+                ("org.freedesktop.DBus.Peer", "GetMachineId") => {
+                    let mut body = Vec::new();
+                    put_string(&mut body, "00000000000000000000000000000000");
+                    self.send_return(&m, "s", &body)?;
+                }
+                ("org.freedesktop.DBus.Introspectable", "Introspect") => {
+                    let mut body = Vec::new();
+                    put_string(&mut body, introspect_xml);
+                    self.send_return(&m, "s", &body)?;
+                }
+                _ => self.send_error(&m, "org.freedesktop.DBus.Error.UnknownMethod")?,
+            }
+        }
+    }
+
+    /// Send a `METHOD_RETURN` for `req` with optional `signature`/`body`.
+    fn send_return(&mut self, req: &Message, signature: &str, body: &[u8]) -> Result<(), String> {
+        self.serial += 1;
+        let mut fields = Vec::new();
+        put_field_u32(&mut fields, 5, req.serial); // REPLY_SERIAL
+        if !req.sender.is_empty() {
+            put_field(&mut fields, 6, b's', &req.sender); // DESTINATION
+        }
+        if !signature.is_empty() {
+            put_field_sig(&mut fields, 8, signature);
+        }
+        let msg = build_message(2, self.serial, &fields, body);
+        self.stream.write_all(&msg).map_err(io)
+    }
+
+    /// Send an `ERROR` reply for `req` naming `error_name`.
+    fn send_error(&mut self, req: &Message, error_name: &str) -> Result<(), String> {
+        self.serial += 1;
+        let mut fields = Vec::new();
+        put_field_u32(&mut fields, 5, req.serial); // REPLY_SERIAL
+        put_field(&mut fields, 4, b's', error_name); // ERROR_NAME
+        if !req.sender.is_empty() {
+            put_field(&mut fields, 6, b's', &req.sender); // DESTINATION
+        }
+        let msg = build_message(3, self.serial, &fields, &[]);
+        self.stream.write_all(&msg).map_err(io)
+    }
+
     /// Send a no-argument method call and return the reply's body bytes. Errors
     /// on a D-Bus `ERROR` reply or I/O failure.
     fn call(
@@ -129,19 +214,19 @@ impl DBus {
         // Read replies until we see the method_return / error for our serial
         // (the bus may interleave signals).
         loop {
-            let (mtype, reply_serial, body) = self.read_message()?;
-            match mtype {
-                2 if reply_serial == serial => return Ok(body), // METHOD_RETURN
-                3 if reply_serial == serial => return Err("D-Bus error reply".into()), // ERROR
+            let msg = self.read_message()?;
+            match msg.mtype {
+                2 if msg.reply_serial == serial => return Ok(msg.body), // METHOD_RETURN
+                3 if msg.reply_serial == serial => return Err("D-Bus error reply".into()), // ERROR
                 _ => continue,
             }
         }
     }
 
-    /// Read one D-Bus message; return `(message_type, reply_serial, body)`.
-    fn read_message(&mut self) -> Result<(u8, u32, Vec<u8>), String> {
+    /// Read one full D-Bus message (header fields + body). Little-endian only.
+    fn read_message(&mut self) -> Result<Message, String> {
         // Fixed part of the header is 12 bytes, then the header-fields array
-        // length (another u32). Little-endian only (we never send 'B').
+        // length (another u32).
         let mut fixed = [0u8; 16];
         self.stream.read_exact(&mut fixed).map_err(io)?;
         if fixed[0] != b'l' {
@@ -149,6 +234,7 @@ impl DBus {
         }
         let mtype = fixed[1];
         let body_len = u32::from_le_bytes([fixed[4], fixed[5], fixed[6], fixed[7]]) as usize;
+        let serial = u32::from_le_bytes([fixed[8], fixed[9], fixed[10], fixed[11]]);
         let fields_len = u32::from_le_bytes([fixed[12], fixed[13], fixed[14], fixed[15]]) as usize;
 
         // The header (fixed 12 + array-len 4 + fields) is padded to 8 bytes
@@ -164,9 +250,25 @@ impl DBus {
         let mut body = vec![0u8; body_len];
         self.stream.read_exact(&mut body).map_err(io)?;
 
-        let reply_serial = parse_reply_serial(&fields);
-        Ok((mtype, reply_serial, body))
+        let mut msg = parse_fields(&fields);
+        msg.mtype = mtype;
+        msg.serial = serial;
+        msg.body = body;
+        Ok(msg)
     }
+}
+
+/// A received D-Bus message: header metadata plus the raw body bytes.
+#[derive(Debug, Default)]
+struct Message {
+    mtype: u8,
+    serial: u32,
+    reply_serial: u32,
+    path: String,
+    interface: String,
+    member: String,
+    sender: String,
+    body: Vec<u8>,
 }
 
 /// Map `unix:path=/x` or `unix:abstract=/x` (with optional trailing `,guid=…`)
@@ -224,7 +326,7 @@ fn put_string(buf: &mut Vec<u8>, s: &str) {
     buf.push(0);
 }
 
-/// Append a header field: `STRUCT(BYTE code, VARIANT(sig, value))`, 8-aligned.
+/// Append a header field carrying a STRING/OBJECT_PATH value (sig `s` or `o`).
 fn put_field(buf: &mut Vec<u8>, code: u8, sig: u8, value: &str) {
     align(buf, 8);
     buf.push(code);
@@ -233,6 +335,43 @@ fn put_field(buf: &mut Vec<u8>, code: u8, sig: u8, value: &str) {
     buf.push(sig);
     buf.push(0);
     put_string(buf, value);
+}
+
+/// Append a header field carrying a UINT32 value (e.g. REPLY_SERIAL=5).
+fn put_field_u32(buf: &mut Vec<u8>, code: u8, value: u32) {
+    align(buf, 8);
+    buf.push(code);
+    buf.push(1);
+    buf.push(b'u');
+    buf.push(0);
+    align(buf, 4);
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+/// Append a header field carrying a SIGNATURE value (e.g. SIGNATURE=8).
+fn put_field_sig(buf: &mut Vec<u8>, code: u8, sig: &str) {
+    align(buf, 8);
+    buf.push(code);
+    buf.push(1);
+    buf.push(b'g');
+    buf.push(0);
+    buf.push(sig.len() as u8);
+    buf.extend_from_slice(sig.as_bytes());
+    buf.push(0);
+}
+
+/// Assemble a full message from a type, serial, marshalled header `fields`, and
+/// `body` (the header is padded to 8 bytes before the body).
+fn build_message(mtype: u8, serial: u32, fields: &[u8], body: &[u8]) -> Vec<u8> {
+    // Fixed header: little-endian, type, no flags, protocol version 1.
+    let mut msg = vec![b'l', mtype, 0, 1];
+    msg.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    msg.extend_from_slice(&serial.to_le_bytes());
+    msg.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+    msg.extend_from_slice(fields);
+    align(&mut msg, 8);
+    msg.extend_from_slice(body);
+    msg
 }
 
 /// Marshal a no-argument `METHOD_CALL` (little-endian).
@@ -249,15 +388,20 @@ fn marshal_method_call(
     put_field(&mut fields, 6, b's', destination);
     put_field(&mut fields, 2, b's', interface);
     put_field(&mut fields, 3, b's', member);
+    build_message(1, serial, &fields, &[])
+}
 
-    // Fixed header: little-endian, METHOD_CALL, no flags, protocol version 1.
-    let mut msg = vec![b'l', 1, 0, 1];
-    msg.extend_from_slice(&0u32.to_le_bytes()); // body length (no args)
-    msg.extend_from_slice(&serial.to_le_bytes());
-    msg.extend_from_slice(&(fields.len() as u32).to_le_bytes());
-    msg.extend_from_slice(&fields);
-    align(&mut msg, 8); // header padded to 8 before the (empty) body
-    msg
+/// Read a u32 at `*off` in `buf` (4-aligned), advancing `*off`.
+fn read_u32(buf: &[u8], off: &mut usize) -> Result<u32, String> {
+    while !off.is_multiple_of(4) {
+        *off += 1;
+    }
+    if *off + 4 > buf.len() {
+        return Err("truncated u32".into());
+    }
+    let v = u32::from_le_bytes([buf[*off], buf[*off + 1], buf[*off + 2], buf[*off + 3]]);
+    *off += 4;
+    Ok(v)
 }
 
 // ---- demarshalling ---------------------------------------------------------
@@ -280,29 +424,27 @@ fn read_string(buf: &[u8], off: &mut usize) -> Result<String, String> {
     Ok(s)
 }
 
-/// Scan a header-fields array for REPLY_SERIAL (field code 5, a UINT32). Returns
-/// 0 if absent. We only need enough of the variant grammar to skip fields.
-fn parse_reply_serial(fields: &[u8]) -> u32 {
+/// Parse a header-fields array into the fields we care about (path, interface,
+/// member, sender, reply_serial). Walks the `a(yv)` grammar, skipping values by
+/// their variant signature; stops on anything it can't decode.
+fn parse_fields(fields: &[u8]) -> Message {
+    let mut msg = Message::default();
     let mut off = 0usize;
     while off < fields.len() {
         // Each field struct is 8-aligned.
         while !off.is_multiple_of(8) && off < fields.len() {
             off += 1;
         }
-        if off >= fields.len() {
+        if off + 2 > fields.len() {
             break;
         }
         let code = fields[off];
         off += 1;
         // VARIANT: signature length, signature bytes, NUL.
-        if off >= fields.len() {
-            break;
-        }
         let sig_len = fields[off] as usize;
         off += 1;
         let sig = fields.get(off..off + sig_len).unwrap_or(&[]).to_vec();
         off += sig_len + 1; // signature + NUL
-        // Decode the single value by its signature's first byte.
         match sig.first().copied() {
             Some(b'u') | Some(b'i') => {
                 while !off.is_multiple_of(4) && off < fields.len() {
@@ -319,22 +461,34 @@ fn parse_reply_serial(fields: &[u8]) -> u32 {
                 ]);
                 off += 4;
                 if code == 5 {
-                    return v;
+                    msg.reply_serial = v;
                 }
             }
             Some(b's') | Some(b'o') | Some(b'g') => {
-                let mut o = off;
-                // 'g' (signature) is length-prefixed by one byte, not u32.
-                if sig.first() == Some(&b'g') {
-                    let l = *fields.get(o).unwrap_or(&0) as usize;
-                    o += 1 + l + 1;
-                } else if read_string(fields, &mut o).is_err() {
-                    break;
+                // 'g' (signature) is length-prefixed by one byte, not a u32.
+                let value = if sig.first() == Some(&b'g') {
+                    let l = *fields.get(off).unwrap_or(&0) as usize;
+                    let v =
+                        String::from_utf8_lossy(fields.get(off + 1..off + 1 + l).unwrap_or(&[]))
+                            .into_owned();
+                    off += 1 + l + 1;
+                    v
+                } else {
+                    match read_string(fields, &mut off) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    }
+                };
+                match code {
+                    1 => msg.path = value,
+                    2 => msg.interface = value,
+                    3 => msg.member = value,
+                    7 => msg.sender = value,
+                    _ => {}
                 }
-                off = o;
             }
-            _ => break, // unknown — stop scanning, REPLY_SERIAL not found
+            _ => break, // unknown — stop scanning
         }
     }
-    0
+    msg
 }

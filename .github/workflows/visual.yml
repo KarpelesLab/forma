@@ -691,3 +691,22 @@ jobs:
           grep -qE "D-Bus connected: unique name :1\." a11y.log
           # ...and we can reach the separate AT-SPI bus via org.a11y.Bus.
           grep -qE "AT-SPI bus connected: unique name :1\." a11y.log
+
+      - name: Serve a D-Bus object and call it back (bidirectional round-trip)
+        run: |
+          dbus-run-session -- bash -ec '
+            ./target/release/a11ydemo serve > serve.log 2>&1 &
+            SRV=$!
+            sleep 2
+            cat serve.log
+            # We must own the well-known name (RequestName -> 1 = primary owner).
+            grep -q "RequestName org.formaui.A11yDemo -> 1" serve.log
+            # The bus routes these calls to our hand-written server, which replies.
+            dbus-send --session --print-reply --dest=org.formaui.A11yDemo \
+              /org/formaui/a11y org.freedesktop.DBus.Introspectable.Introspect | tee introspect.log
+            grep -q "org.a11y.atspi.Accessible" introspect.log
+            dbus-send --session --print-reply --dest=org.formaui.A11yDemo \
+              /org/formaui/a11y org.freedesktop.DBus.Peer.Ping | tee ping.log
+            grep -q "method return" ping.log
+            kill $SRV 2>/dev/null || true
+          '
