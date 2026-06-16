@@ -418,8 +418,6 @@ jobs:
           GALLIUM_DRIVER: llvmpipe
         run: |
           mkdir -p visual_output
-          echo "=== Vulkan ICDs ==="; ls -la /usr/share/vulkan/icd.d/ || true
-          echo "=== vulkaninfo ==="; vulkaninfo --summary 2>&1 | head -30 || true
           ./target/release/gpudemo | tee gpudemo.log
           convert -size 420x300 -depth 8 rgba:gpu-out.raw visual_output/forma-gpu.png
           # GPU-native geometry: solid rects tessellated + filled on the GPU.
@@ -427,8 +425,8 @@ jobs:
           # GPU-native render of the actual widget-tree Scene (render_scene).
           convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
           echo "Captured:"; identify visual_output/forma-gpu*.png
-          # Verify the raw-FFI Vulkan foundation found a device (diagnostic this run).
-          grep "Vulkan devices:" gpudemo.log || echo "NOTE: vulkan device not found this run"
+          # The raw-FFI Vulkan foundation must reach a device (Mesa lavapipe).
+          grep -q "Vulkan devices:" gpudemo.log
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4
