@@ -118,4 +118,27 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    // The capstone: render the *actual* widget-tree Scene (the same `view`)
+    // GPU-natively via render_scene — boxes + text straight from the Scene's
+    // recorded draw commands, no hand-built rectangles.
+    if let Some(font) = Font::system_default() {
+        let theme = Theme::dark();
+        let element = view(&(), &mut Cx::new(&theme));
+        let scene = forma::core::render_view(&element, Size::new(W, H), &theme, Some(&font));
+        match forma_gpu::render_scene(&scene, theme.palette.background, &font) {
+            Ok(out) => {
+                std::fs::write("gpu-scene.raw", out.as_bytes()).expect("write raw");
+                println!(
+                    "GPU render_scene ok: {}x{}",
+                    out.size().width,
+                    out.size().height
+                );
+            }
+            Err(e) => {
+                eprintln!("GPU render_scene failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 }

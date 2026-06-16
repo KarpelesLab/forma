@@ -31,7 +31,7 @@ mod surface;
 mod text;
 
 pub use color::Color;
-pub use scene::Scene;
+pub use scene::{DrawCmd, Scene};
 pub use software::SoftwareRenderer;
 pub use surface::{Pixmap, Surface};
 pub use text::{Font, FontError};

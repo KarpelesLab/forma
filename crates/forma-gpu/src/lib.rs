@@ -13,8 +13,8 @@
 //! Linux-only for now (EGL/GLESv2); other targets return an error so the
 //! workspace still builds everywhere.
 
-use forma_geometry::{PhysicalSize, Rect};
-use forma_render::{Color, Pixmap};
+use forma_geometry::{PhysicalSize, Point, Rect, ScaleFactor, Size};
+use forma_render::{Color, DrawCmd, Font, Pixmap, Scene, SoftwareRenderer};
 
 #[cfg(all(target_os = "linux", feature = "gl"))]
 mod gl;
@@ -79,4 +79,48 @@ pub fn render_offscreen(
         let _ = (size, background, rects, texts);
         Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
     }
+}
+
+/// Render a live forma [`Scene`] **GPU-natively**: its box primitives become
+/// SDF-shaded geometry and each text run is CPU-rasterized (via `font`) to a
+/// coverage mask the GPU then composites — so any forma UI renders through the
+/// GPU, not just hand-built rectangles. `background` clears the target. Errors
+/// if the `gl` feature is off or no GL/EGL device is available.
+pub fn render_scene(scene: &Scene, background: Color, font: &Font) -> Result<Pixmap, String> {
+    let ls = scene.logical_size();
+    let size = ScaleFactor::IDENTITY.to_physical(ls);
+    let mut rects: Vec<(Rect, Color, f32, f32)> = Vec::new();
+    // Keep the rasterized masks alive for the borrow passed to `render_offscreen`.
+    let mut masks: Vec<(Pixmap, Rect, Color)> = Vec::new();
+    for cmd in scene.commands() {
+        match cmd {
+            DrawCmd::Rect {
+                rect,
+                color,
+                radius,
+                border,
+            } => rects.push((*rect, *color, *radius as f32, *border as f32)),
+            DrawCmd::Text {
+                text,
+                origin,
+                size: px,
+                color,
+            } => {
+                let m = font.measure(text, *px);
+                let (tw, th) = (m.width.ceil() + 4.0, m.height.ceil() + 2.0);
+                let mut ts = Scene::new(Size::new(tw, th));
+                ts.fill_text(font, text, Point::new(2.0, 1.0), *px, Color::WHITE);
+                let pm = SoftwareRenderer::new()
+                    .with_background(Color::BLACK)
+                    .render(ts, ScaleFactor::IDENTITY);
+                masks.push((
+                    pm,
+                    Rect::from_xywh(origin.x - 2.0, origin.y - 1.0, tw, th),
+                    *color,
+                ));
+            }
+        }
+    }
+    let texts: Vec<(&Pixmap, Rect, Color)> = masks.iter().map(|(p, r, c)| (p, *r, *c)).collect();
+    render_offscreen(size, background, &rects, &texts)
 }

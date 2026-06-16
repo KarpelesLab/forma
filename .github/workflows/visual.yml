@@ -421,7 +421,9 @@ jobs:
           convert -size 420x300 -depth 8 rgba:gpu-out.raw visual_output/forma-gpu.png
           # GPU-native geometry: solid rects tessellated + filled on the GPU.
           convert -size 420x300 -depth 8 rgba:gpu-rects.raw visual_output/forma-gpu-rects.png
-          echo "Captured:"; identify visual_output/forma-gpu.png visual_output/forma-gpu-rects.png
+          # GPU-native render of the actual widget-tree Scene (render_scene).
+          convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
+          echo "Captured:"; identify visual_output/forma-gpu*.png
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4

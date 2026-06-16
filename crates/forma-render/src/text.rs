@@ -203,6 +203,9 @@ impl Scene {
         if text.is_empty() || size_px <= 0.0 {
             return;
         }
+        // Record a structured command for the GPU backend (the CPU rasterizer
+        // uses the glyph nodes pushed below).
+        self.record_text(text, origin, size_px, color);
         let line_height = font.line_height(size_px);
         let ascent = font.ascent(size_px);
         for (i, line) in text.split('\n').enumerate() {

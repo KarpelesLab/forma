@@ -8,7 +8,7 @@
 
 use crate::Color;
 use crate::convert::to_ox_point;
-use forma_geometry::{Rect, Size};
+use forma_geometry::{Point, Rect, Size};
 use oxideav_core::{
     Group, Node, Paint, Path, PathNode, Point as OxPoint, Rgba, Stroke, VectorFrame, ViewBox,
 };
@@ -17,11 +17,35 @@ use oxideav_core::{
 /// Bézier (the standard `4/3·(√2 − 1)` "kappa" constant).
 const KAPPA: f64 = 0.552_284_749_830_793_4;
 
+/// A structured record of a scene primitive, kept alongside the lowered oxideav
+/// nodes so a GPU backend can consume the scene without re-deriving primitives
+/// from vector paths (the CPU rasterizer uses the nodes; the GPU path uses
+/// these). See [`Scene::commands`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum DrawCmd {
+    /// A box: `radius` rounds the corners (0 = sharp); `border` > 0 strokes the
+    /// outline at that width instead of filling.
+    Rect {
+        rect: Rect,
+        color: Color,
+        radius: f64,
+        border: f64,
+    },
+    /// A single line of text at `origin` (top-left).
+    Text {
+        text: String,
+        origin: Point,
+        size: f64,
+        color: Color,
+    },
+}
+
 /// A builder of vector draw primitives in logical-pixel space.
 #[derive(Clone, Debug)]
 pub struct Scene {
     logical_size: Size,
     nodes: Vec<Node>,
+    commands: Vec<DrawCmd>,
 }
 
 impl Scene {
@@ -30,7 +54,14 @@ impl Scene {
         Self {
             logical_size,
             nodes: Vec::new(),
+            commands: Vec::new(),
         }
+    }
+
+    /// The structured draw commands recorded by the typed helpers (for a GPU
+    /// backend; the CPU rasterizer uses the lowered nodes instead).
+    pub fn commands(&self) -> &[DrawCmd] {
+        &self.commands
     }
 
     /// The scene's extent in logical pixels.
@@ -56,6 +87,12 @@ impl Scene {
         self.nodes.push(Node::Path(
             PathNode::new(path).with_fill(Paint::Solid(color.into())),
         ));
+        self.commands.push(DrawCmd::Rect {
+            rect,
+            color,
+            radius: 0.0,
+            border: 0.0,
+        });
     }
 
     /// Fill a rectangle with rounded corners (corner `radius` in logical
@@ -65,6 +102,12 @@ impl Scene {
         self.nodes.push(Node::Path(
             PathNode::new(path).with_fill(Paint::Solid(color.into())),
         ));
+        self.commands.push(DrawCmd::Rect {
+            rect,
+            color,
+            radius,
+            border: 0.0,
+        });
     }
 
     /// Stroke the outline of a rectangle with the given line `width`.
@@ -73,6 +116,23 @@ impl Scene {
         let stroke = Stroke::solid(width as f32, Rgba::from(color));
         self.nodes
             .push(Node::Path(PathNode::new(path).with_stroke(stroke)));
+        self.commands.push(DrawCmd::Rect {
+            rect,
+            color,
+            radius: 0.0,
+            border: width,
+        });
+    }
+
+    /// Record a text draw command (the glyph nodes are pushed separately by
+    /// [`Scene::fill_text`](crate::Scene::fill_text)).
+    pub(crate) fn record_text(&mut self, text: &str, origin: Point, size: f64, color: Color) {
+        self.commands.push(DrawCmd::Text {
+            text: text.to_string(),
+            origin,
+            size,
+            color,
+        });
     }
 
     /// Escape hatch: push a pre-built oxideav scene-graph node. Lets callers
@@ -182,6 +242,21 @@ mod tests {
         let vb = frame.view_box.expect("view box set");
         assert_eq!((vb.width, vb.height), (200.0, 100.0));
         assert_eq!(frame.root.children.len(), 1);
+    }
+
+    #[test]
+    fn records_structured_draw_commands() {
+        let mut scene = Scene::new(Size::new(100.0, 100.0));
+        scene.fill_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), Color::WHITE);
+        scene.fill_round_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), 4.0, Color::BLACK);
+        scene.stroke_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), Color::WHITE, 2.0);
+        let cmds = scene.commands();
+        assert_eq!(cmds.len(), 3);
+        assert!(
+            matches!(cmds[0], DrawCmd::Rect { radius, border, .. } if radius == 0.0 && border == 0.0)
+        );
+        assert!(matches!(cmds[1], DrawCmd::Rect { radius, .. } if radius == 4.0));
+        assert!(matches!(cmds[2], DrawCmd::Rect { border, .. } if border == 2.0));
     }
 
     #[test]
