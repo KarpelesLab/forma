@@ -180,9 +180,13 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   UIKit/CoreGraphics, no `objc`/`uikit` crate — the same approach as the macOS
   backend) now exists: `UIApplicationMain` boots a hand-built `FormaAppDelegate`
   that creates a `UIWindow` hosting a custom `UIView` whose `drawRect:` blits the
-  software `Pixmap` as a `CGImage`. **Build-verified** for `aarch64-apple-ios` by
-  the cross-compile job (iOS no longer falls through to headless). ⬜ Running it
-  on the simulator (screenshot), and the Android `ANativeWindow` backend.
+  software `Pixmap` as a `CGImage`. **Runtime-verified on the iOS simulator**:
+  the CI `visual-ios` job bundles the `window` example into a `Forma.app`, boots
+  a simulator, launches it, and reads back the backend's runtime marker
+  (`window shown, framebuffer 640x480`) from the app container — proving
+  `UIApplicationMain` booted, the delegate built the `UIWindow`, and the Forma
+  handler rendered a frame on a real iOS surface. ⬜ The Android `ANativeWindow`
+  backend.
 - ✅ **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
   semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
