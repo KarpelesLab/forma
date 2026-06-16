@@ -94,13 +94,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install sway, grim, seatd, ImageMagick, a font
+      - name: Install sway, grim, wtype, seatd, ImageMagick, a font
         run: |
           sudo apt-get update
-          sudo apt-get install -y sway grim seatd imagemagick fonts-dejavu-core
+          sudo apt-get install -y sway grim wtype seatd imagemagick fonts-dejavu-core
 
-      - name: Build the window example
-        run: cargo build --release -p window
+      - name: Build the window + textinput examples
+        run: cargo build --release -p window -p textinput
 
       - name: Run under headless sway and screenshot with grim
         run: |
@@ -123,12 +123,30 @@ jobs:
           export WAYLAND_DISPLAY="$SOCK"
           export FORMA_WAYLAND_DEBUG=1
           mkdir -p visual_output
+
+          # --- render: the window example, screenshotted with grim ---
           ./target/release/window > visual_output/wl.log 2>&1 &
+          WIN_PID=$!
           sleep 5
           grim visual_output/forma-wayland.png || echo "grim failed"
+          kill "$WIN_PID" 2>/dev/null || true
+          sleep 1
+
+          # --- input: type into the textinput field via wtype (virtual
+          # keyboard). Tab focuses the field, then we type text — exercising the
+          # wl_seat keyboard + xkb keymap decode path end to end. ---
+          ./target/release/textinput > visual_output/wl-input.log 2>&1 &
+          TXT_PID=$!
+          sleep 4
+          wtype -k Tab; sleep 1
+          wtype "forma wl"; sleep 1
+          grim visual_output/forma-wayland-input.png || echo "grim failed"
+          kill "$TXT_PID" 2>/dev/null || true
+
           echo "=== seatd.log ==="; cat seatd.log || true
           echo "=== sway.log ==="; cat sway.log || true
           echo "=== wl.log ==="; cat visual_output/wl.log || true
+          echo "=== wl-input.log ==="; cat visual_output/wl-input.log || true
           identify visual_output/forma-wayland.png || true
           kill "$SWAY_PID" 2>/dev/null || true
 

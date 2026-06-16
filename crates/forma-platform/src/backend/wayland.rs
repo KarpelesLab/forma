@@ -9,22 +9,21 @@
 //!
 //! Scope: connection, the `xdg-shell` configure/ack handshake, shared-memory
 //! presentation (window create + paint + close), and `wl_seat` input —
-//! **keyboard** (layout-independent editing/navigation keys map straight from
-//! their evdev codes; printable keys use a best-effort US-QWERTY table) and
+//! **keyboard** (decodes the compositor's `wl_keyboard.keymap`, received as an
+//! fd via `recvmsg`/`SCM_RIGHTS`, by parsing the XKB_V1 text to map keycodes to
+//! keysyms; falls back to a layout-independent evdev table if none) and
 //! **pointer** (motion + buttons via `wl_pointer`, coordinates from `wl_fixed`).
-//! Full text via the compositor's xkb keymap is a follow-up. The shared-memory
-//! buffer needs a small amount of FFI (`memfd_create` / `mmap` and `SCM_RIGHTS`
-//! fd passing), hence the module-level `allow(unsafe_code)`.
+//! The FFI footprint — `memfd_create`/`mmap`, `sendmsg`/`recvmsg` for fd
+//! passing — is the reason for the module-level `allow(unsafe_code)`.
 //!
-//! **Verification:** the live render path is exercised by the `Visual`
-//! workflow's headless-`sway` job (`grim` screenshots the compositor output);
-//! the evdev key mapping is unit-tested. End-to-end keyboard injection isn't
-//! verified headlessly — virtual-keyboard tools upload their own xkb keymap, so
-//! decoding their keycodes needs the xkb keymap parsing noted above.
+//! **Verification:** the `Visual` workflow's headless-`sway` job screenshots the
+//! render with `grim` and types into a field with `wtype` (whose virtual
+//! keyboard exercises the keymap-decode path end to end); the evdev/xkb mappings
+//! are unit-tested.
 
 #![allow(unsafe_code)]
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -48,10 +47,12 @@ unsafe extern "C" {
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     fn close(fd: i32) -> i32;
     fn sendmsg(sockfd: i32, msg: *const Msghdr, flags: i32) -> isize;
+    fn recvmsg(sockfd: i32, msg: *mut Msghdr, flags: i32) -> isize;
 }
 const PROT_READ: i32 = 1;
 const PROT_WRITE: i32 = 2;
 const MAP_SHARED: i32 = 1;
+const MAP_PRIVATE: i32 = 2;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 
@@ -147,6 +148,7 @@ const WL_SEAT_CAPABILITIES: u16 = 0;
 const WL_SEAT_CAP_POINTER: u32 = 1;
 const WL_SEAT_CAP_KEYBOARD: u32 = 2;
 const WL_SEAT_GET_POINTER: u16 = 0;
+const WL_KEYBOARD_KEYMAP: u16 = 0;
 const WL_KEYBOARD_KEY: u16 = 3;
 const WL_POINTER_ENTER: u16 = 0;
 const WL_POINTER_MOTION: u16 = 2;
@@ -236,12 +238,137 @@ fn pointer_button(code: u32) -> Option<crate::event::PointerButton> {
     }
 }
 
+// ---- xkb keymap (text format) -----------------------------------------------
+
+/// The substring of `s` between the first `a` and the next `b`.
+fn between(s: &str, a: char, b: char) -> Option<&str> {
+    let start = s.find(a)? + 1;
+    let end = s[start..].find(b)? + start;
+    Some(&s[start..end])
+}
+
+/// Parse an XKB_V1 keymap into a map from xkb keycode (evdev + 8) to its
+/// level-0 keysym name. We read just two forms: keycode definitions
+/// `<NAME> = N;` and per-key symbols `key <NAME> { [ sym0, ... ] };`.
+fn parse_xkb(text: &str) -> std::collections::HashMap<u32, String> {
+    use std::collections::HashMap;
+    let mut codes: HashMap<&str, u32> = HashMap::new();
+    let mut syms: HashMap<&str, String> = HashMap::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("key <") {
+            // key <NAME> { [ sym0, sym1 ] };
+            if let Some(end) = rest.find('>')
+                && let Some(lb) = t.find('[')
+            {
+                let name = &rest[..end];
+                let inner = &t[lb + 1..];
+                let stop = inner.find([',', ']']).unwrap_or(inner.len());
+                let sym = inner[..stop].trim();
+                if !sym.is_empty() {
+                    syms.insert(name, sym.to_string());
+                }
+            }
+        } else if t.starts_with('<') && t.contains('=') {
+            // <NAME> = N;
+            if let Some(name) = between(t, '<', '>')
+                && let Some(eq) = t.find('=')
+            {
+                let num: String = t[eq + 1..].chars().filter(|c| c.is_ascii_digit()).collect();
+                if let Ok(code) = num.parse::<u32>() {
+                    codes.insert(name, code);
+                }
+            }
+        }
+    }
+    codes
+        .into_iter()
+        .filter_map(|(name, code)| syms.get(name).map(|s| (code, s.clone())))
+        .collect()
+}
+
+/// Translate an xkb level-0 keysym name into a Forma event (editing/navigation
+/// keys → [`Event::Key`], printable keysyms → [`Event::Text`] on press).
+fn keysym_name_to_event(name: &str, pressed: bool) -> Option<Event> {
+    let state = if pressed {
+        ButtonState::Pressed
+    } else {
+        ButtonState::Released
+    };
+    let code = match name {
+        "Tab" => Some(KeyCode::Tab),
+        "Return" | "KP_Enter" => Some(KeyCode::Enter),
+        "BackSpace" => Some(KeyCode::Backspace),
+        "Delete" => Some(KeyCode::Delete),
+        "Left" => Some(KeyCode::ArrowLeft),
+        "Right" => Some(KeyCode::ArrowRight),
+        "Up" => Some(KeyCode::ArrowUp),
+        "Down" => Some(KeyCode::ArrowDown),
+        "Home" => Some(KeyCode::Home),
+        "End" => Some(KeyCode::End),
+        "Escape" => Some(KeyCode::Escape),
+        _ => None,
+    };
+    if let Some(code) = code {
+        return Some(Event::Key {
+            code,
+            state,
+            modifiers: Modifiers::default(),
+        });
+    }
+    if !pressed {
+        return None;
+    }
+    // Printable: a one-character keysym name is the character itself; otherwise
+    // a few common named punctuation keysyms.
+    let ch = if name.chars().count() == 1 {
+        name.chars().next()
+    } else {
+        match name {
+            "space" => Some(' '),
+            "exclam" => Some('!'),
+            "question" => Some('?'),
+            "comma" => Some(','),
+            "period" => Some('.'),
+            "minus" => Some('-'),
+            "underscore" => Some('_'),
+            "slash" => Some('/'),
+            "colon" => Some(':'),
+            "semicolon" => Some(';'),
+            _ => None,
+        }
+    };
+    ch.map(|c| Event::Text(c.to_string()))
+}
+
+/// Map a keymap `fd` of `size` bytes (the `wl_keyboard.keymap` payload) and
+/// parse it. Closes the fd; returns `None` on failure.
+fn read_keymap(fd: i32, size: usize) -> Option<std::collections::HashMap<u32, String>> {
+    if size == 0 {
+        unsafe { close(fd) };
+        return None;
+    }
+    let addr = unsafe { mmap(std::ptr::null_mut(), size, PROT_READ, MAP_PRIVATE, fd, 0) };
+    unsafe { close(fd) }; // the mapping outlives the fd
+    if addr as isize == -1 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(addr as *const u8, size) };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let map = parse_xkb(&text);
+    unsafe { munmap(addr, size) };
+    Some(map)
+}
+
 // ---- Wire connection --------------------------------------------------------
 
 /// The compositor connection plus the client-side object-id allocator.
 struct WlConn {
     stream: UnixStream,
     next_id: u32,
+    /// A file descriptor received with the most recent message (e.g. the
+    /// `wl_keyboard.keymap` fd), taken by the handler that expects it.
+    pending_fd: Option<i32>,
 }
 
 impl WlConn {
@@ -259,7 +386,11 @@ impl WlConn {
             std::path::Path::new(&dir).join(path)
         };
         let stream = UnixStream::connect(&full).map_err(os)?;
-        Ok(Self { stream, next_id: 2 })
+        Ok(Self {
+            stream,
+            next_id: 2,
+            pending_fd: None,
+        })
     }
 
     /// Allocate the next client object id.
@@ -291,16 +422,59 @@ impl WlConn {
         sendmsg_fd(self.stream.as_raw_fd(), &msg, fd)
     }
 
-    /// Read exactly one message: returns `(object, opcode, args)`.
+    /// Fill `buf` exactly via `recvmsg`, stashing any `SCM_RIGHTS` file
+    /// descriptor that arrives with it in `self.pending_fd`. Used instead of
+    /// `read_exact` so the `wl_keyboard.keymap` fd isn't silently dropped.
+    fn recv_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        let sock = self.stream.as_raw_fd();
+        let mut got = 0;
+        while got < buf.len() {
+            let mut iov = Iovec {
+                iov_base: buf[got..].as_mut_ptr() as *mut c_void,
+                iov_len: buf.len() - got,
+            };
+            let mut control = [0u8; 32];
+            let mut msg = Msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: &mut iov,
+                msg_iovlen: 1,
+                msg_control: control.as_mut_ptr() as *mut c_void,
+                msg_controllen: control.len(),
+                msg_flags: 0,
+            };
+            let n = unsafe { recvmsg(sock, &mut msg, 0) };
+            if n <= 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "wayland socket closed",
+                ));
+            }
+            got += n as usize;
+            // Extract a single SCM_RIGHTS fd if the kernel attached one.
+            if msg.msg_controllen >= core::mem::size_of::<Cmsghdr>() {
+                let cmsg = control.as_ptr() as *const Cmsghdr;
+                let (level, ty) = unsafe { ((*cmsg).cmsg_level, (*cmsg).cmsg_type) };
+                if level == SOL_SOCKET && ty == SCM_RIGHTS {
+                    let fd = unsafe { (control.as_ptr().add(16) as *const i32).read_unaligned() };
+                    self.pending_fd = Some(fd);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Read exactly one message: returns `(object, opcode, args)`. Any attached
+    /// fd lands in `self.pending_fd`.
     fn recv(&mut self) -> io::Result<(u32, u16, Vec<u8>)> {
         let mut header = [0u8; 8];
-        self.stream.read_exact(&mut header)?;
+        self.recv_exact(&mut header)?;
         let object = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         let word = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
         let size = (word >> 16) as usize;
         let opcode = (word & 0xffff) as u16;
         let mut args = vec![0u8; size.saturating_sub(8)];
-        self.stream.read_exact(&mut args)?;
+        self.recv_exact(&mut args)?;
         Ok((object, opcode, args))
     }
 }
@@ -667,10 +841,12 @@ where
     };
 
     // Event loop. The keyboard/pointer are created when the seat advertises
-    // them; `pointer_pos` tracks the latest cursor position for button events.
+    // them; `pointer_pos` tracks the latest cursor position for button events,
+    // and `keymap` decodes keycodes to characters once the compositor sends it.
     let mut keyboard: Option<u32> = None;
     let mut pointer: Option<u32> = None;
     let mut pointer_pos = Point::new(0.0, 0.0);
+    let mut keymap: Option<std::collections::HashMap<u32, String>> = None;
     loop {
         let (object, opcode, args) = {
             let mut conn = shared.lock().unwrap();
@@ -764,11 +940,31 @@ where
         } else if object == toplevel && opcode == XDG_TOPLEVEL_CLOSE {
             handler(Event::CloseRequested, &win);
             break;
+        } else if Some(object) == keyboard && opcode == WL_KEYBOARD_KEYMAP {
+            // format(4), [fd via ancillary], size(4). Format 1 = XKB_V1 text.
+            let format = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            let size = u32::from_le_bytes([args[4], args[5], args[6], args[7]]) as usize;
+            let fd = shared.lock().unwrap().pending_fd.take();
+            if let (1, Some(fd)) = (format, fd) {
+                keymap = read_keymap(fd, size);
+                dbg(format_args!(
+                    "keymap parsed: {} keys",
+                    keymap.as_ref().map(|m| m.len()).unwrap_or(0)
+                ));
+            } else if let Some(fd) = fd {
+                unsafe { close(fd) };
+            }
         } else if Some(object) == keyboard && opcode == WL_KEYBOARD_KEY {
             // serial(4), time(4), key(4 evdev), state(4: 1 = pressed).
             let key = u32::from_le_bytes([args[8], args[9], args[10], args[11]]);
             let pressed = u32::from_le_bytes([args[12], args[13], args[14], args[15]]) == 1;
-            if let Some(ev) = evdev_to_event(key, pressed) {
+            // Prefer the compositor's keymap (xkb keycode = evdev + 8); fall back
+            // to the layout-independent evdev table when none was parsed.
+            let ev = match keymap.as_ref().and_then(|m| m.get(&(key + 8))) {
+                Some(sym) => keysym_name_to_event(sym, pressed),
+                None => evdev_to_event(key, pressed),
+            };
+            if let Some(ev) = ev {
                 dbg(format_args!("key {key} pressed={pressed} -> {ev:?}"));
                 if handler(ev, &win) == ControlFlow::Exit {
                     break;
@@ -873,6 +1069,44 @@ mod tests {
         assert_eq!(evdev_to_event(57, true), Some(Event::Text(" ".into()))); // KEY_SPACE
         assert_eq!(evdev_to_event(30, false), None);
         assert_eq!(evdev_to_event(0, true), None);
+    }
+
+    #[test]
+    fn parse_xkb_maps_keycodes_to_keysyms() {
+        let keymap = "\
+xkb_keymap {
+xkb_keycodes \"x\" {
+    <AC01> = 38;
+    <SPCE> = 65;
+    <TAB>  = 23;
+};
+xkb_symbols \"x\" {
+    key <AC01> { [ a, A ] };
+    key <SPCE> { [ space ] };
+    key <TAB>  { [ Tab ] };
+};
+};";
+        let map = parse_xkb(keymap);
+        assert_eq!(map.get(&38).map(String::as_str), Some("a"));
+        assert_eq!(map.get(&65).map(String::as_str), Some("space"));
+        assert_eq!(map.get(&23).map(String::as_str), Some("Tab"));
+        // keysym names decode to events.
+        assert_eq!(
+            keysym_name_to_event("a", true),
+            Some(Event::Text("a".into()))
+        );
+        assert_eq!(
+            keysym_name_to_event("space", true),
+            Some(Event::Text(" ".into()))
+        );
+        assert!(matches!(
+            keysym_name_to_event("Tab", true),
+            Some(Event::Key {
+                code: KeyCode::Tab,
+                ..
+            })
+        ));
+        assert_eq!(keysym_name_to_event("a", false), None); // text on press only
     }
 
     #[test]
