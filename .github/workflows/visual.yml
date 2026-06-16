@@ -426,6 +426,8 @@ jobs:
           convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
           # Vulkan-rendered frame (clear) read back from the GPU, raw FFI.
           convert -size 420x300 -depth 8 rgba:gpu-vk.raw visual_output/forma-gpu-vk.png
+          # Vulkan triangle drawn by real SPIR-V shaders, read back, raw FFI.
+          convert -size 420x300 -depth 8 rgba:gpu-vk-tri.raw visual_output/forma-gpu-vk-tri.png
           echo "Captured:"; identify visual_output/forma-gpu*.png
           # The raw-FFI Vulkan foundation must reach a device (Mesa lavapipe) and
           # create a logical device + graphics queue.
@@ -443,6 +445,12 @@ jobs:
           vkpx=$(convert visual_output/forma-gpu-vk.png -format '%[pixel:p{10,10}]' info:)
           echo "Vulkan readback pixel: $vkpx"
           echo "$vkpx" | grep -q "96,156,255"
+          # The triangle was drawn by real shaders: the center pixel must be forma
+          # green (R=0x34 G=0xd3 B=0x99 = 52,211,153), the corner the dark clear.
+          grep -q "Vulkan triangle: .* bytes" gpudemo.log
+          tript=$(convert visual_output/forma-gpu-vk-tri.png -format '%[pixel:p{210,150}]' info:)
+          echo "Vulkan triangle center pixel: $tript"
+          echo "$tript" | grep -q "52,211,153"
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4

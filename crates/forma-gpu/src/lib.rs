@@ -120,6 +120,23 @@ pub fn vulkan_render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Draw a triangle through a full Vulkan graphics pipeline (raw FFI): two SPIR-V
+/// shader modules, a graphics pipeline, and a `vkCmdDraw` over a dark-cleared
+/// `width`×`height` target, then read the frame back to the CPU. The center
+/// pixel comes out forma green — proof that real shaders ran on the GPU. Returns
+/// the RGBA pixels. Errors if the `vk` feature is off or any step fails.
+pub fn vulkan_render_triangle(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::render_triangle(width, height)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

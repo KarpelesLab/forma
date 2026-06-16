@@ -71,6 +71,24 @@ const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: i32 = 12;
 const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x2;
 const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x2;
 const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x4;
+
+const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: i32 = 16;
+const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: i32 = 18;
+const VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO: i32 = 19;
+const VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO: i32 = 20;
+const VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO: i32 = 22;
+const VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO: i32 = 23;
+const VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO: i32 = 24;
+const VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO: i32 = 26;
+const VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO: i32 = 28;
+const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO: i32 = 30;
+const VK_SHADER_STAGE_VERTEX_BIT: u32 = 0x1;
+const VK_SHADER_STAGE_FRAGMENT_BIT: u32 = 0x10;
+const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: u32 = 3;
+const VK_POLYGON_MODE_FILL: u32 = 0;
+const VK_CULL_MODE_NONE: u32 = 0;
+const VK_FRONT_FACE_COUNTER_CLOCKWISE: u32 = 0;
+const VK_COLOR_COMPONENT_RGBA: u32 = 0x1 | 0x2 | 0x4 | 0x8;
 // VK_API_VERSION_1_0 = VK_MAKE_API_VERSION(0, 1, 0, 0) = 1 << 22.
 const VK_API_VERSION_1_0: u32 = 1 << 22;
 // VkPhysicalDeviceProperties.deviceName follows five u32 fields (apiVersion,
@@ -133,6 +151,9 @@ type VkFramebuffer = u64;
 type VkCommandPool = u64;
 type VkFence = u64;
 type VkBuffer = u64;
+type VkShaderModule = u64;
+type VkPipelineLayout = u64;
+type VkPipeline = u64;
 // VkCommandBuffer is a *dispatchable* handle (pointer-sized), not a u64 like the
 // non-dispatchable handles above.
 type VkCommandBuffer = *mut c_void;
@@ -384,6 +405,155 @@ struct VkBufferImageCopy {
     imageExtent: VkExtent3D,
 }
 
+#[repr(C)]
+struct VkShaderModuleCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    codeSize: usize,
+    pCode: *const u32,
+}
+
+#[repr(C)]
+struct VkPipelineShaderStageCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    stage: u32,
+    module: VkShaderModule,
+    pName: *const c_char,
+    pSpecializationInfo: *const c_void,
+}
+
+#[repr(C)]
+struct VkPipelineVertexInputStateCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    vertexBindingDescriptionCount: u32,
+    pVertexBindingDescriptions: *const c_void,
+    vertexAttributeDescriptionCount: u32,
+    pVertexAttributeDescriptions: *const c_void,
+}
+
+#[repr(C)]
+struct VkPipelineInputAssemblyStateCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    topology: u32,
+    primitiveRestartEnable: u32,
+}
+
+#[repr(C)]
+struct VkViewport {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    minDepth: f32,
+    maxDepth: f32,
+}
+
+#[repr(C)]
+struct VkPipelineViewportStateCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    viewportCount: u32,
+    pViewports: *const VkViewport,
+    scissorCount: u32,
+    pScissors: *const VkRect2D,
+}
+
+#[repr(C)]
+struct VkPipelineRasterizationStateCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    depthClampEnable: u32,
+    rasterizerDiscardEnable: u32,
+    polygonMode: u32,
+    cullMode: u32,
+    frontFace: u32,
+    depthBiasEnable: u32,
+    depthBiasConstantFactor: f32,
+    depthBiasClamp: f32,
+    depthBiasSlopeFactor: f32,
+    lineWidth: f32,
+}
+
+#[repr(C)]
+struct VkPipelineMultisampleStateCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    rasterizationSamples: u32,
+    sampleShadingEnable: u32,
+    minSampleShading: f32,
+    pSampleMask: *const u32,
+    alphaToCoverageEnable: u32,
+    alphaToOneEnable: u32,
+}
+
+#[repr(C)]
+struct VkPipelineColorBlendAttachmentState {
+    blendEnable: u32,
+    srcColorBlendFactor: u32,
+    dstColorBlendFactor: u32,
+    colorBlendOp: u32,
+    srcAlphaBlendFactor: u32,
+    dstAlphaBlendFactor: u32,
+    alphaBlendOp: u32,
+    colorWriteMask: u32,
+}
+
+#[repr(C)]
+struct VkPipelineColorBlendStateCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    logicOpEnable: u32,
+    logicOp: u32,
+    attachmentCount: u32,
+    pAttachments: *const VkPipelineColorBlendAttachmentState,
+    blendConstants: [f32; 4],
+}
+
+#[repr(C)]
+struct VkPipelineLayoutCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    setLayoutCount: u32,
+    pSetLayouts: *const u64,
+    pushConstantRangeCount: u32,
+    pPushConstantRanges: *const c_void,
+}
+
+#[repr(C)]
+struct VkGraphicsPipelineCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    stageCount: u32,
+    pStages: *const VkPipelineShaderStageCreateInfo,
+    pVertexInputState: *const VkPipelineVertexInputStateCreateInfo,
+    pInputAssemblyState: *const VkPipelineInputAssemblyStateCreateInfo,
+    pTessellationState: *const c_void,
+    pViewportState: *const VkPipelineViewportStateCreateInfo,
+    pRasterizationState: *const VkPipelineRasterizationStateCreateInfo,
+    pMultisampleState: *const VkPipelineMultisampleStateCreateInfo,
+    pDepthStencilState: *const c_void,
+    pColorBlendState: *const VkPipelineColorBlendStateCreateInfo,
+    pDynamicState: *const c_void,
+    layout: VkPipelineLayout,
+    renderPass: VkRenderPass,
+    subpass: u32,
+    basePipelineHandle: VkPipeline,
+    basePipelineIndex: i32,
+}
+
 #[link(name = "vulkan")]
 unsafe extern "C" {
     fn vkCreateInstance(
@@ -556,6 +726,49 @@ unsafe extern "C" {
         ppData: *mut *mut c_void,
     ) -> VkResult;
     fn vkUnmapMemory(device: VkDevice, memory: VkDeviceMemory);
+    fn vkCreateShaderModule(
+        device: VkDevice,
+        pCreateInfo: *const VkShaderModuleCreateInfo,
+        pAllocator: *const c_void,
+        pShaderModule: *mut VkShaderModule,
+    ) -> VkResult;
+    fn vkDestroyShaderModule(
+        device: VkDevice,
+        shaderModule: VkShaderModule,
+        pAllocator: *const c_void,
+    );
+    fn vkCreatePipelineLayout(
+        device: VkDevice,
+        pCreateInfo: *const VkPipelineLayoutCreateInfo,
+        pAllocator: *const c_void,
+        pPipelineLayout: *mut VkPipelineLayout,
+    ) -> VkResult;
+    fn vkDestroyPipelineLayout(
+        device: VkDevice,
+        pipelineLayout: VkPipelineLayout,
+        pAllocator: *const c_void,
+    );
+    fn vkCreateGraphicsPipelines(
+        device: VkDevice,
+        pipelineCache: u64,
+        createInfoCount: u32,
+        pCreateInfos: *const VkGraphicsPipelineCreateInfo,
+        pAllocator: *const c_void,
+        pPipelines: *mut VkPipeline,
+    ) -> VkResult;
+    fn vkDestroyPipeline(device: VkDevice, pipeline: VkPipeline, pAllocator: *const c_void);
+    fn vkCmdBindPipeline(
+        commandBuffer: VkCommandBuffer,
+        pipelineBindPoint: u32,
+        pipeline: VkPipeline,
+    );
+    fn vkCmdDraw(
+        commandBuffer: VkCommandBuffer,
+        vertexCount: u32,
+        instanceCount: u32,
+        firstVertex: u32,
+        firstInstance: u32,
+    );
 }
 
 /// Create a Vulkan instance and return the name of each physical device the
@@ -1004,6 +1217,202 @@ impl Gpu {
         }
     }
 
+    /// Create a shader module from a SPIR-V byte blob. SPIR-V is a stream of
+    /// 32-bit words; `include_bytes!` yields byte alignment 1, so we realign into
+    /// a `Vec<u32>` before handing Vulkan `pCode`.
+    unsafe fn shader_module(&self, spv: &[u8]) -> Result<VkShaderModule, String> {
+        unsafe {
+            if !spv.len().is_multiple_of(4) {
+                return Err("SPIR-V length is not a multiple of 4".into());
+            }
+            let words: Vec<u32> = spv
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let ci = VkShaderModuleCreateInfo {
+                sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                codeSize: spv.len(),
+                pCode: words.as_ptr(),
+            };
+            let mut module: VkShaderModule = 0;
+            if vkCreateShaderModule(self.device, &ci, core::ptr::null(), &mut module) != VK_SUCCESS
+            {
+                return Err("vkCreateShaderModule failed".into());
+            }
+            Ok(module)
+        }
+    }
+
+    /// Run one render pass on `target` — clearing to `clear`, then executing
+    /// `record` (which adds draw commands inside the pass) — copy the result to a
+    /// host buffer, and return the read-back RGBA pixels. The shared
+    /// record→submit→copy→map path behind both the plain clear and the triangle
+    /// draw. Cleans up everything it allocates (buffer, pool, fence); the caller
+    /// still owns `target` and `self`.
+    unsafe fn draw_to_pixels(
+        &self,
+        target: &Target,
+        clear: [f32; 4],
+        record: impl FnOnce(VkCommandBuffer),
+    ) -> Result<Vec<u8>, String> {
+        unsafe {
+            let size = target.width as u64 * target.height as u64 * 4;
+            let (buffer, buf_mem) = self.create_host_buffer(size)?;
+
+            // Tears down everything this function allocates.
+            let cleanup = |dev: VkDevice,
+                           buffer: VkBuffer,
+                           buf_mem: VkDeviceMemory,
+                           pool: VkCommandPool,
+                           fence: VkFence| {
+                if fence != 0 {
+                    vkDestroyFence(dev, fence, core::ptr::null());
+                }
+                if pool != 0 {
+                    vkDestroyCommandPool(dev, pool, core::ptr::null());
+                }
+                vkFreeMemory(dev, buf_mem, core::ptr::null());
+                vkDestroyBuffer(dev, buffer, core::ptr::null());
+            };
+
+            let pool_ci = VkCommandPoolCreateInfo {
+                sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                queueFamilyIndex: self.family,
+            };
+            let mut pool: VkCommandPool = 0;
+            if vkCreateCommandPool(self.device, &pool_ci, core::ptr::null(), &mut pool)
+                != VK_SUCCESS
+            {
+                cleanup(self.device, buffer, buf_mem, 0, 0);
+                return Err("vkCreateCommandPool failed".into());
+            }
+            let alloc = VkCommandBufferAllocateInfo {
+                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                pNext: core::ptr::null(),
+                commandPool: pool,
+                level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                commandBufferCount: 1,
+            };
+            let mut cmd: VkCommandBuffer = core::ptr::null_mut();
+            if vkAllocateCommandBuffers(self.device, &alloc, &mut cmd) != VK_SUCCESS {
+                cleanup(self.device, buffer, buf_mem, pool, 0);
+                return Err("vkAllocateCommandBuffers failed".into());
+            }
+
+            let begin = VkCommandBufferBeginInfo {
+                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                pNext: core::ptr::null(),
+                flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                pInheritanceInfo: core::ptr::null(),
+            };
+            if vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS {
+                cleanup(self.device, buffer, buf_mem, pool, 0);
+                return Err("vkBeginCommandBuffer failed".into());
+            }
+            let clear_value = VkClearValue { float32: clear };
+            let rp_begin = VkRenderPassBeginInfo {
+                sType: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                pNext: core::ptr::null(),
+                renderPass: target.render_pass,
+                framebuffer: target.framebuffer,
+                renderArea: VkRect2D {
+                    offset: VkOffset2D { x: 0, y: 0 },
+                    extent: VkExtent2D {
+                        width: target.width,
+                        height: target.height,
+                    },
+                },
+                clearValueCount: 1,
+                pClearValues: &clear_value,
+            };
+            vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+            record(cmd);
+            vkCmdEndRenderPass(cmd);
+
+            // The render pass left the image in TRANSFER_SRC_OPTIMAL — copy it,
+            // tightly packed, into the host buffer.
+            let region = VkBufferImageCopy {
+                bufferOffset: 0,
+                bufferRowLength: 0,
+                bufferImageHeight: 0,
+                imageSubresource: VkImageSubresourceLayers {
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel: 0,
+                    baseArrayLayer: 0,
+                    layerCount: 1,
+                },
+                imageOffset: VkOffset3D { x: 0, y: 0, z: 0 },
+                imageExtent: VkExtent3D {
+                    width: target.width,
+                    height: target.height,
+                    depth: 1,
+                },
+            };
+            vkCmdCopyImageToBuffer(
+                cmd,
+                target.image,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                buffer,
+                1,
+                &region,
+            );
+            if vkEndCommandBuffer(cmd) != VK_SUCCESS {
+                cleanup(self.device, buffer, buf_mem, pool, 0);
+                return Err("vkEndCommandBuffer failed".into());
+            }
+
+            let mut queue: VkQueue = core::ptr::null_mut();
+            vkGetDeviceQueue(self.device, self.family, 0, &mut queue);
+            let fence_ci = VkFenceCreateInfo {
+                sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+            };
+            let mut fence: VkFence = 0;
+            if vkCreateFence(self.device, &fence_ci, core::ptr::null(), &mut fence) != VK_SUCCESS {
+                cleanup(self.device, buffer, buf_mem, pool, 0);
+                return Err("vkCreateFence failed".into());
+            }
+            let submit = VkSubmitInfo {
+                sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                pNext: core::ptr::null(),
+                waitSemaphoreCount: 0,
+                pWaitSemaphores: core::ptr::null(),
+                pWaitDstStageMask: core::ptr::null(),
+                commandBufferCount: 1,
+                pCommandBuffers: &cmd,
+                signalSemaphoreCount: 0,
+                pSignalSemaphores: core::ptr::null(),
+            };
+            if vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS {
+                cleanup(self.device, buffer, buf_mem, pool, fence);
+                return Err("vkQueueSubmit failed".into());
+            }
+            if vkWaitForFences(self.device, 1, &fence, VK_TRUE, u64::MAX) != VK_SUCCESS {
+                cleanup(self.device, buffer, buf_mem, pool, fence);
+                return Err("vkWaitForFences failed".into());
+            }
+
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            if vkMapMemory(self.device, buf_mem, 0, size, 0, &mut ptr) != VK_SUCCESS
+                || ptr.is_null()
+            {
+                cleanup(self.device, buffer, buf_mem, pool, fence);
+                return Err("vkMapMemory failed".into());
+            }
+            let mut pixels = vec![0u8; size as usize];
+            core::ptr::copy_nonoverlapping(ptr as *const u8, pixels.as_mut_ptr(), size as usize);
+            vkUnmapMemory(self.device, buf_mem);
+
+            cleanup(self.device, buffer, buf_mem, pool, fence);
+            Ok(pixels)
+        }
+    }
+
     unsafe fn destroy(self) {
         unsafe {
             vkDestroyDevice(self.device, core::ptr::null());
@@ -1261,166 +1670,233 @@ pub fn render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
                 return Err(e);
             }
         };
-        let size = width as u64 * height as u64 * 4;
-        let (buffer, buf_mem) = match gpu.create_host_buffer(size) {
+        // forma blue (0x60, 0x9c, 0xff) — the readback pixels should be this.
+        let clear = [0x60 as f32 / 255.0, 0x9c as f32 / 255.0, 1.0, 1.0];
+        let result = gpu.draw_to_pixels(&target, clear, |_cmd| {});
+        target.destroy(gpu.device);
+        gpu.destroy();
+        result
+    }
+}
+
+// Precompiled SPIR-V (committed; built once from shaders/*.{vert,frag} with
+// glslangValidator) so the crate has no build-time shader-compiler dependency.
+const TRIANGLE_VERT_SPV: &[u8] = include_bytes!("../shaders/triangle.vert.spv");
+const TRIANGLE_FRAG_SPV: &[u8] = include_bytes!("../shaders/triangle.frag.spv");
+
+/// The full Vulkan render pipeline: compile two SPIR-V shader modules, build a
+/// graphics pipeline (no vertex buffers — the vertex shader emits a triangle
+/// from `gl_VertexIndex`), then **draw** it over a dark-cleared `width`×`height`
+/// target and read the frame back to the CPU. Unlike [`render_clear`] this runs
+/// real shaders through `vkCmdDraw`, so the center pixel comes out forma green.
+/// Returns the RGBA pixels. Errors if any step fails.
+pub fn render_triangle(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    unsafe {
+        let gpu = Gpu::create()?;
+        let target = match gpu.create_target(width, height) {
             Ok(t) => t,
+            Err(e) => {
+                gpu.destroy();
+                return Err(e);
+            }
+        };
+
+        // Shader modules from the committed SPIR-V.
+        let vert = match gpu.shader_module(TRIANGLE_VERT_SPV) {
+            Ok(m) => m,
             Err(e) => {
                 target.destroy(gpu.device);
                 gpu.destroy();
                 return Err(e);
             }
         };
-
-        // Tear down everything created so far, on failure or success.
-        let finish = |gpu: Gpu,
-                      target: Target,
-                      buffer: VkBuffer,
-                      buf_mem: VkDeviceMemory,
-                      pool: VkCommandPool,
-                      fence: VkFence| {
-            if fence != 0 {
-                vkDestroyFence(gpu.device, fence, core::ptr::null());
+        let frag = match gpu.shader_module(TRIANGLE_FRAG_SPV) {
+            Ok(m) => m,
+            Err(e) => {
+                vkDestroyShaderModule(gpu.device, vert, core::ptr::null());
+                target.destroy(gpu.device);
+                gpu.destroy();
+                return Err(e);
             }
-            if pool != 0 {
-                vkDestroyCommandPool(gpu.device, pool, core::ptr::null());
-            }
-            vkFreeMemory(gpu.device, buf_mem, core::ptr::null());
-            vkDestroyBuffer(gpu.device, buffer, core::ptr::null());
-            target.destroy(gpu.device);
-            gpu.destroy();
         };
 
-        let pool_ci = VkCommandPoolCreateInfo {
-            sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        // Cleans up the pipeline-related objects (and target + gpu) on exit.
+        let teardown =
+            |gpu: Gpu, target: Target, pipeline: VkPipeline, layout: VkPipelineLayout| {
+                if pipeline != 0 {
+                    vkDestroyPipeline(gpu.device, pipeline, core::ptr::null());
+                }
+                if layout != 0 {
+                    vkDestroyPipelineLayout(gpu.device, layout, core::ptr::null());
+                }
+                vkDestroyShaderModule(gpu.device, frag, core::ptr::null());
+                vkDestroyShaderModule(gpu.device, vert, core::ptr::null());
+                target.destroy(gpu.device);
+                gpu.destroy();
+            };
+
+        // An empty pipeline layout (no descriptors, no push constants).
+        let pl_ci = VkPipelineLayoutCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             pNext: core::ptr::null(),
             flags: 0,
-            queueFamilyIndex: gpu.family,
+            setLayoutCount: 0,
+            pSetLayouts: core::ptr::null(),
+            pushConstantRangeCount: 0,
+            pPushConstantRanges: core::ptr::null(),
         };
-        let mut pool: VkCommandPool = 0;
-        if vkCreateCommandPool(gpu.device, &pool_ci, core::ptr::null(), &mut pool) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, 0, 0);
-            return Err("vkCreateCommandPool failed".into());
-        }
-        let alloc = VkCommandBufferAllocateInfo {
-            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            pNext: core::ptr::null(),
-            commandPool: pool,
-            level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            commandBufferCount: 1,
-        };
-        let mut cmd: VkCommandBuffer = core::ptr::null_mut();
-        if vkAllocateCommandBuffers(gpu.device, &alloc, &mut cmd) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, pool, 0);
-            return Err("vkAllocateCommandBuffers failed".into());
+        let mut layout: VkPipelineLayout = 0;
+        if vkCreatePipelineLayout(gpu.device, &pl_ci, core::ptr::null(), &mut layout) != VK_SUCCESS
+        {
+            teardown(gpu, target, 0, 0);
+            return Err("vkCreatePipelineLayout failed".into());
         }
 
-        let begin = VkCommandBufferBeginInfo {
-            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        let stages = [
+            VkPipelineShaderStageCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                stage: VK_SHADER_STAGE_VERTEX_BIT,
+                module: vert,
+                pName: c"main".as_ptr(),
+                pSpecializationInfo: core::ptr::null(),
+            },
+            VkPipelineShaderStageCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                stage: VK_SHADER_STAGE_FRAGMENT_BIT,
+                module: frag,
+                pName: c"main".as_ptr(),
+                pSpecializationInfo: core::ptr::null(),
+            },
+        ];
+        // No vertex buffers — the vertex shader generates positions.
+        let vertex_input = VkPipelineVertexInputStateCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             pNext: core::ptr::null(),
-            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            pInheritanceInfo: core::ptr::null(),
+            flags: 0,
+            vertexBindingDescriptionCount: 0,
+            pVertexBindingDescriptions: core::ptr::null(),
+            vertexAttributeDescriptionCount: 0,
+            pVertexAttributeDescriptions: core::ptr::null(),
         };
-        if vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, pool, 0);
-            return Err("vkBeginCommandBuffer failed".into());
-        }
-        // forma blue (0x60, 0x9c, 0xff) — the readback pixels should be this.
-        let clear = VkClearValue {
-            float32: [0x60 as f32 / 255.0, 0x9c as f32 / 255.0, 1.0, 1.0],
-        };
-        let rp_begin = VkRenderPassBeginInfo {
-            sType: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        let input_assembly = VkPipelineInputAssemblyStateCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
             pNext: core::ptr::null(),
+            flags: 0,
+            topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            primitiveRestartEnable: 0,
+        };
+        let viewport = VkViewport {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: height as f32,
+            minDepth: 0.0,
+            maxDepth: 1.0,
+        };
+        let scissor = VkRect2D {
+            offset: VkOffset2D { x: 0, y: 0 },
+            extent: VkExtent2D { width, height },
+        };
+        let viewport_state = VkPipelineViewportStateCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            viewportCount: 1,
+            pViewports: &viewport,
+            scissorCount: 1,
+            pScissors: &scissor,
+        };
+        let raster = VkPipelineRasterizationStateCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            depthClampEnable: 0,
+            rasterizerDiscardEnable: 0,
+            polygonMode: VK_POLYGON_MODE_FILL,
+            cullMode: VK_CULL_MODE_NONE,
+            frontFace: VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            depthBiasEnable: 0,
+            depthBiasConstantFactor: 0.0,
+            depthBiasClamp: 0.0,
+            depthBiasSlopeFactor: 0.0,
+            lineWidth: 1.0,
+        };
+        let multisample = VkPipelineMultisampleStateCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            rasterizationSamples: VK_SAMPLE_COUNT_1_BIT,
+            sampleShadingEnable: 0,
+            minSampleShading: 0.0,
+            pSampleMask: core::ptr::null(),
+            alphaToCoverageEnable: 0,
+            alphaToOneEnable: 0,
+        };
+        let blend_attachment = VkPipelineColorBlendAttachmentState {
+            blendEnable: 0,
+            srcColorBlendFactor: 0,
+            dstColorBlendFactor: 0,
+            colorBlendOp: 0,
+            srcAlphaBlendFactor: 0,
+            dstAlphaBlendFactor: 0,
+            alphaBlendOp: 0,
+            colorWriteMask: VK_COLOR_COMPONENT_RGBA,
+        };
+        let color_blend = VkPipelineColorBlendStateCreateInfo {
+            sType: VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            logicOpEnable: 0,
+            logicOp: 0,
+            attachmentCount: 1,
+            pAttachments: &blend_attachment,
+            blendConstants: [0.0; 4],
+        };
+        let gp_ci = VkGraphicsPipelineCreateInfo {
+            sType: VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            stageCount: 2,
+            pStages: stages.as_ptr(),
+            pVertexInputState: &vertex_input,
+            pInputAssemblyState: &input_assembly,
+            pTessellationState: core::ptr::null(),
+            pViewportState: &viewport_state,
+            pRasterizationState: &raster,
+            pMultisampleState: &multisample,
+            pDepthStencilState: core::ptr::null(),
+            pColorBlendState: &color_blend,
+            pDynamicState: core::ptr::null(),
+            layout,
             renderPass: target.render_pass,
-            framebuffer: target.framebuffer,
-            renderArea: VkRect2D {
-                offset: VkOffset2D { x: 0, y: 0 },
-                extent: VkExtent2D {
-                    width: target.width,
-                    height: target.height,
-                },
-            },
-            clearValueCount: 1,
-            pClearValues: &clear,
+            subpass: 0,
+            basePipelineHandle: 0,
+            basePipelineIndex: -1,
         };
-        vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdEndRenderPass(cmd);
-
-        // The render pass left the image in TRANSFER_SRC_OPTIMAL — copy it,
-        // tightly packed, into the host buffer.
-        let region = VkBufferImageCopy {
-            bufferOffset: 0,
-            bufferRowLength: 0,
-            bufferImageHeight: 0,
-            imageSubresource: VkImageSubresourceLayers {
-                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
-                mipLevel: 0,
-                baseArrayLayer: 0,
-                layerCount: 1,
-            },
-            imageOffset: VkOffset3D { x: 0, y: 0, z: 0 },
-            imageExtent: VkExtent3D {
-                width,
-                height,
-                depth: 1,
-            },
-        };
-        vkCmdCopyImageToBuffer(
-            cmd,
-            target.image,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            buffer,
-            1,
-            &region,
-        );
-        if vkEndCommandBuffer(cmd) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, pool, 0);
-            return Err("vkEndCommandBuffer failed".into());
+        let mut pipeline: VkPipeline = 0;
+        if vkCreateGraphicsPipelines(gpu.device, 0, 1, &gp_ci, core::ptr::null(), &mut pipeline)
+            != VK_SUCCESS
+        {
+            teardown(gpu, target, 0, layout);
+            return Err("vkCreateGraphicsPipelines failed".into());
         }
 
-        let mut queue: VkQueue = core::ptr::null_mut();
-        vkGetDeviceQueue(gpu.device, gpu.family, 0, &mut queue);
-        let fence_ci = VkFenceCreateInfo {
-            sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            pNext: core::ptr::null(),
-            flags: 0,
-        };
-        let mut fence: VkFence = 0;
-        if vkCreateFence(gpu.device, &fence_ci, core::ptr::null(), &mut fence) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, pool, 0);
-            return Err("vkCreateFence failed".into());
-        }
-        let submit = VkSubmitInfo {
-            sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            pNext: core::ptr::null(),
-            waitSemaphoreCount: 0,
-            pWaitSemaphores: core::ptr::null(),
-            pWaitDstStageMask: core::ptr::null(),
-            commandBufferCount: 1,
-            pCommandBuffers: &cmd,
-            signalSemaphoreCount: 0,
-            pSignalSemaphores: core::ptr::null(),
-        };
-        if vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, pool, fence);
-            return Err("vkQueueSubmit failed".into());
-        }
-        if vkWaitForFences(gpu.device, 1, &fence, VK_TRUE, u64::MAX) != VK_SUCCESS {
-            finish(gpu, target, buffer, buf_mem, pool, fence);
-            return Err("vkWaitForFences failed".into());
-        }
-
-        // Map the host buffer and copy the pixels out.
-        let mut ptr: *mut c_void = core::ptr::null_mut();
-        if vkMapMemory(gpu.device, buf_mem, 0, size, 0, &mut ptr) != VK_SUCCESS || ptr.is_null() {
-            finish(gpu, target, buffer, buf_mem, pool, fence);
-            return Err("vkMapMemory failed".into());
-        }
-        let mut pixels = vec![0u8; size as usize];
-        core::ptr::copy_nonoverlapping(ptr as *const u8, pixels.as_mut_ptr(), size as usize);
-        vkUnmapMemory(gpu.device, buf_mem);
-
-        finish(gpu, target, buffer, buf_mem, pool, fence);
-        Ok(pixels)
+        // Dark background; the triangle is drawn forma green over it.
+        let clear = [
+            0x14 as f32 / 255.0,
+            0x15 as f32 / 255.0,
+            0x18 as f32 / 255.0,
+            1.0,
+        ];
+        let result = gpu.draw_to_pixels(&target, clear, |cmd| {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+        });
+        teardown(gpu, target, pipeline, layout);
+        result
     }
 }

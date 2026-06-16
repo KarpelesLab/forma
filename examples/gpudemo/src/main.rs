@@ -174,4 +174,13 @@ fn main() {
         }
         Err(e) => println!("Vulkan readback unavailable: {e}"),
     }
+    // The full Vulkan pipeline: a triangle drawn by real SPIR-V shaders, read
+    // back so CI can confirm the GPU actually rasterized green geometry.
+    match forma_gpu::vulkan_render_triangle(W as u32, H as u32) {
+        Ok(pixels) => {
+            std::fs::write("gpu-vk-tri.raw", &pixels).expect("write raw");
+            println!("Vulkan triangle: {} bytes ({W}x{H})", pixels.len());
+        }
+        Err(e) => println!("Vulkan triangle unavailable: {e}"),
+    }
 }
