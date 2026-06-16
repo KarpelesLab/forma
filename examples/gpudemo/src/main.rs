@@ -142,10 +142,15 @@ fn main() {
         }
     }
 
-    // Vulkan FFI foundation: enumerate physical devices (non-fatal — only built
-    // with the `vk` feature). Under Mesa lavapipe this lists "llvmpipe".
+    // Vulkan FFI foundation: enumerate physical devices and create a logical
+    // device + graphics queue (non-fatal — only built with the `vk` feature).
+    // Under Mesa lavapipe this lists "llvmpipe".
     match forma_gpu::vulkan_devices() {
         Ok(devs) => println!("Vulkan devices: {devs:?}"),
         Err(e) => println!("Vulkan unavailable: {e}"),
+    }
+    match forma_gpu::vulkan_init_device() {
+        Ok(summary) => println!("Vulkan init: {summary}"),
+        Err(e) => println!("Vulkan init unavailable: {e}"),
     }
 }

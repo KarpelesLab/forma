@@ -425,8 +425,10 @@ jobs:
           # GPU-native render of the actual widget-tree Scene (render_scene).
           convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
           echo "Captured:"; identify visual_output/forma-gpu*.png
-          # The raw-FFI Vulkan foundation must reach a device (Mesa lavapipe).
+          # The raw-FFI Vulkan foundation must reach a device (Mesa lavapipe) and
+          # create a logical device + graphics queue.
           grep -q "Vulkan devices:" gpudemo.log
+          grep -q "Vulkan init: logical device" gpudemo.log
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4

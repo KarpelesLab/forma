@@ -38,6 +38,20 @@ pub fn vulkan_devices() -> Result<Vec<String>, String> {
     }
 }
 
+/// Create a Vulkan logical device with a graphics queue on the first physical
+/// device (raw FFI) — the core a Vulkan render backend builds on. Returns a
+/// one-line summary. Errors if the `vk` feature is off or device creation fails.
+pub fn vulkan_init_device() -> Result<String, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::init_device()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

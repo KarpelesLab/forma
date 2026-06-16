@@ -15,9 +15,17 @@ type VkInstance = *mut c_void;
 type VkPhysicalDevice = *mut c_void;
 type VkResult = i32;
 
+type VkDevice = *mut c_void;
+type VkQueue = *mut c_void;
+
 const VK_SUCCESS: VkResult = 0;
 const VK_STRUCTURE_TYPE_APPLICATION_INFO: i32 = 0;
 const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: i32 = 1;
+const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: i32 = 2;
+const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: i32 = 3;
+const VK_QUEUE_GRAPHICS_BIT: u32 = 0x1;
+// VkQueueFamilyProperties is 24 bytes; queueFlags is its first u32.
+const QUEUE_FAMILY_PROPS_SIZE: usize = 24;
 // VK_API_VERSION_1_0 = VK_MAKE_API_VERSION(0, 1, 0, 0) = 1 << 22.
 const VK_API_VERSION_1_0: u32 = 1 << 22;
 // VkPhysicalDeviceProperties.deviceName follows five u32 fields (apiVersion,
@@ -48,6 +56,30 @@ struct VkInstanceCreateInfo {
     ppEnabledExtensionNames: *const *const c_char,
 }
 
+#[repr(C)]
+struct VkDeviceQueueCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    queueFamilyIndex: u32,
+    queueCount: u32,
+    pQueuePriorities: *const f32,
+}
+
+#[repr(C)]
+struct VkDeviceCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    queueCreateInfoCount: u32,
+    pQueueCreateInfos: *const VkDeviceQueueCreateInfo,
+    enabledLayerCount: u32,
+    ppEnabledLayerNames: *const *const c_char,
+    enabledExtensionCount: u32,
+    ppEnabledExtensionNames: *const *const c_char,
+    pEnabledFeatures: *const c_void,
+}
+
 #[link(name = "vulkan")]
 unsafe extern "C" {
     fn vkCreateInstance(
@@ -64,6 +96,24 @@ unsafe extern "C" {
     // Writes a VkPhysicalDeviceProperties (~824 bytes); we hand it a generous
     // byte buffer and read only `deviceName` out of it.
     fn vkGetPhysicalDeviceProperties(physicalDevice: VkPhysicalDevice, pProperties: *mut c_void);
+    fn vkGetPhysicalDeviceQueueFamilyProperties(
+        physicalDevice: VkPhysicalDevice,
+        pQueueFamilyPropertyCount: *mut u32,
+        pQueueFamilyProperties: *mut c_void,
+    );
+    fn vkCreateDevice(
+        physicalDevice: VkPhysicalDevice,
+        pCreateInfo: *const VkDeviceCreateInfo,
+        pAllocator: *const c_void,
+        pDevice: *mut VkDevice,
+    ) -> VkResult;
+    fn vkDestroyDevice(device: VkDevice, pAllocator: *const c_void);
+    fn vkGetDeviceQueue(
+        device: VkDevice,
+        queueFamilyIndex: u32,
+        queueIndex: u32,
+        pQueue: *mut VkQueue,
+    );
 }
 
 /// Create a Vulkan instance and return the name of each physical device the
@@ -116,5 +166,113 @@ pub fn devices() -> Result<Vec<String>, String> {
 
         vkDestroyInstance(instance, core::ptr::null());
         Ok(names)
+    }
+}
+
+/// Create an instance, pick the first physical device, select a graphics queue
+/// family, and create a logical device with that queue — the core a Vulkan
+/// render backend builds on. Returns a one-line summary. Errors if any step
+/// fails or no graphics-capable device exists.
+pub fn init_device() -> Result<String, String> {
+    unsafe {
+        let app = VkApplicationInfo {
+            sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            pNext: core::ptr::null(),
+            pApplicationName: c"forma".as_ptr(),
+            applicationVersion: 0,
+            pEngineName: c"forma".as_ptr(),
+            engineVersion: 0,
+            apiVersion: VK_API_VERSION_1_0,
+        };
+        let create = VkInstanceCreateInfo {
+            sType: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            pApplicationInfo: &app,
+            enabledLayerCount: 0,
+            ppEnabledLayerNames: core::ptr::null(),
+            enabledExtensionCount: 0,
+            ppEnabledExtensionNames: core::ptr::null(),
+        };
+        let mut instance: VkInstance = core::ptr::null_mut();
+        if vkCreateInstance(&create, core::ptr::null(), &mut instance) != VK_SUCCESS {
+            return Err("vkCreateInstance failed".into());
+        }
+
+        let mut count: u32 = 0;
+        vkEnumeratePhysicalDevices(instance, &mut count, core::ptr::null_mut());
+        if count == 0 {
+            vkDestroyInstance(instance, core::ptr::null());
+            return Err("no Vulkan physical devices".into());
+        }
+        let mut handles: Vec<VkPhysicalDevice> = vec![core::ptr::null_mut(); count as usize];
+        vkEnumeratePhysicalDevices(instance, &mut count, handles.as_mut_ptr());
+        let phys = handles[0];
+
+        // Find a queue family that supports graphics.
+        let mut qcount: u32 = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(phys, &mut qcount, core::ptr::null_mut());
+        let mut qbuf = vec![0u8; qcount as usize * QUEUE_FAMILY_PROPS_SIZE];
+        vkGetPhysicalDeviceQueueFamilyProperties(
+            phys,
+            &mut qcount,
+            qbuf.as_mut_ptr() as *mut c_void,
+        );
+        let mut family: Option<u32> = None;
+        for i in 0..qcount as usize {
+            let off = i * QUEUE_FAMILY_PROPS_SIZE;
+            let flags =
+                u32::from_ne_bytes([qbuf[off], qbuf[off + 1], qbuf[off + 2], qbuf[off + 3]]);
+            if flags & VK_QUEUE_GRAPHICS_BIT != 0 {
+                family = Some(i as u32);
+                break;
+            }
+        }
+        let Some(family) = family else {
+            vkDestroyInstance(instance, core::ptr::null());
+            return Err("no graphics queue family".into());
+        };
+
+        // Create a logical device with one queue from that family.
+        let priority: f32 = 1.0;
+        let qci = VkDeviceQueueCreateInfo {
+            sType: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            queueFamilyIndex: family,
+            queueCount: 1,
+            pQueuePriorities: &priority,
+        };
+        let dci = VkDeviceCreateInfo {
+            sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            queueCreateInfoCount: 1,
+            pQueueCreateInfos: &qci,
+            enabledLayerCount: 0,
+            ppEnabledLayerNames: core::ptr::null(),
+            enabledExtensionCount: 0,
+            ppEnabledExtensionNames: core::ptr::null(),
+            pEnabledFeatures: core::ptr::null(),
+        };
+        let mut device: VkDevice = core::ptr::null_mut();
+        if vkCreateDevice(phys, &dci, core::ptr::null(), &mut device) != VK_SUCCESS {
+            vkDestroyInstance(instance, core::ptr::null());
+            return Err("vkCreateDevice failed".into());
+        }
+        let mut queue: VkQueue = core::ptr::null_mut();
+        vkGetDeviceQueue(device, family, 0, &mut queue);
+        let ok = !queue.is_null();
+
+        vkDestroyDevice(device, core::ptr::null());
+        vkDestroyInstance(instance, core::ptr::null());
+
+        if ok {
+            Ok(format!(
+                "logical device + graphics queue (family {family}) created"
+            ))
+        } else {
+            Err("vkGetDeviceQueue returned null".into())
+        }
     }
 }
