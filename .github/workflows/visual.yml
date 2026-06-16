@@ -647,13 +647,19 @@ jobs:
           grep -q "Metal triangle: .* center pixel 52,211,153,255" metaldemo.log
 
       - name: Launch the Forma window and screenshot the screen
+        env:
+          FORMA_COCOA_A11Y: "1"
         run: |
           mkdir -p visual_output
-          ./target/release/window &
+          ./target/release/window > visual_output/macos.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           screencapture -x visual_output/forma-macos.png
           echo "Captured:"; (sips -g pixelWidth -g pixelHeight visual_output/forma-macos.png || true)
+          echo "=== macos.log ==="; cat visual_output/macos.log || true
+          # The custom NSView vends NSAccessibility info via real objc dispatch:
+          # an accessible AXGroup labelled with the window title ("Forma").
+          grep -q "Cocoa a11y: element=true role=AXGroup label=Forma" visual_output/macos.log
 
       - name: Stop the app
         if: always()

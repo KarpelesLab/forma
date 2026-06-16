@@ -258,6 +258,8 @@ struct MacCtx {
     w: usize,
     h: usize,
     view: Id,
+    /// Accessible label exposed to NSAccessibility (the window title for now).
+    a11y_label: String,
 }
 
 // Cocoa is single-threaded (main thread); the backend runs there.
@@ -333,6 +335,47 @@ extern "C" fn is_flipped(_this: Id, _cmd: Sel) -> bool {
     true
 }
 
+// ---- NSAccessibility ----------------------------------------------------
+//
+// Forma draws every control itself, so to AppKit the window is one opaque view.
+// We override the NSAccessibility protocol methods on our view to vend semantic
+// info (the macOS half of the cross-platform a11y bridge; AT-SPI is the Linux
+// half). This first step exposes the view as an accessible group with the
+// window's title as its label; exposing the full element tree builds on it.
+
+/// `isAccessibilityElement` => YES (the view is a real accessibility element).
+extern "C" fn acc_is_element(_this: Id, _cmd: Sel) -> bool {
+    true
+}
+
+/// `accessibilityRole` => `NSAccessibilityGroupRole` ("AXGroup"): a self-drawn
+/// container.
+extern "C" fn acc_role(_this: Id, _cmd: Sel) -> Id {
+    nsstring("AXGroup")
+}
+
+/// `accessibilityLabel` => the window's accessible label.
+extern "C" fn acc_label(_this: Id, _cmd: Sel) -> Id {
+    CTX.with(|c| nsstring(&c.borrow().a11y_label))
+}
+
+/// Copy an `NSString` out to a Rust `String` (via `-UTF8String`).
+fn nsstring_to_string(s: Id) -> String {
+    if s.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel) -> *const i8 =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        let p = f(s, sel("UTF8String"));
+        if p.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    }
+}
+
 fn register_view_class() -> Class {
     let name = c"FormaView";
     unsafe {
@@ -355,6 +398,27 @@ fn register_view_class() -> Class {
             sel("isFlipped"),
             is_flipped as *const c_void,
             flip_types.as_ptr(),
+        );
+        // NSAccessibility overrides: BOOL (c@:) and id (@@:) returns.
+        let bool_types = c"c@:";
+        let id_types = c"@@:";
+        class_addMethod(
+            cls,
+            sel("isAccessibilityElement"),
+            acc_is_element as *const c_void,
+            bool_types.as_ptr(),
+        );
+        class_addMethod(
+            cls,
+            sel("accessibilityRole"),
+            acc_role as *const c_void,
+            id_types.as_ptr(),
+        );
+        class_addMethod(
+            cls,
+            sel("accessibilityLabel"),
+            acc_label as *const c_void,
+            id_types.as_ptr(),
         );
         objc_registerClassPair(cls);
         cls
@@ -466,7 +530,26 @@ where
             init(alloc, sel("initWithFrame:"), content)
         };
         msg_void_id(window, sel("setContentView:"), view);
-        CTX.with(|c| c.borrow_mut().view = view);
+        CTX.with(|c| {
+            let mut c = c.borrow_mut();
+            c.view = view;
+            // Expose the window title as the view's accessible label.
+            c.a11y_label = attrs.title.clone();
+        });
+
+        // Self-check the NSAccessibility wiring (real objc dispatch) for CI:
+        // cross-process AX reads need TCC approval the runner won't grant, so we
+        // query our own view's accessibility attributes and print them.
+        if std::env::var("FORMA_COCOA_A11Y").is_ok() {
+            let role = nsstring_to_string(msg_id(view, sel("accessibilityRole")));
+            let label = nsstring_to_string(msg_id(view, sel("accessibilityLabel")));
+            let is_el: bool = {
+                let f: unsafe extern "C" fn(Id, Sel) -> bool =
+                    std::mem::transmute(objc_msgSend as *const c_void);
+                f(view, sel("isAccessibilityElement"))
+            };
+            println!("Cocoa a11y: element={is_el} role={role} label={label}");
+        }
 
         let mut win = MacWindow { size };
         handler(Event::RedrawRequested, &win); // populate the framebuffer
