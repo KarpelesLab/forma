@@ -256,6 +256,18 @@ where
         self.focused
     }
 
+    /// Build the [accessibility tree](forma_core::accessibility_tree) for the
+    /// current frame — the semantic view a platform AT backend would expose.
+    /// Returns `None` until a frame has been built (call [`render_once`] or any
+    /// event-routing method first).
+    ///
+    /// [`render_once`]: App::render_once
+    pub fn accessibility_tree(&self) -> Option<forma_core::AccessNode> {
+        self.tree
+            .as_ref()
+            .map(|t| forma_core::accessibility_tree(t, self.focused))
+    }
+
     fn ensure_tree(&mut self) {
         if self.tree.is_none() || self.dirty {
             let _ = self.build_frame();
@@ -811,5 +823,31 @@ mod tests {
         assert!(app.focused().is_some());
         assert!(app.type_text("hi"));
         assert_eq!(app.state().name, "hi");
+    }
+
+    #[test]
+    fn accessibility_tree_reflects_focus() {
+        use forma_core::Role;
+        // A container root holding a field — the realistic shape (the root is
+        // the Window, the field a nested TextField).
+        let mut app = App::new(Form::default(), |state: &Form, cx: &mut Cx<Form>| {
+            let theme = *cx.theme();
+            let field = forma_widgets::text_field(cx, &theme, &state.name, |s: &mut Form, k| {
+                forma_widgets::edit_string(&mut s.name, k)
+            });
+            column(vec![field])
+        })
+        .logical_size(Size::new(300.0, 100.0));
+        app.focus_next(); // focus the field
+        let tree = app.accessibility_tree().expect("a frame was built");
+        assert_eq!(tree.role, Role::Window);
+        // Exactly one node is focused, and it's a text field.
+        let focused: Vec<_> = tree
+            .descendants()
+            .into_iter()
+            .filter(|n| n.focused)
+            .collect();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].role, Role::TextField);
     }
 }

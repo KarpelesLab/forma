@@ -24,11 +24,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod a11y;
 mod diff;
 mod element;
 mod render;
 pub mod runtime;
 
+pub use a11y::{AccessNode, Role, accessibility_tree};
 pub use diff::{Damage, diff_trees};
 pub use element::{Align, BoxStyle, Element, ElementKind, LayoutStyle, SizeOverride};
 pub use render::caret_index_at;
