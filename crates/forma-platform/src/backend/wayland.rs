@@ -143,6 +143,8 @@ const XDG_WM_BASE_PING: u16 = 0;
 const XDG_SURFACE_CONFIGURE: u16 = 0;
 const XDG_TOPLEVEL_CONFIGURE: u16 = 0;
 const XDG_TOPLEVEL_CLOSE: u16 = 1;
+const WL_SEAT_CAPABILITIES: u16 = 0;
+const WL_SEAT_CAP_KEYBOARD: u32 = 2;
 const WL_KEYBOARD_KEY: u16 = 3;
 
 // `wl_shm` pixel format: 32-bit little-endian XRGB → bytes `[B, G, R, X]`.
@@ -595,18 +597,12 @@ where
         1,
     );
 
-    // Optional seat → keyboard (input). Absent under some headless setups.
-    let keyboard = if let Some(name) = seat_name {
-        let seat = bind(&mut conn, name, "wl_seat", 1);
-        let kbd = conn.new_id();
-        let mut a = Vec::new();
-        arg_u32(&mut a, kbd);
-        conn.send(seat, WL_SEAT_GET_KEYBOARD, &a).map_err(os)?;
-        dbg(format_args!("seat={seat} keyboard={kbd}"));
-        Some(kbd)
-    } else {
-        None
-    };
+    // Optional seat. The keyboard is created lazily from its `capabilities`
+    // event — calling get_keyboard on a seat that never had the keyboard
+    // capability (e.g. a headless compositor with no devices) is a protocol
+    // error, so we wait until one is advertised.
+    let seat = seat_name.map(|name| bind(&mut conn, name, "wl_seat", 1));
+    dbg(format_args!("seat={seat:?}"));
 
     // Surface → xdg_surface → xdg_toplevel.
     let surface = conn.new_id();
@@ -649,13 +645,26 @@ where
         size,
     };
 
-    // Event loop.
+    // Event loop. The keyboard is created when the seat advertises one.
+    let mut keyboard: Option<u32> = None;
     loop {
         let (object, opcode, args) = {
             let mut conn = shared.lock().unwrap();
             conn.recv().map_err(os)?
         };
-        if object == wm_base && opcode == XDG_WM_BASE_PING {
+        if Some(object) == seat && opcode == WL_SEAT_CAPABILITIES {
+            let caps = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            if keyboard.is_none() && caps & WL_SEAT_CAP_KEYBOARD != 0 {
+                let mut conn = shared.lock().unwrap();
+                let kbd = conn.new_id();
+                let mut a = Vec::new();
+                arg_u32(&mut a, kbd);
+                if conn.send(seat.unwrap(), WL_SEAT_GET_KEYBOARD, &a).is_ok() {
+                    keyboard = Some(kbd);
+                    dbg(format_args!("keyboard={kbd} (caps={caps})"));
+                }
+            }
+        } else if object == wm_base && opcode == XDG_WM_BASE_PING {
             let serial = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
             let mut a = Vec::new();
             arg_u32(&mut a, serial);
