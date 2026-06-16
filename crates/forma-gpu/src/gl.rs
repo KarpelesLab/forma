@@ -457,6 +457,20 @@ pub fn render_offscreen(
     rects: &[(Rect, Color, f32, f32)],
     texts: &[(&Pixmap, Rect, Color)],
 ) -> Result<Pixmap, String> {
+    render_scene_gl(size, background, rects, texts, None)
+}
+
+/// As [`render_offscreen`], but with an optional shared **glyph atlas**: one
+/// coverage texture plus per-glyph `(src_px, dst, color)` quads, so repeated
+/// glyphs reuse a single upload instead of one texture per text run.
+#[allow(clippy::type_complexity)]
+pub fn render_scene_gl(
+    size: PhysicalSize,
+    background: Color,
+    rects: &[(Rect, Color, f32, f32)],
+    texts: &[(&Pixmap, Rect, Color)],
+    atlas: Option<(&Pixmap, &[(Rect, Rect, Color)])>,
+) -> Result<Pixmap, String> {
     let (w, h) = (size.width as GLsizei, size.height as GLsizei);
     if w == 0 || h == 0 {
         return Err("empty target".into());
@@ -645,6 +659,102 @@ pub fn render_offscreen(
                 let verts: [f32; 24] = [
                     x0, y0, 0.0, 0.0,  x1, y0, 1.0, 0.0,  x0, y1, 0.0, 1.0,
                     x0, y1, 0.0, 1.0,  x1, y0, 1.0, 0.0,  x1, y1, 1.0, 1.0,
+                ];
+                glBufferData(
+                    GL_ARRAY_BUFFER,
+                    std::mem::size_of_val(&verts) as isize,
+                    verts.as_ptr() as *const c_void,
+                    GL_STATIC_DRAW,
+                );
+                glEnableVertexAttribArray(tpos as GLuint);
+                glVertexAttribPointer(
+                    tpos as GLuint,
+                    2,
+                    GL_FLOAT,
+                    GL_FALSE,
+                    stride,
+                    core::ptr::null(),
+                );
+                glEnableVertexAttribArray(tuv as GLuint);
+                glVertexAttribPointer(
+                    tuv as GLuint,
+                    2,
+                    GL_FLOAT,
+                    GL_FALSE,
+                    stride,
+                    (2 * std::mem::size_of::<f32>()) as *const c_void,
+                );
+                glUniform4f(
+                    tcolor,
+                    color.r as f32 / 255.0,
+                    color.g as f32 / 255.0,
+                    color.b as f32 / 255.0,
+                    color.a as f32 / 255.0,
+                );
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+        }
+
+        // --- glyph-atlas pass: one shared coverage texture, per-glyph quads ---
+        if let Some((atlas_pm, glyphs)) = atlas
+            && !glyphs.is_empty()
+        {
+            let tvs = compile(GL_VERTEX_SHADER, VERTEX_SRC)?;
+            let tfs = compile(GL_FRAGMENT_SHADER, TEXT_FRAGMENT_SRC)?;
+            let tprog = glCreateProgram();
+            glAttachShader(tprog, tvs);
+            glAttachShader(tprog, tfs);
+            glLinkProgram(tprog);
+            let mut tlinked: GLint = 0;
+            glGetProgramiv(tprog, GL_LINK_STATUS, &mut tlinked);
+            if tlinked == 0 {
+                return Err("atlas program link failed".into());
+            }
+            glUseProgram(tprog);
+            let tpos = glGetAttribLocation(tprog, c"pos".as_ptr());
+            let tuv = glGetAttribLocation(tprog, c"uv".as_ptr());
+            let tcolor = glGetUniformLocation(tprog, c"u_color".as_ptr());
+            let tmask = glGetUniformLocation(tprog, c"u_mask".as_ptr());
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+            // Upload the atlas once.
+            let aw = atlas_pm.size().width as f32;
+            let ah = atlas_pm.size().height as f32;
+            let mut atex: GLuint = 0;
+            glGenTextures(1, &mut atex);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, atex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                GL_RGBA as GLint,
+                aw as GLsizei,
+                ah as GLsizei,
+                0,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                atlas_pm.as_bytes().as_ptr() as *const c_void,
+            );
+            glUniform1i(tmask, 0);
+
+            let mut avbo: GLuint = 0;
+            glGenBuffers(1, &mut avbo);
+            glBindBuffer(GL_ARRAY_BUFFER, avbo);
+            let stride = 4 * std::mem::size_of::<f32>() as GLsizei;
+            for (src, dst, color) in glyphs {
+                let (u0, v0) = (src.min_x() as f32 / aw, src.min_y() as f32 / ah);
+                let (u1, v1) = (src.max_x() as f32 / aw, src.max_y() as f32 / ah);
+                let (x0, y0) = ndc(dst.min_x(), dst.min_y());
+                let (x1, y1) = ndc(dst.max_x(), dst.max_y());
+                #[rustfmt::skip]
+                let verts: [f32; 24] = [
+                    x0, y0, u0, v0,  x1, y0, u1, v0,  x0, y1, u0, v1,
+                    x0, y1, u0, v1,  x1, y0, u1, v0,  x1, y1, u1, v1,
                 ];
                 glBufferData(
                     GL_ARRAY_BUFFER,
