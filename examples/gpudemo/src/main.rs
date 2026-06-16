@@ -58,18 +58,22 @@ fn main() {
     // GPU-native drawing: three solid rectangles tessellated and filled by the
     // GPU (no CPU pixmap), on a dark background.
     let size = forma::geometry::PhysicalSize::new(W as u32, H as u32);
+    // (rect, color, corner_radius) — a sharp rect, then two rounded ones.
     let rects = [
         (
             Rect::from_xywh(40.0, 40.0, 120.0, 80.0),
             Color::rgb(0xef, 0x68, 0x68),
+            0.0,
         ),
         (
             Rect::from_xywh(180.0, 90.0, 120.0, 80.0),
             Color::rgb(0x34, 0xd3, 0x99),
+            24.0,
         ),
         (
             Rect::from_xywh(110.0, 170.0, 120.0, 80.0),
             Color::rgb(0x60, 0x9c, 0xff),
+            40.0,
         ),
     ];
     match forma_gpu::fill_rects_offscreen(size, Color::rgb(0x14, 0x15, 0x18), &rects) {
