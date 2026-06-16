@@ -23,6 +23,9 @@ pub mod a11y;
 pub mod backend;
 mod error;
 mod event;
+/// Hand-written UI Automation provider (Windows accessibility bridge).
+#[cfg(target_os = "windows")]
+pub mod uia;
 mod window;
 
 pub use error::PlatformError;

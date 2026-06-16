@@ -1,0 +1,16 @@
+[package]
+name = "uiademo"
+description = "Forma example: exercise the hand-written UI Automation provider in forma-platform (the Windows accessibility bridge) and print what it returns."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma-platform.workspace = true
+
+[lints]
+workspace = true
