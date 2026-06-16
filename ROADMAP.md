@@ -152,10 +152,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   text elements wraps to the laid-out content width in both measure (growing
   height) and paint. New `paragraph` widget. **CI-verified** — the `window`
   example's paragraph wraps across three lines (`docs/screenshots/forma-x11.png`).
+- ✅ **Multi-line editing**: `EditBuffer` gains Enter→newline, Up/Down (keeping
+  the byte column), and line-aware Home/End (plus the matching `Select*`).
+  `paint_focus` positions the caret on its line and draws the selection as one
+  rectangle per spanned line; `caret_index_at` takes a `Point` (line from y,
+  column from x). New `text_area` widget. **CI-verified** on X11 — three typed
+  lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
 - ⬜ **Wayland input** (`wl_seat` pointer/keyboard, xkb keymap); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
-  state to skip unchanged subtrees on rebuild; ⬜ multi-line *editing*
-  (caret/selection across lines); ⬜ a11y.
+  state to skip unchanged subtrees on rebuild; ⬜ a11y.
 
 ---
 
