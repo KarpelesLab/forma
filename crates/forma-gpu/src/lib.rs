@@ -174,6 +174,23 @@ pub fn metal_device() -> Result<String, String> {
     }
 }
 
+/// Render a `width`×`height` frame through Metal (raw FFI) and read it back: a
+/// `MTLTexture` cleared to forma blue by a render command encoder, then read to
+/// the CPU with `getBytes` — an actual GPU-rendered frame, the Metal analog of
+/// [`vulkan_render_clear`]. Returns the RGBA pixels. Errors if the `mtl` feature
+/// is off or any step fails.
+pub fn metal_render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "macos", feature = "mtl"))]
+    {
+        metal::render_clear(width, height)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "mtl")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `mtl` feature (macOS-only Metal FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

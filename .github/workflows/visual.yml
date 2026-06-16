@@ -526,6 +526,9 @@ jobs:
           cargo run --release -p metaldemo --features forma-gpu/mtl | tee metaldemo.log
           # A Metal device is always available on the macOS runner.
           grep -q "Metal device: " metaldemo.log
+          # ...and a GPU-rendered frame must read back as the cleared forma blue
+          # (R=0x60 G=0x9c B=0xff A=0xff), checked tool-free from the printed pixel.
+          grep -q "Metal readback: .* first pixel 96,156,255,255" metaldemo.log
 
       - name: Launch the Forma window and screenshot the screen
         run: |
