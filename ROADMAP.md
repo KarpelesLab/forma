@@ -211,8 +211,13 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   compiled `.metal` library for Metal; `D3DCompile`d HLSL for D3D), reading each
   frame back to the CPU. **CI-verified** on the macOS runner's Metal device and
   the Windows runner's **WARP** software rasterizer: both read back forma blue for
-  the clear and forma green at the triangle's center pixel. ⬜ Wiring these GPU
-  paths behind the `Surface` trait for on-screen present, and a WebGPU backend.
+  the clear and forma green at the triangle's center pixel. A **WebGPU** backend
+  completes the set: a hand-written WGSL triangle (no `wgpu`/bindgen — the
+  sanctioned web exception) drawn through the browser's WebGPU API, **CI-verified**
+  in headless Chrome on the bundled **SwiftShader** Vulkan ICD (the screenshot's
+  center pixel is forma green). All four GPU backends — Vulkan, Metal, D3D11, and
+  WebGPU — thus render a real shader pipeline off-screen and read it back. ⬜
+  Wiring these GPU paths behind the `Surface` trait for on-screen present.
 
 ---
 
