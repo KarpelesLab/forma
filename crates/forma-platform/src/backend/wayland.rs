@@ -8,13 +8,13 @@
 //! compositor maps directly.
 //!
 //! Scope: connection, the `xdg-shell` configure/ack handshake, shared-memory
-//! presentation (window create + paint + close), and `wl_seat` **keyboard**
-//! input. Layout-independent editing/navigation keys (Tab, arrows, Enter,
-//! Backspace, …) map straight from their evdev codes; printable keys use a
-//! best-effort US-QWERTY table. Full text via the compositor's xkb keymap (and
-//! `wl_pointer`) is a follow-up. The shared-memory buffer needs a small amount
-//! of FFI (`memfd_create` / `mmap` and `SCM_RIGHTS` fd passing), hence the
-//! module-level `allow(unsafe_code)`.
+//! presentation (window create + paint + close), and `wl_seat` input —
+//! **keyboard** (layout-independent editing/navigation keys map straight from
+//! their evdev codes; printable keys use a best-effort US-QWERTY table) and
+//! **pointer** (motion + buttons via `wl_pointer`, coordinates from `wl_fixed`).
+//! Full text via the compositor's xkb keymap is a follow-up. The shared-memory
+//! buffer needs a small amount of FFI (`memfd_create` / `mmap` and `SCM_RIGHTS`
+//! fd passing), hence the module-level `allow(unsafe_code)`.
 //!
 //! **Verification:** the live render path is exercised by the `Visual`
 //! workflow's headless-`sway` job (`grim` screenshots the compositor output);
@@ -33,7 +33,7 @@ use crate::ControlFlow;
 use crate::error::PlatformError;
 use crate::event::{ButtonState, Event, KeyCode, Modifiers};
 use crate::window::{Window, WindowAttributes};
-use forma_geometry::{PhysicalSize, ScaleFactor};
+use forma_geometry::{PhysicalSize, Point, ScaleFactor};
 use forma_render::{Pixmap, Surface};
 
 use core::ffi::{c_char, c_void};
@@ -144,8 +144,13 @@ const XDG_SURFACE_CONFIGURE: u16 = 0;
 const XDG_TOPLEVEL_CONFIGURE: u16 = 0;
 const XDG_TOPLEVEL_CLOSE: u16 = 1;
 const WL_SEAT_CAPABILITIES: u16 = 0;
+const WL_SEAT_CAP_POINTER: u32 = 1;
 const WL_SEAT_CAP_KEYBOARD: u32 = 2;
+const WL_SEAT_GET_POINTER: u16 = 0;
 const WL_KEYBOARD_KEY: u16 = 3;
+const WL_POINTER_ENTER: u16 = 0;
+const WL_POINTER_MOTION: u16 = 2;
+const WL_POINTER_BUTTON: u16 = 3;
 
 // `wl_shm` pixel format: 32-bit little-endian XRGB → bytes `[B, G, R, X]`.
 const WL_SHM_FORMAT_XRGB8888: u32 = 1;
@@ -213,6 +218,22 @@ fn evdev_to_event(code: u32, pressed: bool) -> Option<Event> {
         _ => None,
     };
     ch.map(|b| Event::Text((b as char).to_string()))
+}
+
+/// Convert a `wl_fixed` (signed 24.8 fixed-point) to logical pixels.
+fn fixed_to_f64(raw: u32) -> f64 {
+    (raw as i32) as f64 / 256.0
+}
+
+/// Translate an evdev pointer button code into a Forma [`PointerButton`].
+fn pointer_button(code: u32) -> Option<crate::event::PointerButton> {
+    use crate::event::PointerButton;
+    match code {
+        0x110 => Some(PointerButton::Left),
+        0x111 => Some(PointerButton::Right),
+        0x112 => Some(PointerButton::Middle),
+        _ => None,
+    }
 }
 
 // ---- Wire connection --------------------------------------------------------
@@ -645,8 +666,11 @@ where
         size,
     };
 
-    // Event loop. The keyboard is created when the seat advertises one.
+    // Event loop. The keyboard/pointer are created when the seat advertises
+    // them; `pointer_pos` tracks the latest cursor position for button events.
     let mut keyboard: Option<u32> = None;
+    let mut pointer: Option<u32> = None;
+    let mut pointer_pos = Point::new(0.0, 0.0);
     loop {
         let (object, opcode, args) = {
             let mut conn = shared.lock().unwrap();
@@ -654,14 +678,63 @@ where
         };
         if Some(object) == seat && opcode == WL_SEAT_CAPABILITIES {
             let caps = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            let mut conn = shared.lock().unwrap();
             if keyboard.is_none() && caps & WL_SEAT_CAP_KEYBOARD != 0 {
-                let mut conn = shared.lock().unwrap();
                 let kbd = conn.new_id();
                 let mut a = Vec::new();
                 arg_u32(&mut a, kbd);
                 if conn.send(seat.unwrap(), WL_SEAT_GET_KEYBOARD, &a).is_ok() {
                     keyboard = Some(kbd);
                     dbg(format_args!("keyboard={kbd} (caps={caps})"));
+                }
+            }
+            if pointer.is_none() && caps & WL_SEAT_CAP_POINTER != 0 {
+                let ptr = conn.new_id();
+                let mut a = Vec::new();
+                arg_u32(&mut a, ptr);
+                if conn.send(seat.unwrap(), WL_SEAT_GET_POINTER, &a).is_ok() {
+                    pointer = Some(ptr);
+                    dbg(format_args!("pointer={ptr} (caps={caps})"));
+                }
+            }
+        } else if Some(object) == pointer
+            && (opcode == WL_POINTER_ENTER || opcode == WL_POINTER_MOTION)
+        {
+            // enter: serial, surface, x, y. motion: time, x, y. Both end in two
+            // wl_fixed coordinates.
+            let n = args.len();
+            let x = u32::from_le_bytes([args[n - 8], args[n - 7], args[n - 6], args[n - 5]]);
+            let y = u32::from_le_bytes([args[n - 4], args[n - 3], args[n - 2], args[n - 1]]);
+            pointer_pos = Point::new(fixed_to_f64(x), fixed_to_f64(y));
+            if handler(
+                Event::PointerMoved {
+                    position: pointer_pos,
+                },
+                &win,
+            ) == ControlFlow::Exit
+            {
+                break;
+            }
+        } else if Some(object) == pointer && opcode == WL_POINTER_BUTTON {
+            // serial, time, button(evdev), state(0 released / 1 pressed).
+            let button = u32::from_le_bytes([args[8], args[9], args[10], args[11]]);
+            let pressed = u32::from_le_bytes([args[12], args[13], args[14], args[15]]) == 1;
+            if let Some(button) = pointer_button(button) {
+                let state = if pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                };
+                if handler(
+                    Event::PointerButton {
+                        button,
+                        state,
+                        position: pointer_pos,
+                    },
+                    &win,
+                ) == ControlFlow::Exit
+                {
+                    break;
                 }
             }
         } else if object == wm_base && opcode == XDG_WM_BASE_PING {
@@ -800,5 +873,17 @@ mod tests {
         assert_eq!(evdev_to_event(57, true), Some(Event::Text(" ".into()))); // KEY_SPACE
         assert_eq!(evdev_to_event(30, false), None);
         assert_eq!(evdev_to_event(0, true), None);
+    }
+
+    #[test]
+    fn fixed_point_and_pointer_buttons() {
+        use crate::event::PointerButton;
+        // wl_fixed is signed 24.8: 256 → 1.0, 128 → 0.5, negatives wrap.
+        assert_eq!(fixed_to_f64(256), 1.0);
+        assert_eq!(fixed_to_f64(128), 0.5);
+        assert_eq!(fixed_to_f64((-256i32) as u32), -1.0);
+        assert_eq!(pointer_button(0x110), Some(PointerButton::Left));
+        assert_eq!(pointer_button(0x111), Some(PointerButton::Right));
+        assert_eq!(pointer_button(0x999), None);
     }
 }
