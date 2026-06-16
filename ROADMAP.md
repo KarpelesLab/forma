@@ -184,14 +184,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
   Unit-tested. ⬜ Wiring it to the OS APIs (AT-SPI / UI Automation /
   `NSAccessibility`).
-- 🚧 **GPU-native drawing**: `forma-gpu::render_offscreen` draws a full scene on
-  the GPU — the box primitive set (sharp/rounded fills + stroked borders) as
-  tessellated geometry through a rounded-rect signed-distance-field GLES2 shader,
-  **plus text** by alpha-blending glyph-coverage masks as recolored quads (not by
-  compositing a whole CPU pixmap). **CI-verified** on Mesa: boxes + a "FORMA -
-  GPU" label (`docs/screenshots/forma-gpu-rects.png`). ⬜ A per-glyph atlas
-  cache, wiring the live `Scene`'s primitives through it, and
-  Vulkan/Metal/D3D/WebGPU backends.
+- 🚧 **GPU-native drawing**: a live forma `Scene` renders entirely on the GPU.
+  The `Scene` records structured `DrawCmd`s; `forma-gpu::render_scene` turns box
+  primitives (sharp/rounded fills + stroked borders) into geometry shaded by a
+  rounded-rect signed-distance-field GLES2 shader, and composites each text run
+  as an alpha-blended glyph-coverage mask (not by compositing a whole CPU
+  pixmap). **CI-verified** on Mesa: the box/text primitives
+  (`docs/screenshots/forma-gpu-rects.png`) and the actual widget-tree `Scene`
+  (`docs/screenshots/forma-gpu-scene.png`). ⬜ A per-glyph atlas cache (this
+  rasterizes whole text runs) and Vulkan/Metal/D3D/WebGPU backends.
 
 ---
 
