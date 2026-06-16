@@ -191,6 +191,24 @@ pub fn metal_render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Draw a triangle through a full Metal render pipeline (raw FFI): compile a
+/// `.metal` source into a library, build a render pipeline, and `drawPrimitives`
+/// over a dark-cleared `width`×`height` target, then read the frame back. The
+/// center pixel comes out forma green — proof real shaders ran on the GPU, the
+/// Metal analog of [`vulkan_render_triangle`]. Returns the RGBA pixels. Errors if
+/// the `mtl` feature is off or any step fails.
+pub fn metal_render_triangle(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "macos", feature = "mtl"))]
+    {
+        metal::render_triangle(width, height)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "mtl")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `mtl` feature (macOS-only Metal FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

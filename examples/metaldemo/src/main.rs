@@ -32,4 +32,22 @@ fn main() {
         }
         Err(e) => println!("Metal readback unavailable: {e}"),
     }
+    // The full Metal pipeline: a triangle drawn by a compiled .metal shader. The
+    // center pixel must come back forma green; we print it so CI can check it.
+    match forma_gpu::metal_render_triangle(W, H) {
+        Ok(pixels) => {
+            std::fs::write("metal-tri.raw", &pixels).expect("write raw");
+            let i = ((H / 2) as usize * W as usize + (W / 2) as usize) * 4;
+            let px = &pixels[i..i + 4];
+            println!(
+                "Metal triangle: {} bytes ({W}x{H}) center pixel {},{},{},{}",
+                pixels.len(),
+                px[0],
+                px[1],
+                px[2],
+                px[3]
+            );
+        }
+        Err(e) => println!("Metal triangle unavailable: {e}"),
+    }
 }

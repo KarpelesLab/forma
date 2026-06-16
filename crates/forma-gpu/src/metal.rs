@@ -38,6 +38,7 @@ const MTL_TEXTURE_USAGE_RENDER_TARGET: u64 = 0x0004;
 const MTL_STORAGE_MODE_SHARED: u64 = 0;
 const MTL_LOAD_ACTION_CLEAR: u64 = 2;
 const MTL_STORE_ACTION_STORE: u64 = 1;
+const MTL_PRIMITIVE_TYPE_TRIANGLE: u64 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -79,6 +80,13 @@ fn class(name: &str) -> Class {
 fn sel(name: &str) -> Sel {
     let c = CString::new(name).unwrap();
     unsafe { sel_registerName(c.as_ptr()) }
+}
+
+/// `+[NSString stringWithUTF8String:]` — `stringWithUTF8String:` copies the
+/// bytes, so the temporary `CString` need not outlive the call.
+fn nsstring(s: &str) -> Id {
+    let c = CString::new(s).unwrap();
+    unsafe { msg_id_cstr(class("NSString"), sel("stringWithUTF8String:"), c.as_ptr()) }
 }
 
 /// `objc_msgSend` typed as `(id, SEL) -> id` — the documented way to call it.
@@ -168,6 +176,41 @@ unsafe fn msg_getbytes(obj: Id, s: Sel, ptr: *mut c_void, bpr: u64, region: MtlR
     }
 }
 
+unsafe fn msg_id_cstr(obj: Id, s: Sel, a: *const c_char) -> Id {
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel, *const c_char) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(obj, s, a)
+    }
+}
+
+/// `-[MTLDevice newLibraryWithSource:options:error:]`.
+unsafe fn msg_newobj_err(obj: Id, s: Sel, a: Id, b: Id, err: *mut Id) -> Id {
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel, Id, Id, *mut Id) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(obj, s, a, b, err)
+    }
+}
+
+/// `-[MTLDevice newRenderPipelineStateWithDescriptor:error:]`.
+unsafe fn msg_newpipeline(obj: Id, s: Sel, desc: Id, err: *mut Id) -> Id {
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel, Id, *mut Id) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(obj, s, desc, err)
+    }
+}
+
+/// `-[MTLRenderCommandEncoder drawPrimitives:vertexStart:vertexCount:]`.
+unsafe fn msg_draw(obj: Id, s: Sel, prim: u64, start: u64, count: u64) {
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel, u64, u64, u64) =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(obj, s, prim, start, count);
+    }
+}
+
 /// Create the system default `MTLDevice` and return its name (e.g.
 /// `"Apple M1"`) — the foundation a GPU-native Metal backend builds on. Errors
 /// if no Metal device is available.
@@ -201,15 +244,31 @@ pub fn device() -> Result<String, String> {
 /// analog of the Vulkan clear+readback. Returns the RGBA pixels. Errors if no
 /// Metal device is available or any object fails to create.
 pub fn render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let blue = MtlClearColor {
+        red: 0x60 as f64 / 255.0,
+        green: 0x9c as f64 / 255.0,
+        blue: 1.0,
+        alpha: 1.0,
+    };
     unsafe {
         let pool = objc_autoreleasePoolPush();
-        let result = render_clear_inner(width, height);
+        let result = render_inner(width, height, blue, |_dev, _enc| Ok(Vec::new()));
         objc_autoreleasePoolPop(pool);
         result
     }
 }
 
-unsafe fn render_clear_inner(width: u32, height: u32) -> Result<Vec<u8>, String> {
+/// Drive one render pass: make a CPU-readable RGBA8 texture, clear it to `clear`,
+/// run `record` (which may build a pipeline on the device and encode draws on the
+/// encoder, returning owned objects to release once the GPU is done), then read
+/// the texture back to the CPU. The shared path behind both the plain clear and
+/// the triangle draw.
+unsafe fn render_inner(
+    width: u32,
+    height: u32,
+    clear: MtlClearColor,
+    record: impl FnOnce(Id, Id) -> Result<Vec<Id>, String>,
+) -> Result<Vec<u8>, String> {
     unsafe {
         let dev = MTLCreateSystemDefaultDevice();
         if dev.is_null() {
@@ -239,7 +298,7 @@ unsafe fn render_clear_inner(width: u32, height: u32) -> Result<Vec<u8>, String>
             return Err("newTextureWithDescriptor returned nil".into());
         }
 
-        // A render pass that clears the texture to forma blue and stores it.
+        // A render pass that clears the texture to `clear` and stores it.
         let rpd = msg_id(
             class("MTLRenderPassDescriptor"),
             sel("renderPassDescriptor"),
@@ -249,18 +308,8 @@ unsafe fn render_clear_inner(width: u32, height: u32) -> Result<Vec<u8>, String>
         msg_void_id(att0, sel("setTexture:"), tex);
         msg_void_u64(att0, sel("setLoadAction:"), MTL_LOAD_ACTION_CLEAR);
         msg_void_u64(att0, sel("setStoreAction:"), MTL_STORE_ACTION_STORE);
-        msg_void_clearcolor(
-            att0,
-            sel("setClearColor:"),
-            MtlClearColor {
-                red: 0x60 as f64 / 255.0,
-                green: 0x9c as f64 / 255.0,
-                blue: 1.0,
-                alpha: 1.0,
-            },
-        );
+        msg_void_clearcolor(att0, sel("setClearColor:"), clear);
 
-        // Encode an (empty) render pass — the clear load-action does the work.
         let cmdbuf = msg_id(queue, sel("commandBuffer"));
         let enc = msg_id_id(cmdbuf, sel("renderCommandEncoderWithDescriptor:"), rpd);
         if enc.is_null() {
@@ -269,6 +318,17 @@ unsafe fn render_clear_inner(width: u32, height: u32) -> Result<Vec<u8>, String>
             msg_void(dev, sel("release"));
             return Err("renderCommandEncoderWithDescriptor returned nil".into());
         }
+        // Let the caller add draw work (pipeline + drawPrimitives), if any.
+        let owned = match record(dev, enc) {
+            Ok(v) => v,
+            Err(e) => {
+                msg_void(enc, sel("endEncoding"));
+                msg_void(tex, sel("release"));
+                msg_void(queue, sel("release"));
+                msg_void(dev, sel("release"));
+                return Err(e);
+            }
+        };
         msg_void(enc, sel("endEncoding"));
         msg_void(cmdbuf, sel("commit"));
         msg_void(cmdbuf, sel("waitUntilCompleted"));
@@ -293,9 +353,110 @@ unsafe fn render_clear_inner(width: u32, height: u32) -> Result<Vec<u8>, String>
             0,
         );
 
+        // Release caller-owned objects (e.g. the pipeline state) now the GPU is
+        // done, then our own.
+        for obj in owned {
+            msg_void(obj, sel("release"));
+        }
         msg_void(tex, sel("release"));
         msg_void(queue, sel("release"));
         msg_void(dev, sel("release"));
         Ok(pixels)
+    }
+}
+
+// A Metal shader pair: the vertex stage emits a centered triangle from its
+// vertex id (no vertex buffers), the fragment stage paints it forma green.
+// Compiled at runtime via newLibraryWithSource (no offline toolchain).
+const TRIANGLE_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+vertex float4 vertex_main(uint vid [[vertex_id]]) {
+    float2 p[3] = { float2(0.0, 0.6), float2(0.6, -0.6), float2(-0.6, -0.6) };
+    return float4(p[vid], 0.0, 1.0);
+}
+
+fragment float4 fragment_main() {
+    return float4(52.0/255.0, 211.0/255.0, 153.0/255.0, 1.0);
+}
+"#;
+
+/// The full Metal render pipeline: compile a `.metal` source into a library,
+/// build a render pipeline from its vertex+fragment functions, and **draw** a
+/// triangle over a dark-cleared `width`×`height` target, then read it back. The
+/// center pixel comes out forma green — the Metal analog of the Vulkan triangle.
+/// Returns the RGBA pixels. Errors if compilation or any step fails.
+pub fn render_triangle(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let dark = MtlClearColor {
+        red: 0x14 as f64 / 255.0,
+        green: 0x15 as f64 / 255.0,
+        blue: 0x18 as f64 / 255.0,
+        alpha: 1.0,
+    };
+    unsafe {
+        let pool = objc_autoreleasePoolPush();
+        let result = render_inner(width, height, dark, |dev, enc| {
+            // Compile the shader source into a library.
+            let src = nsstring(TRIANGLE_MSL);
+            let mut err: Id = core::ptr::null_mut();
+            let lib = msg_newobj_err(
+                dev,
+                sel("newLibraryWithSource:options:error:"),
+                src,
+                core::ptr::null_mut(),
+                &mut err,
+            );
+            if lib.is_null() {
+                return Err("newLibraryWithSource failed (shader compile error)".into());
+            }
+            let vfn = msg_id_id(lib, sel("newFunctionWithName:"), nsstring("vertex_main"));
+            let ffn = msg_id_id(lib, sel("newFunctionWithName:"), nsstring("fragment_main"));
+            if vfn.is_null() || ffn.is_null() {
+                msg_void(lib, sel("release"));
+                return Err("newFunctionWithName returned nil".into());
+            }
+
+            // A render pipeline from the two functions, matching the target format.
+            let pdesc = msg_id(
+                msg_id(class("MTLRenderPipelineDescriptor"), sel("alloc")),
+                sel("init"),
+            );
+            msg_void_id(pdesc, sel("setVertexFunction:"), vfn);
+            msg_void_id(pdesc, sel("setFragmentFunction:"), ffn);
+            let pca = msg_id(pdesc, sel("colorAttachments"));
+            let pca0 = msg_id_u64(pca, sel("objectAtIndexedSubscript:"), 0);
+            msg_void_u64(pca0, sel("setPixelFormat:"), MTL_PIXEL_FORMAT_RGBA8UNORM);
+
+            let mut perr: Id = core::ptr::null_mut();
+            let pipeline = msg_newpipeline(
+                dev,
+                sel("newRenderPipelineStateWithDescriptor:error:"),
+                pdesc,
+                &mut perr,
+            );
+            // The library, functions, and descriptor are no longer needed.
+            msg_void(pdesc, sel("release"));
+            msg_void(ffn, sel("release"));
+            msg_void(vfn, sel("release"));
+            msg_void(lib, sel("release"));
+            if pipeline.is_null() {
+                return Err("newRenderPipelineStateWithDescriptor failed".into());
+            }
+
+            // Bind it and draw the triangle (3 vertices).
+            msg_void_id(enc, sel("setRenderPipelineState:"), pipeline);
+            msg_draw(
+                enc,
+                sel("drawPrimitives:vertexStart:vertexCount:"),
+                MTL_PRIMITIVE_TYPE_TRIANGLE,
+                0,
+                3,
+            );
+            // The pipeline must outlive GPU execution — hand it back to release.
+            Ok(vec![pipeline])
+        });
+        objc_autoreleasePoolPop(pool);
+        result
     }
 }
