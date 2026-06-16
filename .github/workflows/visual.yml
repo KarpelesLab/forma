@@ -401,29 +401,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Mesa (software GL/EGL), ImageMagick, font
+      - name: Install Mesa (software GL/EGL + Vulkan lavapipe), ImageMagick, font
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1 \
+            libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools \
             imagemagick fonts-dejavu-core
 
-      - name: Build gpudemo with the GL feature
-        run: cargo build --release -p gpudemo --features forma-gpu/gl
+      - name: Build gpudemo with the GL + Vulkan features
+        run: cargo build --release -p gpudemo --features forma-gpu/gl,forma-gpu/vk
 
       - name: Render through the GPU and convert the readback to PNG
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
+          # Force the lavapipe (software) Vulkan ICD so the foundation check has a
+          # device even with no GPU.
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
           mkdir -p visual_output
-          ./target/release/gpudemo
+          ./target/release/gpudemo | tee gpudemo.log
           convert -size 420x300 -depth 8 rgba:gpu-out.raw visual_output/forma-gpu.png
           # GPU-native geometry: solid rects tessellated + filled on the GPU.
           convert -size 420x300 -depth 8 rgba:gpu-rects.raw visual_output/forma-gpu-rects.png
           # GPU-native render of the actual widget-tree Scene (render_scene).
           convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
           echo "Captured:"; identify visual_output/forma-gpu*.png
+          # Verify the raw-FFI Vulkan foundation found a device.
+          grep "Vulkan devices:" gpudemo.log
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4

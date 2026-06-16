@@ -20,6 +20,24 @@ use forma_render::{Color, DrawCmd, Font, Pixmap, Scene, SoftwareRenderer};
 #[cfg(all(target_os = "linux", feature = "gl"))]
 mod gl;
 
+#[cfg(all(target_os = "linux", feature = "vk"))]
+mod vulkan;
+
+/// Enumerate the Vulkan physical devices reachable through `libvulkan` (raw FFI,
+/// no helper crate) — the foundation for a future GPU-native Vulkan backend.
+/// Returns each device's name (e.g. `"llvmpipe (...)"` under Mesa lavapipe).
+/// Errors if the `vk` feature is off or no Vulkan loader/ICD is available.
+pub fn vulkan_devices() -> Result<Vec<String>, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::devices()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

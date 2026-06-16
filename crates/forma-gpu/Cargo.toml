@@ -14,6 +14,9 @@ publish = false
 # GPU CI job enables it (and installs Mesa). Without it, present_offscreen
 # returns an error.
 gl = []
+# Raw Vulkan FFI (links libvulkan). Off by default; the GPU CI job enables it
+# and installs the Mesa lavapipe ICD. Without it, vulkan_devices errors.
+vk = []
 
 [dependencies]
 forma-geometry.workspace = true
