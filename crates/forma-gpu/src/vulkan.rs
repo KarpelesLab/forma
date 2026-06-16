@@ -66,6 +66,11 @@ const VK_COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
 const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 0x1;
 const VK_SUBPASS_CONTENTS_INLINE: u32 = 0;
 const VK_TRUE: u32 = 1;
+
+const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: i32 = 12;
+const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x2;
+const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x2;
+const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x4;
 // VK_API_VERSION_1_0 = VK_MAKE_API_VERSION(0, 1, 0, 0) = 1 << 22.
 const VK_API_VERSION_1_0: u32 = 1 << 22;
 // VkPhysicalDeviceProperties.deviceName follows five u32 fields (apiVersion,
@@ -127,6 +132,7 @@ type VkRenderPass = u64;
 type VkFramebuffer = u64;
 type VkCommandPool = u64;
 type VkFence = u64;
+type VkBuffer = u64;
 // VkCommandBuffer is a *dispatchable* handle (pointer-sized), not a u64 like the
 // non-dispatchable handles above.
 type VkCommandBuffer = *mut c_void;
@@ -341,6 +347,43 @@ struct VkFenceCreateInfo {
     flags: u32,
 }
 
+#[repr(C)]
+struct VkBufferCreateInfo {
+    sType: i32,
+    pNext: *const c_void,
+    flags: u32,
+    size: u64,
+    usage: u32,
+    sharingMode: u32,
+    queueFamilyIndexCount: u32,
+    pQueueFamilyIndices: *const u32,
+}
+
+#[repr(C)]
+struct VkImageSubresourceLayers {
+    aspectMask: u32,
+    mipLevel: u32,
+    baseArrayLayer: u32,
+    layerCount: u32,
+}
+
+#[repr(C)]
+struct VkOffset3D {
+    x: i32,
+    y: i32,
+    z: i32,
+}
+
+#[repr(C)]
+struct VkBufferImageCopy {
+    bufferOffset: u64,
+    bufferRowLength: u32,
+    bufferImageHeight: u32,
+    imageSubresource: VkImageSubresourceLayers,
+    imageOffset: VkOffset3D,
+    imageExtent: VkExtent3D,
+}
+
 #[link(name = "vulkan")]
 unsafe extern "C" {
     fn vkCreateInstance(
@@ -478,6 +521,41 @@ unsafe extern "C" {
         waitAll: u32,
         timeout: u64,
     ) -> VkResult;
+    fn vkCreateBuffer(
+        device: VkDevice,
+        pCreateInfo: *const VkBufferCreateInfo,
+        pAllocator: *const c_void,
+        pBuffer: *mut VkBuffer,
+    ) -> VkResult;
+    fn vkDestroyBuffer(device: VkDevice, buffer: VkBuffer, pAllocator: *const c_void);
+    fn vkGetBufferMemoryRequirements(
+        device: VkDevice,
+        buffer: VkBuffer,
+        pMemoryRequirements: *mut VkMemoryRequirements,
+    );
+    fn vkBindBufferMemory(
+        device: VkDevice,
+        buffer: VkBuffer,
+        memory: VkDeviceMemory,
+        memoryOffset: u64,
+    ) -> VkResult;
+    fn vkCmdCopyImageToBuffer(
+        commandBuffer: VkCommandBuffer,
+        srcImage: VkImage,
+        srcImageLayout: u32,
+        dstBuffer: VkBuffer,
+        regionCount: u32,
+        pRegions: *const VkBufferImageCopy,
+    );
+    fn vkMapMemory(
+        device: VkDevice,
+        memory: VkDeviceMemory,
+        offset: u64,
+        size: u64,
+        flags: u32,
+        ppData: *mut *mut c_void,
+    ) -> VkResult;
+    fn vkUnmapMemory(device: VkDevice, memory: VkDeviceMemory);
 }
 
 /// Create a Vulkan instance and return the name of each physical device the
@@ -852,6 +930,80 @@ impl Gpu {
         }
     }
 
+    /// Create a `size`-byte buffer usable as a transfer destination, backed by
+    /// `HOST_VISIBLE | HOST_COHERENT` memory so the CPU can map and read it.
+    /// Returns `(buffer, memory)`; the caller frees both.
+    unsafe fn create_host_buffer(&self, size: u64) -> Result<(VkBuffer, VkDeviceMemory), String> {
+        unsafe {
+            let bci = VkBufferCreateInfo {
+                sType: VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                pNext: core::ptr::null(),
+                flags: 0,
+                size,
+                usage: VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                sharingMode: VK_SHARING_MODE_EXCLUSIVE,
+                queueFamilyIndexCount: 0,
+                pQueueFamilyIndices: core::ptr::null(),
+            };
+            let mut buffer: VkBuffer = 0;
+            if vkCreateBuffer(self.device, &bci, core::ptr::null(), &mut buffer) != VK_SUCCESS {
+                return Err("vkCreateBuffer failed".into());
+            }
+
+            let mut req = VkMemoryRequirements {
+                size: 0,
+                alignment: 0,
+                memoryTypeBits: 0,
+            };
+            vkGetBufferMemoryRequirements(self.device, buffer, &mut req);
+
+            let want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            let mut memprops = vec![0u8; 1024];
+            vkGetPhysicalDeviceMemoryProperties(self.phys, memprops.as_mut_ptr() as *mut c_void);
+            let type_count =
+                u32::from_ne_bytes([memprops[0], memprops[1], memprops[2], memprops[3]]);
+            let mut chosen: Option<u32> = None;
+            for i in 0..type_count as usize {
+                if req.memoryTypeBits & (1 << i) == 0 {
+                    continue;
+                }
+                let off = MEM_TYPES_OFFSET + i * MEM_TYPE_STRIDE;
+                let flags = u32::from_ne_bytes([
+                    memprops[off],
+                    memprops[off + 1],
+                    memprops[off + 2],
+                    memprops[off + 3],
+                ]);
+                if flags & want == want {
+                    chosen = Some(i as u32);
+                    break;
+                }
+            }
+            let Some(mem_type) = chosen else {
+                vkDestroyBuffer(self.device, buffer, core::ptr::null());
+                return Err("no HOST_VISIBLE|COHERENT memory type for the buffer".into());
+            };
+
+            let mai = VkMemoryAllocateInfo {
+                sType: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                pNext: core::ptr::null(),
+                allocationSize: req.size,
+                memoryTypeIndex: mem_type,
+            };
+            let mut memory: VkDeviceMemory = 0;
+            if vkAllocateMemory(self.device, &mai, core::ptr::null(), &mut memory) != VK_SUCCESS {
+                vkDestroyBuffer(self.device, buffer, core::ptr::null());
+                return Err("vkAllocateMemory (host buffer) failed".into());
+            }
+            if vkBindBufferMemory(self.device, buffer, memory, 0) != VK_SUCCESS {
+                vkFreeMemory(self.device, memory, core::ptr::null());
+                vkDestroyBuffer(self.device, buffer, core::ptr::null());
+                return Err("vkBindBufferMemory failed".into());
+            }
+            Ok((buffer, memory))
+        }
+    }
+
     unsafe fn destroy(self) {
         unsafe {
             vkDestroyDevice(self.device, core::ptr::null());
@@ -1090,5 +1242,185 @@ pub fn init_clear(width: u32, height: u32) -> Result<String, String> {
         } else {
             Err("vkWaitForFences failed".into())
         }
+    }
+}
+
+/// The Vulkan offscreen capstone: run the clearing render pass on the GPU, then
+/// `vkCmdCopyImageToBuffer` the result into a host-visible buffer, fence-wait,
+/// map it, and return the `width`×`height` RGBA pixels — an actual GPU-rendered
+/// frame read back to the CPU (so CI can turn it into a screenshot). The eventual
+/// draw pipeline replaces only the "clear" with real draw calls; this readback
+/// path stays. Errors if any step fails.
+pub fn render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    unsafe {
+        let gpu = Gpu::create()?;
+        let target = match gpu.create_target(width, height) {
+            Ok(t) => t,
+            Err(e) => {
+                gpu.destroy();
+                return Err(e);
+            }
+        };
+        let size = width as u64 * height as u64 * 4;
+        let (buffer, buf_mem) = match gpu.create_host_buffer(size) {
+            Ok(t) => t,
+            Err(e) => {
+                target.destroy(gpu.device);
+                gpu.destroy();
+                return Err(e);
+            }
+        };
+
+        // Tear down everything created so far, on failure or success.
+        let finish = |gpu: Gpu,
+                      target: Target,
+                      buffer: VkBuffer,
+                      buf_mem: VkDeviceMemory,
+                      pool: VkCommandPool,
+                      fence: VkFence| {
+            if fence != 0 {
+                vkDestroyFence(gpu.device, fence, core::ptr::null());
+            }
+            if pool != 0 {
+                vkDestroyCommandPool(gpu.device, pool, core::ptr::null());
+            }
+            vkFreeMemory(gpu.device, buf_mem, core::ptr::null());
+            vkDestroyBuffer(gpu.device, buffer, core::ptr::null());
+            target.destroy(gpu.device);
+            gpu.destroy();
+        };
+
+        let pool_ci = VkCommandPoolCreateInfo {
+            sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+            queueFamilyIndex: gpu.family,
+        };
+        let mut pool: VkCommandPool = 0;
+        if vkCreateCommandPool(gpu.device, &pool_ci, core::ptr::null(), &mut pool) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, 0, 0);
+            return Err("vkCreateCommandPool failed".into());
+        }
+        let alloc = VkCommandBufferAllocateInfo {
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            pNext: core::ptr::null(),
+            commandPool: pool,
+            level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1,
+        };
+        let mut cmd: VkCommandBuffer = core::ptr::null_mut();
+        if vkAllocateCommandBuffers(gpu.device, &alloc, &mut cmd) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, pool, 0);
+            return Err("vkAllocateCommandBuffers failed".into());
+        }
+
+        let begin = VkCommandBufferBeginInfo {
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            pNext: core::ptr::null(),
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            pInheritanceInfo: core::ptr::null(),
+        };
+        if vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, pool, 0);
+            return Err("vkBeginCommandBuffer failed".into());
+        }
+        // forma blue (0x60, 0x9c, 0xff) — the readback pixels should be this.
+        let clear = VkClearValue {
+            float32: [0x60 as f32 / 255.0, 0x9c as f32 / 255.0, 1.0, 1.0],
+        };
+        let rp_begin = VkRenderPassBeginInfo {
+            sType: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            pNext: core::ptr::null(),
+            renderPass: target.render_pass,
+            framebuffer: target.framebuffer,
+            renderArea: VkRect2D {
+                offset: VkOffset2D { x: 0, y: 0 },
+                extent: VkExtent2D {
+                    width: target.width,
+                    height: target.height,
+                },
+            },
+            clearValueCount: 1,
+            pClearValues: &clear,
+        };
+        vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdEndRenderPass(cmd);
+
+        // The render pass left the image in TRANSFER_SRC_OPTIMAL — copy it,
+        // tightly packed, into the host buffer.
+        let region = VkBufferImageCopy {
+            bufferOffset: 0,
+            bufferRowLength: 0,
+            bufferImageHeight: 0,
+            imageSubresource: VkImageSubresourceLayers {
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                mipLevel: 0,
+                baseArrayLayer: 0,
+                layerCount: 1,
+            },
+            imageOffset: VkOffset3D { x: 0, y: 0, z: 0 },
+            imageExtent: VkExtent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        };
+        vkCmdCopyImageToBuffer(
+            cmd,
+            target.image,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            buffer,
+            1,
+            &region,
+        );
+        if vkEndCommandBuffer(cmd) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, pool, 0);
+            return Err("vkEndCommandBuffer failed".into());
+        }
+
+        let mut queue: VkQueue = core::ptr::null_mut();
+        vkGetDeviceQueue(gpu.device, gpu.family, 0, &mut queue);
+        let fence_ci = VkFenceCreateInfo {
+            sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            pNext: core::ptr::null(),
+            flags: 0,
+        };
+        let mut fence: VkFence = 0;
+        if vkCreateFence(gpu.device, &fence_ci, core::ptr::null(), &mut fence) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, pool, 0);
+            return Err("vkCreateFence failed".into());
+        }
+        let submit = VkSubmitInfo {
+            sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            pNext: core::ptr::null(),
+            waitSemaphoreCount: 0,
+            pWaitSemaphores: core::ptr::null(),
+            pWaitDstStageMask: core::ptr::null(),
+            commandBufferCount: 1,
+            pCommandBuffers: &cmd,
+            signalSemaphoreCount: 0,
+            pSignalSemaphores: core::ptr::null(),
+        };
+        if vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, pool, fence);
+            return Err("vkQueueSubmit failed".into());
+        }
+        if vkWaitForFences(gpu.device, 1, &fence, VK_TRUE, u64::MAX) != VK_SUCCESS {
+            finish(gpu, target, buffer, buf_mem, pool, fence);
+            return Err("vkWaitForFences failed".into());
+        }
+
+        // Map the host buffer and copy the pixels out.
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        if vkMapMemory(gpu.device, buf_mem, 0, size, 0, &mut ptr) != VK_SUCCESS || ptr.is_null() {
+            finish(gpu, target, buffer, buf_mem, pool, fence);
+            return Err("vkMapMemory failed".into());
+        }
+        let mut pixels = vec![0u8; size as usize];
+        core::ptr::copy_nonoverlapping(ptr as *const u8, pixels.as_mut_ptr(), size as usize);
+        vkUnmapMemory(gpu.device, buf_mem);
+
+        finish(gpu, target, buffer, buf_mem, pool, fence);
+        Ok(pixels)
     }
 }

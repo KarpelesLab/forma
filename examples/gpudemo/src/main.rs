@@ -165,4 +165,13 @@ fn main() {
         Ok(summary) => println!("Vulkan clear: {summary}"),
         Err(e) => println!("Vulkan clear unavailable: {e}"),
     }
+    // The Vulkan capstone: a GPU-rendered frame read back to the CPU and written
+    // out, so CI can convert it to a real screenshot.
+    match forma_gpu::vulkan_render_clear(W as u32, H as u32) {
+        Ok(pixels) => {
+            std::fs::write("gpu-vk.raw", &pixels).expect("write raw");
+            println!("Vulkan readback: {} bytes ({W}x{H})", pixels.len());
+        }
+        Err(e) => println!("Vulkan readback unavailable: {e}"),
+    }
 }

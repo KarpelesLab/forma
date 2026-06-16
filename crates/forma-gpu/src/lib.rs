@@ -102,6 +102,24 @@ pub fn vulkan_clear(width: u32, height: u32) -> Result<String, String> {
     }
 }
 
+/// Render a `width`×`height` frame entirely through Vulkan (raw FFI) and read it
+/// back to the CPU: run a clearing render pass on the GPU, copy the result image
+/// into a host-visible buffer, fence-wait, and return the RGBA pixels — an actual
+/// GPU-rendered frame, the foundation for a Vulkan `Surface`. The draw pipeline
+/// will replace the clear with real draw calls; this readback path is reused.
+/// Errors if the `vk` feature is off or any step fails.
+pub fn vulkan_render_clear(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::render_clear(width, height)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

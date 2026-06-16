@@ -424,6 +424,8 @@ jobs:
           convert -size 420x300 -depth 8 rgba:gpu-rects.raw visual_output/forma-gpu-rects.png
           # GPU-native render of the actual widget-tree Scene (render_scene).
           convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
+          # Vulkan-rendered frame (clear) read back from the GPU, raw FFI.
+          convert -size 420x300 -depth 8 rgba:gpu-vk.raw visual_output/forma-gpu-vk.png
           echo "Captured:"; identify visual_output/forma-gpu*.png
           # The raw-FFI Vulkan foundation must reach a device (Mesa lavapipe) and
           # create a logical device + graphics queue.
@@ -435,6 +437,12 @@ jobs:
           grep -q "Vulkan framebuffer: .* framebuffer + render pass" gpudemo.log
           # ...and actually submit a clearing render pass, fence-synced (real GPU work).
           grep -q "Vulkan clear: .*(fence signaled)" gpudemo.log
+          # ...and read a GPU-rendered frame back to the CPU (a real screenshot).
+          grep -q "Vulkan readback: .* bytes" gpudemo.log
+          # The readback must be the cleared forma blue (R=0x60 G=0x9c B=0xff), not black.
+          vkpx=$(convert visual_output/forma-gpu-vk.png -format '%[pixel:p{10,10}]' info:)
+          echo "Vulkan readback pixel: $vkpx"
+          echo "$vkpx" | grep -q "96,156,255"
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4
