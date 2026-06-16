@@ -130,7 +130,6 @@ const WL_SURFACE_ATTACH: u16 = 1;
 const WL_SURFACE_DAMAGE: u16 = 2;
 const WL_SURFACE_COMMIT: u16 = 6;
 const WL_SEAT_GET_KEYBOARD: u16 = 1;
-const WL_KEYBOARD_RELEASE: u16 = 0;
 const XDG_WM_BASE_PONG: u16 = 3;
 const XDG_WM_BASE_GET_XDG_SURFACE: u16 = 2;
 const XDG_SURFACE_GET_TOPLEVEL: u16 = 1;
@@ -867,12 +866,14 @@ where
                         dbg(format_args!("keyboard={kbd} (caps={caps})"));
                     }
                 }
-            } else if let Some(kbd) = keyboard.take() {
-                // The keyboard went away (e.g. a virtual keyboard was destroyed);
-                // release the stale object so a later one is picked up fresh.
-                let _ = conn.send(kbd, WL_KEYBOARD_RELEASE, &[]);
+            } else if keyboard.take().is_some() {
+                // The keyboard went away (e.g. a virtual keyboard was destroyed).
+                // The compositor makes the wl_keyboard inert on capability loss,
+                // so we simply drop our reference (and its keymap) and acquire a
+                // fresh one if the capability returns — sending an explicit
+                // release races the compositor's own teardown and can error.
                 keymap = None;
-                dbg(format_args!("keyboard released (caps={caps})"));
+                dbg(format_args!("keyboard dropped (caps={caps})"));
             }
             if pointer.is_none() && caps & WL_SEAT_CAP_POINTER != 0 {
                 let ptr = conn.new_id();
