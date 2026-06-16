@@ -47,7 +47,7 @@ use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{
     ButtonState, ControlFlow, Event, KeyCode, Modifiers, WindowAttributes, backend,
 };
-use forma_render::{Font, Pixmap, Scene, SoftwareRenderer, Surface};
+use forma_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
 
 /// A Forma application.
@@ -89,7 +89,17 @@ where
     painted_focused: Option<FocusId>,
     // Cross-frame memo cache for `Cx::memo` (static subtree reuse).
     memo_cache: std::collections::HashMap<u64, Element>,
+    // Optional GPU (or other) rasterizer used in place of the software renderer
+    // to turn each frame's `Scene` into the `Pixmap` that is presented. Lets a
+    // GPU backend (forma-gpu) drive on-screen present through the `Surface` seam
+    // without forma depending on it. `None` = software rasterization.
+    frame_renderer: Option<FrameRenderer>,
 }
+
+/// A pluggable rasterizer: turns a built [`Scene`] (with a background color, at a
+/// scale factor) into the [`Pixmap`] the [`Surface`] presents. Set via
+/// [`App::render_with`] to route frames through a GPU backend.
+pub type FrameRenderer = Box<dyn FnMut(&Scene, Color, ScaleFactor) -> Pixmap>;
 
 impl<S, F> std::fmt::Debug for App<S, F>
 where
@@ -131,6 +141,7 @@ where
             painted_hovered: None,
             painted_focused: None,
             memo_cache: std::collections::HashMap::new(),
+            frame_renderer: None,
         }
     }
 
@@ -139,6 +150,31 @@ where
     pub fn font(mut self, font: Font) -> Self {
         self.font = Some(font);
         self
+    }
+
+    /// Route frame rasterization through a custom renderer — e.g. a GPU backend
+    /// (`forma-gpu`) that turns each frame's [`Scene`] into a [`Pixmap`] on the
+    /// GPU, which is then presented through the platform [`Surface`]. This wires
+    /// GPU rendering into the live present path without forma depending on any
+    /// GPU crate. Without it, frames are rasterized on the CPU.
+    pub fn render_with(
+        mut self,
+        renderer: impl FnMut(&Scene, Color, ScaleFactor) -> Pixmap + 'static,
+    ) -> Self {
+        self.frame_renderer = Some(Box::new(renderer));
+        self
+    }
+
+    /// Rasterize a built `scene` into a `Pixmap` — through the custom
+    /// [`render_with`](App::render_with) renderer if set, else the software path.
+    fn rasterize(&mut self, scene: Scene, scale: ScaleFactor) -> Pixmap {
+        let bg = self.theme.palette.background;
+        match self.frame_renderer.as_mut() {
+            Some(render) => render(&scene, bg, scale),
+            None => SoftwareRenderer::new()
+                .with_background(bg)
+                .render(scene, scale),
+        }
     }
 
     /// Set the window title.
@@ -238,9 +274,8 @@ where
     /// previously returned frame. The first call always reports [`Damage::Full`].
     pub fn render_frame(&mut self) -> (Pixmap, Damage) {
         let scene = self.build_frame();
-        let pixmap = SoftwareRenderer::new()
-            .with_background(self.theme.palette.background)
-            .render(scene, self.scale);
+        let scale = self.scale;
+        let pixmap = self.rasterize(scene, scale);
         let damage = self.take_damage();
         (pixmap, damage)
     }
@@ -453,9 +488,7 @@ where
         // update would leave stale or blank regions.
         let mut present = |app: &mut Self, window: &dyn forma_platform::Window, force: bool| {
             let scene = app.build_frame();
-            let pixmap = SoftwareRenderer::new()
-                .with_background(app.theme.palette.background)
-                .render(scene, window.scale_factor());
+            let pixmap = app.rasterize(scene, window.scale_factor());
             let damage = app.take_damage();
             if !force && damage.is_empty() {
                 return; // Nothing changed since the last present.

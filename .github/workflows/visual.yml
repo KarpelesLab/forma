@@ -83,6 +83,67 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Render a real window whose frames are produced on the GPU (forma-gpu) and
+  # presented through the X11 Surface — the GPU render path wired into the live
+  # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).
+  visual-gpu-window:
+    name: Visual test (GPU window / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, Mesa GL/EGL, ImageMagick, x11-utils, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick x11-utils fonts-dejavu-core \
+            libgl1-mesa-dri libegl1 libgl1 libglx-mesa0
+
+      - name: Build the GPU window example (GLES backend)
+        run: cargo build --release -p gpuwindow --features forma-gpu/gl
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Launch the GPU window and screenshot it
+        env:
+          DISPLAY: ":99"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          mkdir -p visual_output
+          ./target/release/gpuwindow > visual_output/gpuwindow.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 5
+          import -window root visual_output/forma-gpu-window.png
+          echo "=== capture ==="; identify visual_output/forma-gpu-window.png
+          echo "=== gpuwindow.log ==="; cat visual_output/gpuwindow.log || true
+          # The GPU path must actually be used (no software fallback message)...
+          ! grep -q "GPU render unavailable" visual_output/gpuwindow.log
+          # ...and the window must have painted a non-trivial frame (the dark
+          # theme background plus the card): more than one distinct color.
+          colors=$(convert visual_output/forma-gpu-window.png -format '%k' info:)
+          echo "distinct colors: $colors"
+          [ "$colors" -gt 1 ]
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshot + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-gpu-window-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render the window example under a headless wlroots compositor (sway) and
   # screenshot it with grim, proving the hand-authored Wayland backend connects,
   # binds the globals, creates an xdg-shell window, and presents via wl_shm.

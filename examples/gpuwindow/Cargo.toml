@@ -1,0 +1,17 @@
+[package]
+name = "gpuwindow"
+description = "Forma example: a real window whose frames are rendered on the GPU (forma-gpu) and presented through the platform Surface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+forma-gpu.workspace = true
+
+[lints]
+workspace = true
