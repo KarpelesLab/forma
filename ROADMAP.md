@@ -185,8 +185,13 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   a simulator, launches it, and reads back the backend's runtime marker
   (`window shown, framebuffer 640x480`) from the app container — proving
   `UIApplicationMain` booted, the delegate built the `UIWindow`, and the Forma
-  handler rendered a frame on a real iOS surface. ⬜ The Android `ANativeWindow`
-  backend.
+  handler rendered a frame on a real iOS surface. An **Android `ANativeWindow`**
+  present path exists too — `present_to_native_window` blits the software
+  `Pixmap` to the activity's surface via the NDK C ABI
+  (`ANativeWindow_setBuffersGeometry`/`_lock`/`_unlockAndPost` from `libandroid`,
+  no `ndk`/`ndk-glue` crate), **build-verified** for `aarch64-linux-android`. ⬜
+  Wiring the Android present path to the full `NativeActivity` lifecycle (a
+  looper-driven loop) and verifying it on an emulator.
 - ✅ **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
   semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
