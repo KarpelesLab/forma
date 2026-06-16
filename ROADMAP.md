@@ -57,15 +57,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   Wayland, then X11, then headless. **CI-verified** under headless `sway` +
   `grim` (`docs/screenshots/forma-wayland.png`).
 - ✅ **Wayland input** (`wl_seat`): binds the seat and lazily creates the
-  keyboard/pointer once a `capabilities` event advertises them (calling
-  `get_keyboard` unconditionally is a protocol error on a device-less headless
-  seat). `wl_keyboard.key` maps from evdev codes — layout-independent
-  editing/navigation keys directly, printable keys via a best-effort US-QWERTY
-  table; `wl_pointer` motion/buttons decode `wl_fixed` coordinates and
-  BTN_LEFT/RIGHT/MIDDLE. The evdev/fixed-point/button mappings are unit-tested
-  and the seat integration is CI-verified non-breaking. Full text needs the
-  compositor's **xkb keymap** (see below); on a real Wayland session the system
-  keymap delivers the standard evdev codes this maps.
+  keyboard/pointer once a `capabilities` event advertises them, re-acquiring the
+  keyboard if the capability toggles (calling `get_keyboard` unconditionally is
+  a protocol error on a device-less headless seat). Keys decode through the
+  compositor's **xkb keymap** — captured as an fd via `recvmsg`/`SCM_RIGHTS`,
+  `mmap`-ed, and parsed (keycode → keysym) — so text works for any layout, with
+  a layout-independent evdev table as fallback. `wl_pointer` motion/buttons
+  decode `wl_fixed` coordinates and BTN_LEFT/RIGHT/MIDDLE. Mappings are
+  unit-tested; **CI-verified end to end** under headless `sway` — `wtype` types
+  "forma wl" into a focused field (`docs/screenshots/forma-wayland-input.png`).
 - ✅ **X11 MIT-SHM fast present**: when the server advertises MIT-SHM, frames go
   through a System V shared-memory segment the server maps directly, and
   `ShmPutImage` blits only the `Surface` damage rectangles — so an incremental
@@ -167,8 +167,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   rectangle per spanned line; `caret_index_at` takes a `Point` (line from y,
   column from x). New `text_area` widget. **CI-verified** on X11 — three typed
   lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
-- ⬜ **Wayland xkb text** (decode the compositor's keymap for full text input);
-  ⬜ **mobile** (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU);
+- ⬜ **mobile** (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU);
   ⬜ per-node state to skip unchanged subtrees on rebuild; ⬜ a11y.
 
 ---
