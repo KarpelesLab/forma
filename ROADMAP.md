@@ -43,11 +43,19 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   headless path — the cross-platform "pixel-identical" guarantee, enforced in
   CI; native backends must match the same samples.
 - ✅ **Native X11 backend** written directly against the wire protocol (pure
-  sockets, no deps, no `unsafe`): connect + auth, window create/map/resize/
-  close, `PutImage` present, pointer + raw key events. **CI-verified**: a
-  `Visual` workflow runs the `window` example under Xvfb and screenshots the
-  result (`docs/screenshots/forma-x11.png`). `App::run` selects X11 when
-  `$DISPLAY` is set, else headless.
+  sockets, no deps): connect + auth, window create/map/resize/close, present,
+  pointer + raw key events. **CI-verified**: a `Visual` workflow runs the
+  `window` example under Xvfb and screenshots the result
+  (`docs/screenshots/forma-x11.png`). `App::run` selects X11 when `$DISPLAY` is
+  set, else headless.
+- ✅ **X11 MIT-SHM fast present**: when the server advertises MIT-SHM, frames go
+  through a System V shared-memory segment the server maps directly, and
+  `ShmPutImage` blits only the `Surface` damage rectangles — so an incremental
+  repaint transfers no pixels over the socket. Set up before mapping
+  (QueryExtension → shmget/shmat → ShmAttach → sync), with `IPC_RMID` auto-
+  cleanup and a `PutImage` fallback when the extension is absent. The shm
+  syscalls are the X11 backend's only `unsafe`/FFI. **CI-verified** under Xvfb
+  (logs confirm `shm=true`; screenshots render correctly).
 - ✅ **Native Windows backend** over raw Win32 FFI (`user32`/`gdi32`/`kernel32`,
   no `windows` crate): window create/show, `StretchDIBits` present. **CI-verified**
   — the Visual workflow's Windows job runs the example on the runner's desktop
@@ -110,9 +118,9 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   move as damage. `text_editor` renders it; **CI-verified** on X11 (type
   "Forma", arrow-left ×2, insert "XY" → "ForXYma" with a mid-string caret).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
-  (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ X11
-  MIT-SHM fast present; ⬜ per-node state to skip unchanged subtrees on rebuild;
-  ⬜ multi-line + text selection (shift-select, mouse drag); ⬜ a11y.
+  (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
+  state to skip unchanged subtrees on rebuild; ⬜ multi-line + text selection
+  (shift-select, mouse drag); ⬜ a11y.
 
 ---
 
