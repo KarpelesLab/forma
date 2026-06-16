@@ -7,15 +7,20 @@
 //! window, and presents the software [`Pixmap`] through a `wl_shm` buffer the
 //! compositor maps directly.
 //!
-//! Scope (v1): connection, the `xdg-shell` configure/ack handshake, and shared-
-//! memory presentation (window create + paint + close). Pointer/keyboard input
-//! via `wl_seat` is a follow-up — exactly how the Win32/Cocoa backends began.
+//! Scope: connection, the `xdg-shell` configure/ack handshake, shared-memory
+//! presentation (window create + paint + close), and `wl_seat` **keyboard**
+//! input. Layout-independent editing/navigation keys (Tab, arrows, Enter,
+//! Backspace, …) map straight from their evdev codes; printable keys use a
+//! best-effort US-QWERTY table. Full text via the compositor's xkb keymap (and
+//! `wl_pointer`) is a follow-up. The shared-memory buffer needs a small amount
+//! of FFI (`memfd_create` / `mmap` and `SCM_RIGHTS` fd passing), hence the
+//! module-level `allow(unsafe_code)`.
 //!
-//! The shared-memory buffer needs a small amount of FFI (`memfd_create` / `mmap`
-//! and `SCM_RIGHTS` fd passing), hence the module-level `allow(unsafe_code)`.
-//!
-//! **Verification:** the live socket path is exercised by the `Visual` workflow's
-//! headless-`sway` job (`grim` screenshots the compositor output).
+//! **Verification:** the live render path is exercised by the `Visual`
+//! workflow's headless-`sway` job (`grim` screenshots the compositor output);
+//! the evdev key mapping is unit-tested. End-to-end keyboard injection isn't
+//! verified headlessly — virtual-keyboard tools upload their own xkb keymap, so
+//! decoding their keycodes needs the xkb keymap parsing noted above.
 
 #![allow(unsafe_code)]
 
@@ -26,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::ControlFlow;
 use crate::error::PlatformError;
-use crate::event::Event;
+use crate::event::{ButtonState, Event, KeyCode, Modifiers};
 use crate::window::{Window, WindowAttributes};
 use forma_geometry::{PhysicalSize, ScaleFactor};
 use forma_render::{Pixmap, Surface};
@@ -123,6 +128,7 @@ const WL_SHM_POOL_CREATE_BUFFER: u16 = 0;
 const WL_SURFACE_ATTACH: u16 = 1;
 const WL_SURFACE_DAMAGE: u16 = 2;
 const WL_SURFACE_COMMIT: u16 = 6;
+const WL_SEAT_GET_KEYBOARD: u16 = 1;
 const XDG_WM_BASE_PONG: u16 = 3;
 const XDG_WM_BASE_GET_XDG_SURFACE: u16 = 2;
 const XDG_SURFACE_GET_TOPLEVEL: u16 = 1;
@@ -137,6 +143,7 @@ const XDG_WM_BASE_PING: u16 = 0;
 const XDG_SURFACE_CONFIGURE: u16 = 0;
 const XDG_TOPLEVEL_CONFIGURE: u16 = 0;
 const XDG_TOPLEVEL_CLOSE: u16 = 1;
+const WL_KEYBOARD_KEY: u16 = 3;
 
 // `wl_shm` pixel format: 32-bit little-endian XRGB → bytes `[B, G, R, X]`.
 const WL_SHM_FORMAT_XRGB8888: u32 = 1;
@@ -154,6 +161,56 @@ fn dbg(args: std::fmt::Arguments<'_>) {
 
 fn os(e: io::Error) -> PlatformError {
     PlatformError::Os(e.to_string())
+}
+
+/// Translate a Linux evdev key code + press/release into a Forma event.
+///
+/// Editing/navigation keys have layout-independent evdev codes, so they map
+/// directly. Printable keys use a best-effort US-QWERTY table for [`Event::Text`]
+/// (full layout/IME handling needs an xkb keymap, a follow-up); shift is not yet
+/// tracked, so text is lower-case.
+fn evdev_to_event(code: u32, pressed: bool) -> Option<Event> {
+    let state = if pressed {
+        ButtonState::Pressed
+    } else {
+        ButtonState::Released
+    };
+    // Editing / navigation keys (Linux input-event-codes.h).
+    let key = match code {
+        15 => Some(KeyCode::Tab),
+        28 | 96 => Some(KeyCode::Enter), // Enter, KP-Enter
+        14 => Some(KeyCode::Backspace),
+        111 => Some(KeyCode::Delete),
+        105 => Some(KeyCode::ArrowLeft),
+        106 => Some(KeyCode::ArrowRight),
+        103 => Some(KeyCode::ArrowUp),
+        108 => Some(KeyCode::ArrowDown),
+        102 => Some(KeyCode::Home),
+        107 => Some(KeyCode::End),
+        1 => Some(KeyCode::Escape),
+        _ => None,
+    };
+    if let Some(code) = key {
+        return Some(Event::Key {
+            code,
+            state,
+            modifiers: Modifiers::default(),
+        });
+    }
+    if !pressed {
+        return None;
+    }
+    // Printable keys → text (US QWERTY, lower-case; press only).
+    let ch = match code {
+        16..=25 => Some(b"qwertyuiop"[(code - 16) as usize]),
+        30..=38 => Some(b"asdfghjkl"[(code - 30) as usize]),
+        44..=50 => Some(b"zxcvbnm"[(code - 44) as usize]),
+        2..=10 => Some(b"123456789"[(code - 2) as usize]),
+        11 => Some(b'0'),
+        57 => Some(b' '),
+        _ => None,
+    };
+    ch.map(|b| Event::Text((b as char).to_string()))
 }
 
 // ---- Wire connection --------------------------------------------------------
@@ -488,6 +545,7 @@ where
     let mut compositor_name = None;
     let mut shm_name = None;
     let mut wm_base_name = None;
+    let mut seat_name = None;
     loop {
         let (object, opcode, args) = conn.recv().map_err(os)?;
         if object == registry && opcode == WL_REGISTRY_GLOBAL {
@@ -497,6 +555,7 @@ where
                     "wl_compositor" => compositor_name = Some(name),
                     "wl_shm" => shm_name = Some(name),
                     "xdg_wm_base" => wm_base_name = Some(name),
+                    "wl_seat" => seat_name = Some(name),
                     _ => {}
                 }
             }
@@ -535,6 +594,19 @@ where
         "xdg_wm_base",
         1,
     );
+
+    // Optional seat → keyboard (input). Absent under some headless setups.
+    let keyboard = if let Some(name) = seat_name {
+        let seat = bind(&mut conn, name, "wl_seat", 1);
+        let kbd = conn.new_id();
+        let mut a = Vec::new();
+        arg_u32(&mut a, kbd);
+        conn.send(seat, WL_SEAT_GET_KEYBOARD, &a).map_err(os)?;
+        dbg(format_args!("seat={seat} keyboard={kbd}"));
+        Some(kbd)
+    } else {
+        None
+    };
 
     // Surface → xdg_surface → xdg_toplevel.
     let surface = conn.new_id();
@@ -610,6 +682,16 @@ where
         } else if object == toplevel && opcode == XDG_TOPLEVEL_CLOSE {
             handler(Event::CloseRequested, &win);
             break;
+        } else if Some(object) == keyboard && opcode == WL_KEYBOARD_KEY {
+            // serial(4), time(4), key(4 evdev), state(4: 1 = pressed).
+            let key = u32::from_le_bytes([args[8], args[9], args[10], args[11]]);
+            let pressed = u32::from_le_bytes([args[12], args[13], args[14], args[15]]) == 1;
+            if let Some(ev) = evdev_to_event(key, pressed) {
+                dbg(format_args!("key {key} pressed={pressed} -> {ev:?}"));
+                if handler(ev, &win) == ControlFlow::Exit {
+                    break;
+                }
+            }
         } else if object == WL_DISPLAY && opcode == WL_DISPLAY_ERROR {
             return Err(PlatformError::Os("wl_display error".into()));
         }
@@ -676,5 +758,38 @@ mod tests {
         let mut dst = [0u8; 8];
         rgba_to_xrgb(&[10, 20, 30, 255, 1, 2, 3, 128], &mut dst);
         assert_eq!(dst, [30, 20, 10, 0, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn evdev_maps_editing_keys_and_us_text() {
+        // Layout-independent editing/navigation keys.
+        assert!(matches!(
+            evdev_to_event(15, true),
+            Some(Event::Key {
+                code: KeyCode::Tab,
+                state: ButtonState::Pressed,
+                ..
+            })
+        ));
+        assert!(matches!(
+            evdev_to_event(105, true),
+            Some(Event::Key {
+                code: KeyCode::ArrowLeft,
+                ..
+            })
+        ));
+        assert!(matches!(
+            evdev_to_event(28, false),
+            Some(Event::Key {
+                code: KeyCode::Enter,
+                state: ButtonState::Released,
+                ..
+            })
+        ));
+        // US-QWERTY text on press; nothing on release.
+        assert_eq!(evdev_to_event(30, true), Some(Event::Text("a".into()))); // KEY_A
+        assert_eq!(evdev_to_event(57, true), Some(Event::Text(" ".into()))); // KEY_SPACE
+        assert_eq!(evdev_to_event(30, false), None);
+        assert_eq!(evdev_to_event(0, true), None);
     }
 }
