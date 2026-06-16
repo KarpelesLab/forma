@@ -175,10 +175,14 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
 - 🚧 **mobile portability**: the whole stack **cross-compiles for Android
   (`aarch64-linux-android`) and iOS (`aarch64-apple-ios`)** — oxideav is pure
-  Rust, so no NDK is needed, and the platform layer falls through to the
-  headless backend there. **CI-verified** (the `mobile` job builds the umbrella
-  crate for both). ⬜ Native windowing backends (`ANativeWindow` / UIKit
-  `CALayer`) so they render to a real device surface.
+  Rust, so no NDK is needed. **CI-verified** (the `mobile` job builds the
+  umbrella crate for both). A native **iOS UIKit backend** (raw `objc_msgSend` +
+  UIKit/CoreGraphics, no `objc`/`uikit` crate — the same approach as the macOS
+  backend) now exists: `UIApplicationMain` boots a hand-built `FormaAppDelegate`
+  that creates a `UIWindow` hosting a custom `UIView` whose `drawRect:` blits the
+  software `Pixmap` as a `CGImage`. **Build-verified** for `aarch64-apple-ios` by
+  the cross-compile job (iOS no longer falls through to headless). ⬜ Running it
+  on the simulator (screenshot), and the Android `ANativeWindow` backend.
 - ✅ **a11y foundation**: `forma-core::a11y::accessibility_tree` builds a pruned
   semantic `AccessNode` tree (Window/Group/Button/TextField/Text roles, names,
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
