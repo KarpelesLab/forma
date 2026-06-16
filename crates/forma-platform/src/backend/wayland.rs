@@ -855,6 +855,7 @@ where
         };
         if Some(object) == seat && opcode == WL_SEAT_CAPABILITIES {
             let caps = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
+            dbg(format_args!("seat capabilities: {caps}"));
             let mut conn = shared.lock().unwrap();
             if caps & WL_SEAT_CAP_KEYBOARD != 0 {
                 if keyboard.is_none() {
