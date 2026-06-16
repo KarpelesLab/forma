@@ -749,3 +749,71 @@ jobs:
             grep -q "org.a11y.atspi.Accessible" introspect.log
             kill $SRV 2>/dev/null || true
           '
+
+  # Run the native iOS UIKit backend on a booted simulator and confirm it boots,
+  # builds the window, and renders a frame — a real runtime check of the backend
+  # the cross-compile job only build-verifies.
+  visual-ios:
+    name: Visual test (iOS simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the window example for the iOS simulator
+        run: cargo build --release -p window --target aarch64-apple-ios-sim
+
+      - name: Bundle, boot a simulator, launch, and capture the runtime marker
+        run: |
+          mkdir -p visual_output Forma.app
+          cp target/aarch64-apple-ios-sim/release/window Forma.app/window
+          cat > Forma.app/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>window</string>
+            <key>CFBundleIdentifier</key><string>com.karpeleslab.forma</string>
+            <key>CFBundleName</key><string>Forma</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSRequiresIPhoneOS</key><true/>
+            <key>UIDeviceFamily</key><array><integer>1</integer></array>
+            <key>MinimumOSVersion</key><string>15.0</string>
+          </dict></plist>
+          PLIST
+
+          # Pick the newest available iOS runtime + an iPhone device type.
+          RT=$(xcrun simctl list runtimes -j | python3 -c "import sys,json;rs=[r for r in json.load(sys.stdin)['runtimes'] if r.get('isAvailable') and 'iOS' in r['name']];print(rs[-1]['identifier'])")
+          DT=$(xcrun simctl list devicetypes -j | python3 -c "import sys,json;ds=[d for d in json.load(sys.stdin)['devicetypes'] if 'iPhone' in d['name']];print(ds[-1]['identifier'])")
+          echo "runtime=$RT devicetype=$DT"
+          DEV=$(xcrun simctl create forma-test "$DT" "$RT")
+          echo "device=$DEV"
+          xcrun simctl boot "$DEV"
+          xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl install "$DEV" Forma.app
+
+          # Launch with the app's stdout streamed back; the app runs forever, so
+          # capture for a bit then stop. The backend prints its marker on launch.
+          ( xcrun simctl launch --console-pty "$DEV" com.karpeleslab.forma > ios.log 2>&1 & echo $! > launch.pid ) || true
+          sleep 20
+          kill "$(cat launch.pid)" 2>/dev/null || true
+          echo "=== ios.log ==="; cat ios.log || true
+          xcrun simctl io "$DEV" screenshot visual_output/forma-ios.png || true
+          (sips -g pixelWidth -g pixelHeight visual_output/forma-ios.png || true)
+          # The native UIKit backend booted via UIApplicationMain, created the
+          # window, and the Forma handler rendered a non-empty frame.
+          grep -qE "Forma iOS: window shown, framebuffer [1-9][0-9]*x[1-9][0-9]*" ios.log
+
+      - name: Upload screenshot + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-ios-screenshot
+          path: |
+            visual_output/*.png
+            ios.log
+          if-no-files-found: warn

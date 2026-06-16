@@ -255,6 +255,15 @@ extern "C" fn did_finish_launching(_this: Id, _cmd: Sel, _app: Id, _opts: Id) ->
         call_handler(Event::RedrawRequested, &win);
         msg_void(window, sel("makeKeyAndVisible"));
         msg_void_bool(view, sel("setNeedsDisplay"), true);
+
+        // Runtime marker for CI (captured via `simctl launch --console-pty`):
+        // confirms the UIKit backend booted, built the window, and the handler
+        // rendered a frame into the shared framebuffer.
+        let (w, h) = CTX.with(|c| {
+            let c = c.borrow();
+            (c.w, c.h)
+        });
+        println!("Forma iOS: window shown, framebuffer {w}x{h}");
     }
     true
 }
