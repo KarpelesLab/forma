@@ -10,6 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+forma.workspace = true
 forma-platform.workspace = true
 
 [lints]

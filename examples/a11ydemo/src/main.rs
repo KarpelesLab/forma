@@ -22,13 +22,52 @@ const INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS
   <interface name="org.a11y.atspi.Accessible"/>
 </node>"#;
 
+/// Map a Forma accessibility role to an `org.a11y.atspi` role number.
+#[cfg(target_os = "linux")]
+fn atspi_role(role: forma::core::Role) -> u32 {
+    use forma::core::Role;
+    match role {
+        Role::Window => 27,    // ATSPI_ROLE_FRAME
+        Role::Group => 54,     // ATSPI_ROLE_PANEL
+        Role::Button => 44,    // ATSPI_ROLE_PUSH_BUTTON
+        Role::TextField => 80, // ATSPI_ROLE_ENTRY
+        Role::Text => 29,      // ATSPI_ROLE_LABEL
+    }
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     {
-        use forma_platform::a11y::DBus;
+        use forma::prelude::*;
+        use forma_platform::a11y::{AtspiNode, DBus};
         let serve = std::env::args().nth(1).as_deref() == Some("serve");
 
         if serve {
+            // Build a real Forma UI and derive its accessibility tree, then
+            // expose the root over AT-SPI.
+            let mut app = App::new((), |_s: &(), cx: &mut Cx<()>| {
+                let theme = *cx.theme();
+                panel(
+                    &theme,
+                    vec![label(&theme, "Hello"), button_labeled(&theme, "OK")],
+                )
+            });
+            app.render_once();
+            let root = app.accessibility_tree().expect("accessibility tree");
+            let node = AtspiNode {
+                role: atspi_role(root.role),
+                name: if root.name.is_empty() {
+                    "Forma".to_string()
+                } else {
+                    root.name.clone()
+                },
+                child_count: root.children.len() as i32,
+            };
+            println!(
+                "a11y root: role={} name={:?} children={}",
+                node.role, node.name, node.child_count
+            );
+
             let mut bus = match DBus::connect_session() {
                 Ok(b) => b,
                 Err(e) => {
@@ -44,7 +83,7 @@ fn main() {
                 }
             }
             // Answer method calls until the connection drops (CI kills us).
-            if let Err(e) = bus.serve(INTROSPECT_XML) {
+            if let Err(e) = bus.serve_atspi(&node, INTROSPECT_XML) {
                 eprintln!("serve ended: {e}");
             }
             return;

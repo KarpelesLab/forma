@@ -169,6 +169,50 @@ impl DBus {
         }
     }
 
+    /// Serve `node` as an `org.a11y.atspi.Accessible` object: answer `GetRole`
+    /// (the role number) and the `Name` / `ChildCount` properties via
+    /// `org.freedesktop.DBus.Properties.Get`, plus `Peer.Ping` and `Introspect`.
+    /// Loops until the connection drops. This exposes the accessibility tree's
+    /// root over the same interface a screen reader reads. Unknown methods get an
+    /// `UnknownMethod` error.
+    pub fn serve_atspi(&mut self, node: &AtspiNode, introspect_xml: &str) -> Result<(), String> {
+        loop {
+            let m = self.read_message()?;
+            if m.mtype != 1 {
+                continue;
+            }
+            match (m.interface.as_str(), m.member.as_str()) {
+                ("org.freedesktop.DBus.Peer", "Ping") => self.send_return(&m, "", &[])?,
+                ("org.freedesktop.DBus.Introspectable", "Introspect") => {
+                    let mut body = Vec::new();
+                    put_string(&mut body, introspect_xml);
+                    self.send_return(&m, "s", &body)?;
+                }
+                ("org.a11y.atspi.Accessible", "GetRole") => {
+                    self.send_return(&m, "u", &node.role.to_le_bytes())?;
+                }
+                ("org.freedesktop.DBus.Properties", "Get") => {
+                    // Args: (ss) = interface name, property name.
+                    let mut off = 0;
+                    let _iface = read_string(&m.body, &mut off).unwrap_or_default();
+                    let prop = read_string(&m.body, &mut off).unwrap_or_default();
+                    let mut body = Vec::new();
+                    match prop.as_str() {
+                        "Name" => put_variant_string(&mut body, &node.name),
+                        "Description" => put_variant_string(&mut body, ""),
+                        "ChildCount" => put_variant_i32(&mut body, node.child_count),
+                        _ => {
+                            self.send_error(&m, "org.freedesktop.DBus.Error.InvalidArgs")?;
+                            continue;
+                        }
+                    }
+                    self.send_return(&m, "v", &body)?;
+                }
+                _ => self.send_error(&m, "org.freedesktop.DBus.Error.UnknownMethod")?,
+            }
+        }
+    }
+
     /// Send a `METHOD_RETURN` for `req` with optional `signature`/`body`.
     fn send_return(&mut self, req: &Message, signature: &str, body: &[u8]) -> Result<(), String> {
         self.serial += 1;
@@ -256,6 +300,16 @@ impl DBus {
         msg.body = body;
         Ok(msg)
     }
+}
+
+/// A node of accessibility data to expose over AT-SPI — a transport-neutral view
+/// (so this crate needs no dependency on the widget tree). Higher layers map
+/// their `AccessNode` to this. `role` is an `org.a11y.atspi` role number.
+#[derive(Debug, Clone)]
+pub struct AtspiNode {
+    pub role: u32,
+    pub name: String,
+    pub child_count: i32,
 }
 
 /// A received D-Bus message: header metadata plus the raw body bytes.
@@ -389,6 +443,23 @@ fn marshal_method_call(
     put_field(&mut fields, 2, b's', interface);
     put_field(&mut fields, 3, b's', member);
     build_message(1, serial, &fields, &[])
+}
+
+/// Append a VARIANT holding a string: signature `s`, then the string value.
+fn put_variant_string(buf: &mut Vec<u8>, s: &str) {
+    buf.push(1);
+    buf.push(b's');
+    buf.push(0);
+    put_string(buf, s);
+}
+
+/// Append a VARIANT holding an int32: signature `i`, then the 4-aligned value.
+fn put_variant_i32(buf: &mut Vec<u8>, v: i32) {
+    buf.push(1);
+    buf.push(b'i');
+    buf.push(0);
+    align(buf, 4);
+    buf.extend_from_slice(&v.to_le_bytes());
 }
 
 /// Read a u32 at `*off` in `buf` (4-aligned), advancing `*off`.
