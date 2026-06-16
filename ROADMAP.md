@@ -125,10 +125,17 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   draws a themed translucent highlight behind the selected glyphs, and the
   reconciler treats a selection change as damage. **CI-verified** on X11
   (`docs/screenshots/forma-x11-selection.png`).
+- ✅ **Multi-line text rendering**: `Font::measure` and `Scene::fill_text` split
+  on `\n` — measure returns the widest line's width and line-height × line count
+  (a trailing newline adds an empty line), and `fill_text` places each line
+  dropped by one line height. Editable fields stay single-line (caret/selection
+  math unchanged). **CI-verified** — the `window` example's two-line caption
+  (`docs/screenshots/forma-x11.png`).
 - ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
-  state to skip unchanged subtrees on rebuild; ⬜ multi-line text (wrapping +
-  newline editing); ⬜ pointer-drag text selection; ⬜ a11y.
+  state to skip unchanged subtrees on rebuild; ⬜ word-wrapping + multi-line
+  editing (caret/selection across lines); ⬜ pointer-drag text selection;
+  ⬜ a11y.
 
 ---
 
