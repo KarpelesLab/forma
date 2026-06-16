@@ -53,10 +53,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `wl_compositor`/`wl_shm`/`xdg_wm_base` via the registry roundtrip, creates an
   `xdg_toplevel`, runs the `xdg-shell` configure/ack handshake, and presents the
   software `Pixmap` through a `memfd`-backed `wl_shm` buffer (the fd passed with
-  a raw `sendmsg` `SCM_RIGHTS` control message). v1 is render + close (input via
-  `wl_seat` is a follow-up). Backend selection prefers Wayland, then X11, then
-  headless. **CI-verified** under headless `sway` + `grim`
-  (`docs/screenshots/forma-wayland.png`).
+  a raw `sendmsg` `SCM_RIGHTS` control message). Backend selection prefers
+  Wayland, then X11, then headless. **CI-verified** under headless `sway` +
+  `grim` (`docs/screenshots/forma-wayland.png`).
+- ✅ **Wayland keyboard input** (`wl_seat`): binds the seat and lazily
+  `get_keyboard` once a `capabilities` event advertises one (calling it
+  unconditionally is a protocol error on a device-less headless seat).
+  `wl_keyboard.key` events map from evdev codes — layout-independent
+  editing/navigation keys directly, printable keys via a best-effort US-QWERTY
+  table. The evdev mapping is unit-tested and the seat integration is
+  CI-verified non-breaking; full text needs the compositor's **xkb keymap** and
+  `wl_pointer` is pending (see below). On a real Wayland session the system
+  keymap delivers the standard evdev codes this maps.
 - ✅ **X11 MIT-SHM fast present**: when the server advertises MIT-SHM, frames go
   through a System V shared-memory segment the server maps directly, and
   `ShmPutImage` blits only the `Surface` damage rectangles — so an incremental
@@ -158,7 +166,8 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   rectangle per spanned line; `caret_index_at` takes a `Point` (line from y,
   column from x). New `text_area` widget. **CI-verified** on X11 — three typed
   lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
-- ⬜ **Wayland input** (`wl_seat` pointer/keyboard, xkb keymap); ⬜ **mobile**
+- ⬜ **Wayland text + pointer** (xkb keymap decode for full text, `wl_pointer`);
+  ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
   state to skip unchanged subtrees on rebuild; ⬜ a11y.
 
