@@ -193,8 +193,11 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   (`docs/screenshots/forma-gpu-rects.png`) and the actual widget-tree `Scene`,
   whose text is drawn from a packed **per-glyph atlas** (each unique glyph
   rasterized once into one shared texture; repeats reuse the slot)
-  (`docs/screenshots/forma-gpu-scene.png`). ⬜ Vulkan/Metal/D3D/WebGPU backends
-  (each a from-scratch graphics-API implementation).
+  (`docs/screenshots/forma-gpu-scene.png`). A **raw Vulkan FFI foundation**
+  (`vulkan_devices`, no `ash`/`vulkano`) creates a `VkInstance` and enumerates
+  physical devices — **CI-verified** reaching Mesa lavapipe. ⬜ The full Vulkan
+  render pipeline (device/queues/SPIR-V/command buffers) and Metal/D3D/WebGPU
+  backends.
 
 ---
 
