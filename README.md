@@ -38,12 +38,16 @@ fn main() {
 > [`ROADMAP.md`](./ROADMAP.md). APIs are unstable.
 
 The same app, rendered by Forma's **native backends** and screenshotted in CI
-(the `Visual` workflow) on all three desktop OSes — X11 (under Xvfb), Win32,
-and Cocoa, each from-scratch with no windowing crates:
+(the `Visual` workflow) — Linux X11 (under Xvfb) and Wayland (under headless
+sway), Win32, and Cocoa, each from-scratch with no windowing crates:
 
-| Linux / X11 | Windows / Win32 | macOS / Cocoa | Web / wasm + canvas | GPU / GLES (offscreen) |
-|---|---|---|---|---|
-| ![X11](./docs/screenshots/forma-x11.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) | ![Web](./docs/screenshots/forma-web.png) | ![GPU](./docs/screenshots/forma-gpu.png) |
+| Linux / X11 | Linux / Wayland | Windows / Win32 | macOS / Cocoa |
+|---|---|---|---|
+| ![X11](./docs/screenshots/forma-x11.png) | ![Wayland](./docs/screenshots/forma-wayland.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) |
+
+| Web / wasm + canvas | GPU / GLES (offscreen) |
+|---|---|
+| ![Web](./docs/screenshots/forma-web.png) | ![GPU](./docs/screenshots/forma-gpu.png) |
 
 Input is verified too: CI synthesizes real events and screenshots the result —
 X11 via `xdotool` (clicking a counter; caret-aware editing — type "Forma",

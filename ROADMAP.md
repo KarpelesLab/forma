@@ -48,6 +48,15 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `window` example under Xvfb and screenshots the result
   (`docs/screenshots/forma-x11.png`). `App::run` selects X11 when `$DISPLAY` is
   set, else headless.
+- ✅ **Native Wayland backend** written directly against the wire protocol (no
+  `libwayland`/`wayland-client`): connects to `$WAYLAND_DISPLAY`, binds
+  `wl_compositor`/`wl_shm`/`xdg_wm_base` via the registry roundtrip, creates an
+  `xdg_toplevel`, runs the `xdg-shell` configure/ack handshake, and presents the
+  software `Pixmap` through a `memfd`-backed `wl_shm` buffer (the fd passed with
+  a raw `sendmsg` `SCM_RIGHTS` control message). v1 is render + close (input via
+  `wl_seat` is a follow-up). Backend selection prefers Wayland, then X11, then
+  headless. **CI-verified** under headless `sway` + `grim`
+  (`docs/screenshots/forma-wayland.png`).
 - ✅ **X11 MIT-SHM fast present**: when the server advertises MIT-SHM, frames go
   through a System V shared-memory segment the server maps directly, and
   `ShmPutImage` blits only the `Surface` damage rectangles — so an incremental
@@ -143,7 +152,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   text elements wraps to the laid-out content width in both measure (growing
   height) and paint. New `paragraph` widget. **CI-verified** — the `window`
   example's paragraph wraps across three lines (`docs/screenshots/forma-x11.png`).
-- ⬜ **Wayland backend** (hand-authored xdg-shell tables); ⬜ **mobile**
+- ⬜ **Wayland input** (`wl_seat` pointer/keyboard, xkb keymap); ⬜ **mobile**
   (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ per-node
   state to skip unchanged subtrees on rebuild; ⬜ multi-line *editing*
   (caret/selection across lines); ⬜ a11y.
