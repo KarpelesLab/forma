@@ -39,6 +39,9 @@ pub mod macos;
 #[cfg(target_os = "ios")]
 pub mod ios;
 
+#[cfg(target_os = "android")]
+pub mod android;
+
 /// Run `handler` against the best available native backend, falling back to a
 /// one-shot [`headless`] present when no display is reachable.
 ///
@@ -60,7 +63,6 @@ where
     #[cfg(target_os = "ios")]
     {
         let _ = ios::run(attrs, handler);
-        return;
     }
     #[cfg(not(target_os = "ios"))]
     {

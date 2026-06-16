@@ -159,7 +159,7 @@ fn nsstring(s: &str) -> Id {
 
 // ---- Shared state -----------------------------------------------------------
 
-type DynHandler = *mut (dyn FnMut(Event, &dyn Window) -> ControlFlow);
+type DynHandler = *mut dyn FnMut(Event, &dyn Window) -> ControlFlow;
 
 #[derive(Default)]
 struct IosCtx {
