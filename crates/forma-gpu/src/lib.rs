@@ -68,6 +68,23 @@ pub fn vulkan_init_image(width: u32, height: u32) -> Result<String, String> {
     }
 }
 
+/// Build the Vulkan render-target objects for a `width`×`height` offscreen frame
+/// (raw FFI): an image view over a color image, a single-attachment render pass
+/// (clear→store, ending transfer-readable), and a framebuffer binding them — what
+/// a render pass draws into. Returns a one-line summary. Errors if the `vk`
+/// feature is off or creation fails.
+pub fn vulkan_init_framebuffer(width: u32, height: u32) -> Result<String, String> {
+    #[cfg(all(target_os = "linux", feature = "vk"))]
+    {
+        vulkan::init_framebuffer(width, height)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vk")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `vk` feature (Linux-only Vulkan FFI)".to_string())
+    }
+}
+
 /// Round-trip `input` through the GPU (upload → draw → read back), returning the
 /// rendered frame. Errors if the `gl` feature is off or no GL/EGL device is
 /// available.

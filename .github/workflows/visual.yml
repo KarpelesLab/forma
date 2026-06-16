@@ -431,6 +431,8 @@ jobs:
           grep -q "Vulkan init: logical device" gpudemo.log
           # ...and allocate a DEVICE_LOCAL color image (offscreen render target).
           grep -q "Vulkan image: .* color image bound" gpudemo.log
+          # ...and build the render-pass + framebuffer over an image view.
+          grep -q "Vulkan framebuffer: .* framebuffer + render pass" gpudemo.log
 
       - name: Upload screenshot
         uses: actions/upload-artifact@v4
