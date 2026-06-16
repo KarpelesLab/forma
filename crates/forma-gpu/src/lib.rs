@@ -26,6 +26,9 @@ mod vulkan;
 #[cfg(all(target_os = "windows", feature = "d3d"))]
 mod d3d;
 
+#[cfg(all(target_os = "macos", feature = "mtl"))]
+mod metal;
+
 /// Enumerate the Vulkan physical devices reachable through `libvulkan` (raw FFI,
 /// no helper crate) — the foundation for a future GPU-native Vulkan backend.
 /// Returns each device's name (e.g. `"llvmpipe (...)"` under Mesa lavapipe).
@@ -153,6 +156,21 @@ pub fn d3d11_device() -> Result<String, String> {
     #[cfg(not(all(target_os = "windows", feature = "d3d")))]
     {
         Err("forma-gpu: built without the `d3d` feature (Windows-only Direct3D FFI)".to_string())
+    }
+}
+
+/// Create the system default Metal device (raw `objc_msgSend` FFI — no `metal`
+/// crate) and return its name — the foundation for a GPU-native Metal backend,
+/// the macOS analog of [`vulkan_init_device`]. Errors if the `mtl` feature is off
+/// or no Metal device is available.
+pub fn metal_device() -> Result<String, String> {
+    #[cfg(all(target_os = "macos", feature = "mtl"))]
+    {
+        metal::device()
+    }
+    #[cfg(not(all(target_os = "macos", feature = "mtl")))]
+    {
+        Err("forma-gpu: built without the `mtl` feature (macOS-only Metal FFI)".to_string())
     }
 }
 

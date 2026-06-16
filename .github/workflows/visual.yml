@@ -521,6 +521,12 @@ jobs:
       - name: Build the window example
         run: cargo build --release -p window
 
+      - name: Exercise the raw Metal backend
+        run: |
+          cargo run --release -p metaldemo --features forma-gpu/mtl | tee metaldemo.log
+          # A Metal device is always available on the macOS runner.
+          grep -q "Metal device: " metaldemo.log
+
       - name: Launch the Forma window and screenshot the screen
         run: |
           mkdir -p visual_output

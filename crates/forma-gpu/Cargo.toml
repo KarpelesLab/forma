@@ -21,6 +21,9 @@ vk = []
 # the Windows visual CI job enables it and renders through WARP (the software
 # rasterizer shipped with Windows). Without it, the d3d11_* entry points error.
 d3d = []
+# Raw Metal FFI (links the Metal framework + objc), macOS-only. Off by default;
+# the macOS visual CI job enables it. Without it, the metal_* entry points error.
+mtl = []
 
 [dependencies]
 forma-geometry.workspace = true
