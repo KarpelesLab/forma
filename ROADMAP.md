@@ -173,8 +173,13 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   rectangle per spanned line; `caret_index_at` takes a `Point` (line from y,
   column from x). New `text_area` widget. **CI-verified** on X11 — three typed
   lines with a cross-line selection (`docs/screenshots/forma-x11-multiline.png`).
-- ⬜ **mobile** (Android/iOS); ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU);
-  ⬜ a11y.
+- 🚧 **mobile portability**: the whole stack **cross-compiles for Android
+  (`aarch64-linux-android`) and iOS (`aarch64-apple-ios`)** — oxideav is pure
+  Rust, so no NDK is needed, and the platform layer falls through to the
+  headless backend there. **CI-verified** (the `mobile` job builds the umbrella
+  crate for both). ⬜ Native windowing backends (`ANativeWindow` / UIKit
+  `CALayer`) so they render to a real device surface.
+- ⬜ GPU-native drawing (Vulkan/Metal/D3D/WebGPU); ⬜ a11y.
 
 ---
 

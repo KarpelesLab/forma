@@ -34,3 +34,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (workspace)
         run: cargo check --workspace
+
+  # Verify the stack is mobile-portable: it cross-compiles for Android and iOS
+  # (the platform layer falls through to the headless backend there until the
+  # native ANativeWindow / UIKit backends land). oxideav is pure Rust, so no NDK
+  # is required for the build.
+  mobile:
+    name: Cross-compile (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+          - target: aarch64-apple-ios
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (umbrella crate)
+        run: cargo build -p forma --target ${{ matrix.target }}

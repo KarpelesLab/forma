@@ -41,6 +41,13 @@ pub mod macos;
 ///
 /// The handler receives platform-neutral [`Event`]s and the live [`Window`];
 /// returning [`ControlFlow::Exit`] tears the loop down.
+// `mut` is used by the native desktop backends (they take `&mut handler`); on
+// targets with no native backend (e.g. Android/iOS) the handler is moved
+// straight into the headless fallback, so the `mut` is unused there.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "windows", target_os = "macos")),
+    allow(unused_mut)
+)]
 pub fn run<H>(attrs: WindowAttributes, mut handler: H)
 where
     H: FnMut(Event, &dyn Window) -> ControlFlow,
