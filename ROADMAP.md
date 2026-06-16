@@ -184,7 +184,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   focus) from the layout tree; `App::accessibility_tree()` exposes it.
   Unit-tested. ⬜ Wiring it to the OS APIs (AT-SPI / UI Automation /
   `NSAccessibility`).
-- 🚧 **GPU-native drawing**: a live forma `Scene` renders entirely on the GPU.
+- ✅ **GPU-native drawing**: a live forma `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `forma-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a
   rounded-rect signed-distance-field GLES2 shader, and composites each text run
@@ -216,8 +216,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   sanctioned web exception) drawn through the browser's WebGPU API, **CI-verified**
   in headless Chrome on the bundled **SwiftShader** Vulkan ICD (the screenshot's
   center pixel is forma green). All four GPU backends — Vulkan, Metal, D3D11, and
-  WebGPU — thus render a real shader pipeline off-screen and read it back. ⬜
-  Wiring these GPU paths behind the `Surface` trait for on-screen present.
+  WebGPU — thus render a real shader pipeline off-screen and read it back.
+  Finally, GPU rendering is **wired into the live on-screen present path**:
+  `App::render_with` swaps the software rasterizer for any
+  `Scene → Pixmap` renderer, and the `gpuwindow` example drives a real X11 window
+  whose every frame is produced by `forma-gpu::render_scene` (GLES SDF + glyph
+  atlas) and presented through the platform `Surface`. **CI-verified** under
+  Xvfb + Mesa: the window paints a full GPU-rendered frame with no software
+  fallback (`docs/screenshots/forma-gpu-window.png`). (A zero-copy swapchain
+  present — binding the GPU surface directly to the window instead of reading
+  back to a `Pixmap` — remains a future optimization.)
 
 ---
 
