@@ -13,10 +13,11 @@
 //! addressed by [`ActionId`] / [`FocusId`]) so `Element` stays `Clone`/`Debug`
 //! and the IR remains diff-friendly for a future reconciler.
 
-use crate::element::BoxStyle;
+use crate::element::{BoxStyle, Element};
 use forma_geometry::{Point, Rect};
 use forma_render::Color;
 use forma_style::Theme;
+use std::collections::{HashMap, HashSet};
 
 /// A boxed pointer-tap handler that mutates the app state `S`.
 type TapFn<S> = Box<dyn FnMut(&mut S)>;
@@ -88,6 +89,10 @@ pub struct Cx<'a, S> {
     keys: Vec<KeyFn<S>>,
     drags: Vec<DragFn<S>>,
     text_pos: Vec<TextPosFn<S>>,
+    /// Cross-frame cache for [`Cx::memo`]: cached subtrees by key, plus the keys
+    /// touched this frame (so stale entries can be evicted afterward).
+    memo: HashMap<u64, Element>,
+    memo_used: HashSet<u64>,
 }
 
 impl<'a, S> Cx<'a, S> {
@@ -99,6 +104,8 @@ impl<'a, S> Cx<'a, S> {
             keys: Vec::new(),
             drags: Vec::new(),
             text_pos: Vec::new(),
+            memo: HashMap::new(),
+            memo_used: HashSet::new(),
         }
     }
 
@@ -140,6 +147,38 @@ impl<'a, S> Cx<'a, S> {
         let id = TextPosId(self.text_pos.len() as u32);
         self.text_pos.push(Box::new(handler));
         id
+    }
+
+    /// Return a cached, **static** subtree for `key`, building it with `build`
+    /// only when the key is new (or after the cache was seeded from a prior
+    /// frame). On an unchanged key the `build` closure is skipped entirely — the
+    /// previous frame's [`Element`] is cloned — so unchanged branches aren't
+    /// rebuilt. `build` receives no [`Cx`], so a memoized subtree can't register
+    /// event handlers (their ids would desync); use it for display-only content
+    /// like icons, labels, or decorative panels whose look depends on `key`.
+    pub fn memo(&mut self, key: u64, build: impl FnOnce() -> Element) -> Element {
+        self.memo_used.insert(key);
+        if let Some(cached) = self.memo.get(&key) {
+            return cached.clone();
+        }
+        let element = build();
+        self.memo.insert(key, element.clone());
+        element
+    }
+
+    /// Seed the memo cache from the previous frame (see [`Cx::memo`]).
+    pub fn set_memo_cache(&mut self, cache: HashMap<u64, Element>) {
+        self.memo = cache;
+        self.memo_used.clear();
+    }
+
+    /// Take the memo cache back, dropping entries not touched this frame so it
+    /// doesn't grow without bound.
+    pub fn take_memo_cache(&mut self) -> HashMap<u64, Element> {
+        let used = std::mem::take(&mut self.memo_used);
+        let mut cache = std::mem::take(&mut self.memo);
+        cache.retain(|k, _| used.contains(k));
+        cache
     }
 
     /// Consume the context, yielding the accumulated [`Handlers`] table.
@@ -448,6 +487,44 @@ mod tests {
         assert!(handlers.dispatch_key(focus, &KeyInput::Text("hi".into()), &mut st));
         assert_eq!(st.s, "hi");
         assert!(!handlers.dispatch_key(FocusId(99), &KeyInput::Backspace, &mut st));
+    }
+
+    #[test]
+    fn memo_skips_rebuild_for_unchanged_keys() {
+        use std::cell::Cell;
+        let theme = Theme::light();
+        let builds = Cell::new(0);
+        let make = |cx: &mut Cx<St>, key: u64| {
+            cx.memo(key, || {
+                builds.set(builds.get() + 1);
+                Element::text("static", 14.0, Color::BLACK)
+            })
+        };
+
+        // Frame 1: builds the subtree once.
+        let mut cache = std::collections::HashMap::new();
+        let mut cx = Cx::<St>::new(&theme);
+        cx.set_memo_cache(cache);
+        let _ = make(&mut cx, 1);
+        cache = cx.take_memo_cache();
+        assert_eq!(builds.get(), 1);
+        assert!(cache.contains_key(&1));
+
+        // Frame 2: same key → the closure is skipped (cache hit).
+        let mut cx = Cx::<St>::new(&theme);
+        cx.set_memo_cache(cache);
+        let _ = make(&mut cx, 1);
+        cache = cx.take_memo_cache();
+        assert_eq!(builds.get(), 1, "unchanged key must not rebuild");
+
+        // Frame 3: a different key rebuilds, and the now-unused key 1 is evicted.
+        let mut cx = Cx::<St>::new(&theme);
+        cx.set_memo_cache(cache);
+        let _ = make(&mut cx, 2);
+        cache = cx.take_memo_cache();
+        assert_eq!(builds.get(), 2, "changed key rebuilds");
+        assert!(cache.contains_key(&2));
+        assert!(!cache.contains_key(&1), "stale key should be evicted");
     }
 
     #[test]

@@ -87,6 +87,8 @@ where
     presented: Option<LayoutNode>,
     painted_hovered: Option<ActionId>,
     painted_focused: Option<FocusId>,
+    // Cross-frame memo cache for `Cx::memo` (static subtree reuse).
+    memo_cache: std::collections::HashMap<u64, Element>,
 }
 
 impl<S, F> std::fmt::Debug for App<S, F>
@@ -128,6 +130,7 @@ where
             presented: None,
             painted_hovered: None,
             painted_focused: None,
+            memo_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -173,7 +176,9 @@ where
     fn build_frame(&mut self) -> Scene {
         let theme = self.theme; // Theme is Copy; avoids borrowing self in `cx`.
         let mut cx = Cx::new(&theme);
+        cx.set_memo_cache(std::mem::take(&mut self.memo_cache));
         let element = (self.build)(&self.state, &mut cx);
+        self.memo_cache = cx.take_memo_cache();
         self.handlers = cx.into_handlers();
 
         let size = self.attrs.logical_size;
