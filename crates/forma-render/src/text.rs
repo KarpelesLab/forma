@@ -120,22 +120,26 @@ impl Font {
     /// word wider than `max_width` is kept on its own (over-long) line rather
     /// than split mid-word. Returns at least one line.
     pub fn wrap(&self, text: &str, size_px: f64, max_width: f64) -> Vec<String> {
+        // Shape each word once and accumulate widths (a space between words),
+        // rather than re-shaping the growing line — O(words) shapes per call.
+        let space = self.line_width(" ", size_px);
         let mut out = Vec::new();
         for hard in text.split('\n') {
             let mut line = String::new();
+            let mut width = 0.0;
             for word in hard.split(' ') {
+                let ww = self.line_width(word, size_px);
                 if line.is_empty() {
                     line.push_str(word);
-                    continue;
-                }
-                // Does `line + " " + word` still fit?
-                let candidate_w = self.line_width(&format!("{line} {word}"), size_px);
-                if candidate_w <= max_width {
+                    width = ww;
+                } else if width + space + ww <= max_width {
                     line.push(' ');
                     line.push_str(word);
+                    width += space + ww;
                 } else {
                     out.push(std::mem::take(&mut line));
                     line.push_str(word);
+                    width = ww;
                 }
             }
             out.push(line);

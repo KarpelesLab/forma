@@ -45,7 +45,7 @@ jobs:
           sudo apt-get install -y xvfb imagemagick x11-utils fonts-dejavu-core
 
       - name: Build the window example
-        run: cargo build -p window
+        run: cargo build --release -p window
 
       - name: Start Xvfb
         run: |
@@ -59,7 +59,7 @@ jobs:
           FORMA_X11_DEBUG: "1"
         run: |
           mkdir -p visual_output
-          ./target/debug/window > visual_output/app.log 2>&1 &
+          ./target/release/window > visual_output/app.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 4
           echo "=== window tree ==="
@@ -183,13 +183,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the window example
-        run: cargo build -p window
+        run: cargo build --release -p window
 
       - name: Launch the Forma window and screenshot the desktop
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path visual_output | Out-Null
-          $proc = Start-Process -FilePath ".\target\debug\window.exe" -PassThru
+          $proc = Start-Process -FilePath ".\target\release\window.exe" -PassThru
           Start-Sleep -Seconds 5
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -380,12 +380,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the window example
-        run: cargo build -p window
+        run: cargo build --release -p window
 
       - name: Launch the Forma window and screenshot the screen
         run: |
           mkdir -p visual_output
-          ./target/debug/window &
+          ./target/release/window &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 5
           screencapture -x visual_output/forma-macos.png
