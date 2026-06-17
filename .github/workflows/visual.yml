@@ -261,10 +261,12 @@ jobs:
           sleep 1
           import -window root visual_output/clip-after.png
           echo "=== clipboard.log ==="; cat visual_output/clipboard.log || true
-          # The paste must have changed the field (text doubled).
+          # The paste must have changed the field (text doubled). The added
+          # "Clip" glyphs are thin strokes — ~170 differing pixels — whereas a
+          # failed paste only nudges the caret (<20), so 60 cleanly separates.
           diff=$(compare -metric AE visual_output/clip-before.png visual_output/clip-after.png null: 2>&1 || true)
           echo "changed pixels: $diff"
-          [ "${diff%%[.e]*}" -gt 500 ]
+          [ "${diff%%[.e]*}" -gt 60 ]
           # The copy must have populated the X11 CLIPBOARD selection with "Clip"
           # (the X11 backend owns the selection and serves SelectionRequest).
           sel=$(xclip -o -selection clipboard 2>/dev/null || true)
