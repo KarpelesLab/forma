@@ -61,16 +61,42 @@ use forma_style::Theme;
 /// else a one-shot headless present) through the full build → layout → paint →
 /// rasterize → present path, routing pointer and keyboard events back to the
 /// registered handlers.
-pub struct App<S, F>
-where
-    F: FnMut(&S, &mut Cx<'_, S>) -> Element,
-{
+pub struct App<S> {
+    // Global application state, shared by every window's view.
     state: S,
-    build: F,
+    // Shared presentation settings used by all windows.
     theme: Theme,
+    font: Option<Font>,
+    // One [`Pane`] per OS window. There is always at least one (the primary,
+    // index 0); additional windows are added via [`App::open_window`].
+    panes: Vec<Pane<S>>,
+}
+
+/// A pluggable rasterizer: turns a built [`Scene`] (with a background color, at a
+/// scale factor) into the [`Pixmap`] the [`Surface`] presents. Set via
+/// [`App::render_with`] to route frames through a GPU backend.
+pub type FrameRenderer = Box<dyn FnMut(&Scene, Color, ScaleFactor) -> Pixmap>;
+
+/// A view closure mapping the shared state (and a [`Cx`] for registering event
+/// handlers) to an [`Element`] tree. Boxed so each window can hold its own view.
+pub type ViewFn<S> = Box<dyn FnMut(&S, &mut Cx<'_, S>) -> Element>;
+
+/// Everything specific to one OS window: its view onto the shared state, its
+/// window attributes, and all the retained per-window render/event state (the
+/// laid-out tree, handlers, focus/hover/drag/selection, scroll offsets, the
+/// on-screen diff baseline, and an optional custom rasterizer).
+///
+/// Multiple panes read and mutate the same `App::state`, so they stay in sync;
+/// each maintains its own input focus and damage tracking independently.
+struct Pane<S> {
+    view: ViewFn<S>,
     attrs: WindowAttributes,
     scale: ScaleFactor,
-    font: Option<Font>,
+    // Optional GPU (or other) rasterizer used in place of the software renderer
+    // to turn each frame's `Scene` into the `Pixmap` that is presented. Lets a
+    // GPU backend (forma-gpu) drive on-screen present through the `Surface` seam
+    // without forma depending on it. `None` = software rasterization.
+    frame_renderer: Option<FrameRenderer>,
     // Retained from the last frame build, for routing pointer events.
     tree: Option<LayoutNode>,
     handlers: Handlers<S>,
@@ -99,46 +125,26 @@ where
     // can't be localized by the tree diff, so their presence forces full damage.
     overlay_active: bool,
     painted_overlay_active: bool,
-    // Optional GPU (or other) rasterizer used in place of the software renderer
-    // to turn each frame's `Scene` into the `Pixmap` that is presented. Lets a
-    // GPU backend (forma-gpu) drive on-screen present through the `Surface` seam
-    // without forma depending on it. `None` = software rasterization.
-    frame_renderer: Option<FrameRenderer>,
 }
 
-/// A pluggable rasterizer: turns a built [`Scene`] (with a background color, at a
-/// scale factor) into the [`Pixmap`] the [`Surface`] presents. Set via
-/// [`App::render_with`] to route frames through a GPU backend.
-pub type FrameRenderer = Box<dyn FnMut(&Scene, Color, ScaleFactor) -> Pixmap>;
-
-impl<S, F> std::fmt::Debug for App<S, F>
-where
-    F: FnMut(&S, &mut Cx<'_, S>) -> Element,
-{
+impl<S> std::fmt::Debug for App<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `state` and `build` are not required to be Debug.
+        // `state` and the view closures are not required to be Debug.
         f.debug_struct("App")
             .field("theme", &self.theme)
-            .field("attrs", &self.attrs)
-            .field("scale", &self.scale)
-            .field("handlers", &self.handlers)
+            .field("windows", &self.panes.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<S, F> App<S, F>
-where
-    F: FnMut(&S, &mut Cx<'_, S>) -> Element,
-{
-    /// Create an app from initial `state` and a `build` closure.
-    pub fn new(state: S, build: F) -> Self {
+impl<S> Pane<S> {
+    /// Create a pane for `view` with default window attributes.
+    fn new(view: ViewFn<S>) -> Self {
         Self {
-            state,
-            build,
-            theme: Theme::light(),
+            view,
             attrs: WindowAttributes::new(),
             scale: ScaleFactor::IDENTITY,
-            font: None,
+            frame_renderer: None,
             tree: None,
             handlers: Handlers::default(),
             pressed: None,
@@ -155,8 +161,40 @@ where
             last_pointer: Point::new(0.0, 0.0),
             overlay_active: false,
             painted_overlay_active: false,
-            frame_renderer: None,
         }
+    }
+}
+
+impl<S> App<S> {
+    /// Create an app from initial `state` and a primary-window `build` closure.
+    pub fn new(state: S, build: impl FnMut(&S, &mut Cx<'_, S>) -> Element + 'static) -> Self {
+        Self {
+            state,
+            theme: Theme::light(),
+            font: None,
+            panes: vec![Pane::new(Box::new(build))],
+        }
+    }
+
+    /// The primary window's pane (index 0), which the builder methods and the
+    /// single-window public API operate on. Always present.
+    fn primary(&mut self) -> &mut Pane<S> {
+        &mut self.panes[0]
+    }
+
+    /// Register an additional OS window with its own `view` onto the shared
+    /// state. Forma drives every registered window once [`App::run`] starts.
+    ///
+    /// Note: true OS multi-window presentation is wired per backend (X11 first);
+    /// on backends that don't yet support it only the primary window is shown.
+    pub fn open_window(
+        &mut self,
+        attrs: WindowAttributes,
+        view: impl FnMut(&S, &mut Cx<'_, S>) -> Element + 'static,
+    ) {
+        let mut pane = Pane::new(Box::new(view));
+        pane.attrs = attrs;
+        self.panes.push(pane);
     }
 
     /// Set the font used to render text. Without one, text elements are laid
@@ -175,31 +213,19 @@ where
         mut self,
         renderer: impl FnMut(&Scene, Color, ScaleFactor) -> Pixmap + 'static,
     ) -> Self {
-        self.frame_renderer = Some(Box::new(renderer));
+        self.primary().frame_renderer = Some(Box::new(renderer));
         self
-    }
-
-    /// Rasterize a built `scene` into a `Pixmap` — through the custom
-    /// [`render_with`](App::render_with) renderer if set, else the software path.
-    fn rasterize(&mut self, scene: Scene, scale: ScaleFactor) -> Pixmap {
-        let bg = self.theme.palette.background;
-        match self.frame_renderer.as_mut() {
-            Some(render) => render(&scene, bg, scale),
-            None => SoftwareRenderer::new()
-                .with_background(bg)
-                .render(scene, scale),
-        }
     }
 
     /// Set the window title.
     pub fn title(mut self, title: impl Into<String>) -> Self {
-        self.attrs.title = title.into();
+        self.primary().attrs.title = title.into();
         self
     }
 
     /// Set the initial logical window size.
     pub fn logical_size(mut self, size: Size) -> Self {
-        self.attrs.logical_size = size;
+        self.primary().attrs.logical_size = size;
         self
     }
 
@@ -211,7 +237,7 @@ where
 
     /// Override the DPI scale used for off-screen rendering (default 1×).
     pub fn scale(mut self, scale: ScaleFactor) -> Self {
-        self.scale = scale;
+        self.primary().scale = scale;
         self
     }
 
@@ -219,21 +245,34 @@ where
     pub fn state(&self) -> &S {
         &self.state
     }
+}
+
+impl<S> Pane<S> {
+    /// Rasterize a built `scene` into a `Pixmap` — through the custom
+    /// [`render_with`](App::render_with) renderer if set, else the software path.
+    fn rasterize(&mut self, scene: Scene, theme: &Theme, scale: ScaleFactor) -> Pixmap {
+        let bg = theme.palette.background;
+        match self.frame_renderer.as_mut() {
+            Some(render) => render(&scene, bg, scale),
+            None => SoftwareRenderer::new()
+                .with_background(bg)
+                .render(scene, scale),
+        }
+    }
 
     /// Build the element tree for the current state, lay it out to fill the
     /// window, retain the layout tree + handlers for event routing, and return
     /// the painted [`Scene`].
-    fn build_frame(&mut self) -> Scene {
-        let theme = self.theme; // Theme is Copy; avoids borrowing self in `cx`.
+    fn build_frame(&mut self, state: &S, theme: &Theme, font: Option<&Font>) -> Scene {
+        let theme = *theme; // Theme is Copy; avoids borrowing through `theme` in `cx`.
         let mut cx = Cx::new(&theme);
         cx.set_memo_cache(std::mem::take(&mut self.memo_cache));
-        let element = (self.build)(&self.state, &mut cx);
+        let element = (self.view)(state, &mut cx);
         self.memo_cache = cx.take_memo_cache();
         let overlays = cx.take_overlays();
         self.handlers = cx.into_handlers();
 
         let size = self.attrs.logical_size;
-        let font = self.font.as_ref();
         let win = Rect::from_xywh(0.0, 0.0, size.width, size.height);
         let main = layout(&element, win, font);
 
@@ -282,7 +321,7 @@ where
         paint(&tree, &mut scene, font);
         // Lighten the hovered tappable element with the theme's overlay.
         if let Some(hid) = self.hovered {
-            paint_hover(&tree, hid, &mut scene, self.theme.palette.hover_overlay);
+            paint_hover(&tree, hid, &mut scene, theme.palette.hover_overlay);
         }
         // Overlay a focus ring + caret on the focused element.
         if let Some(fid) = self.focused {
@@ -291,9 +330,9 @@ where
                 fid,
                 &mut scene,
                 font,
-                self.theme.palette.focus_ring,
-                self.theme.palette.text,
-                self.theme.palette.selection,
+                theme.palette.focus_ring,
+                theme.palette.text,
+                theme.palette.selection,
             );
         }
         self.tree = Some(tree);
@@ -331,48 +370,33 @@ where
     /// Build, paint, and rasterize the next frame, returning the [`Pixmap`] and
     /// the [`Damage`] (changed region, in logical pixels) relative to the
     /// previously returned frame. The first call always reports [`Damage::Full`].
-    pub fn render_frame(&mut self) -> (Pixmap, Damage) {
-        let scene = self.build_frame();
+    fn render_frame(&mut self, state: &S, theme: &Theme, font: Option<&Font>) -> (Pixmap, Damage) {
+        let scene = self.build_frame(state, theme, font);
         let scale = self.scale;
-        let pixmap = self.rasterize(scene, scale);
+        let pixmap = self.rasterize(scene, theme, scale);
         let damage = self.take_damage();
         (pixmap, damage)
     }
 
-    /// Render a single frame off-screen and return it as a [`Pixmap`]. Needs no
-    /// window — used for tests, thumbnails, and golden-image comparisons.
-    pub fn render_once(&mut self) -> Pixmap {
-        self.render_frame().0
-    }
-
-    /// The currently focused element, if any.
-    pub fn focused(&self) -> Option<FocusId> {
-        self.focused
-    }
-
     /// Build the [accessibility tree](forma_core::accessibility_tree) for the
-    /// current frame — the semantic view a platform AT backend would expose.
-    /// Returns `None` until a frame has been built (call [`render_once`] or any
-    /// event-routing method first).
-    ///
-    /// [`render_once`]: App::render_once
-    pub fn accessibility_tree(&self) -> Option<forma_core::AccessNode> {
+    /// current frame, or `None` until one has been built.
+    fn accessibility_tree(&self) -> Option<forma_core::AccessNode> {
         self.tree
             .as_ref()
             .map(|t| forma_core::accessibility_tree(t, self.focused))
     }
 
-    fn ensure_tree(&mut self) {
+    fn ensure_tree(&mut self, state: &S, theme: &Theme, font: Option<&Font>) {
         if self.tree.is_none() || self.dirty {
-            let _ = self.build_frame();
+            let _ = self.build_frame(state, theme, font);
         }
     }
 
     /// Route a completed click at `pos` (logical pixels): update keyboard focus
     /// to the focusable under the cursor (if any), then dispatch the hit
     /// element's tap handler. Returns `true` if a tap handler ran.
-    pub fn click_at(&mut self, pos: Point) -> bool {
-        self.ensure_tree();
+    fn click_at(&mut self, state: &mut S, theme: &Theme, font: Option<&Font>, pos: Point) -> bool {
+        self.ensure_tree(state, theme, font);
         let (hit, foc) = self
             .tree
             .as_ref()
@@ -386,7 +410,7 @@ where
         }
         match hit {
             Some(id) => {
-                let ran = self.handlers.dispatch(id, &mut self.state);
+                let ran = self.handlers.dispatch(id, state);
                 if ran {
                     self.dirty = true;
                 }
@@ -398,19 +422,31 @@ where
 
     /// Deliver committed `text` to the focused element. Returns `true` if a
     /// focused key handler consumed it.
-    pub fn type_text(&mut self, text: &str) -> bool {
-        self.send_key(KeyInput::Text(text.to_string()))
+    fn type_text(&mut self, state: &mut S, theme: &Theme, font: Option<&Font>, text: &str) -> bool {
+        self.send_key(state, theme, font, KeyInput::Text(text.to_string()))
     }
 
     /// Deliver an editing key (backspace, arrows, …) to the focused element.
-    pub fn press_key(&mut self, input: KeyInput) -> bool {
-        self.send_key(input)
+    fn press_key(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        input: KeyInput,
+    ) -> bool {
+        self.send_key(state, theme, font, input)
     }
 
-    fn send_key(&mut self, input: KeyInput) -> bool {
-        self.ensure_tree();
+    fn send_key(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        input: KeyInput,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
         let Some(id) = self.focused else { return false };
-        let ran = self.handlers.dispatch_key(id, &input, &mut self.state);
+        let ran = self.handlers.dispatch_key(id, &input, state);
         if ran {
             self.dirty = true;
         }
@@ -419,8 +455,8 @@ where
 
     /// Move focus to the next focusable element in tree order (wrapping),
     /// like pressing Tab. Returns `true` if focus changed.
-    pub fn focus_next(&mut self) -> bool {
-        self.ensure_tree();
+    fn focus_next(&mut self, state: &S, theme: &Theme, font: Option<&Font>) -> bool {
+        self.ensure_tree(state, theme, font);
         let mut order = Vec::new();
         if let Some(t) = self.tree.as_ref() {
             collect_focusables(t, &mut order);
@@ -445,8 +481,14 @@ where
     /// call it latches onto the draggable element under the cursor; subsequent
     /// calls feed it the pointer's fractional x position until [`App::end_drag`].
     /// Returns `true` if a drag handler ran.
-    pub fn drag_at_point(&mut self, pos: Point) -> bool {
-        self.ensure_tree();
+    fn drag_at_point(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
         if self.dragging.is_none() {
             self.dragging = self.tree.as_ref().and_then(|t| drag_at(t, pos));
         }
@@ -458,7 +500,7 @@ where
         } else {
             0.0
         };
-        let ran = self.handlers.dispatch_drag(id, fraction, &mut self.state);
+        let ran = self.handlers.dispatch_drag(id, fraction, state);
         if ran {
             self.dirty = true;
         }
@@ -466,7 +508,7 @@ where
     }
 
     /// End the current drag (pointer released).
-    pub fn end_drag(&mut self) {
+    fn end_drag(&mut self) {
         self.dragging = None;
     }
 
@@ -474,9 +516,14 @@ where
     /// text element is under the cursor, focus it, resolve the caret byte index
     /// from the pointer x, place the caret there (clearing any selection), and
     /// latch a drag-selection. Returns `true` if a text element was hit.
-    pub fn text_press_at(&mut self, pos: Point) -> bool {
-        self.ensure_tree();
-        let font = self.font.as_ref();
+    fn text_press_at(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
         let Some((id, index, foc)) = self.tree.as_ref().and_then(|t| {
             let (id, node) = text_pos_at(t, pos)?;
             let index = caret_index_at(node, pos, font)?;
@@ -488,8 +535,7 @@ where
             self.focused = foc;
         }
         self.text_selecting = Some(id);
-        self.handlers
-            .dispatch_text_pos(id, index, false, &mut self.state);
+        self.handlers.dispatch_text_pos(id, index, false, state);
         self.dirty = true;
         true
     }
@@ -497,12 +543,17 @@ where
     /// Continue a latched text drag-selection at `pos`: resolve the caret index
     /// from the pointer x and extend the selection to it. Returns `true` if a
     /// selection is active and was updated.
-    pub fn text_drag_at(&mut self, pos: Point) -> bool {
+    fn text_drag_at(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
         let Some(id) = self.text_selecting else {
             return false;
         };
-        self.ensure_tree();
-        let font = self.font.as_ref();
+        self.ensure_tree(state, theme, font);
         let Some(index) = self
             .tree
             .as_ref()
@@ -511,9 +562,7 @@ where
         else {
             return false;
         };
-        let ran = self
-            .handlers
-            .dispatch_text_pos(id, index, true, &mut self.state);
+        let ran = self.handlers.dispatch_text_pos(id, index, true, state);
         if ran {
             self.dirty = true;
         }
@@ -521,14 +570,14 @@ where
     }
 
     /// End the current pointer text selection (pointer released).
-    pub fn end_text_select(&mut self) {
+    fn end_text_select(&mut self) {
         self.text_selecting = None;
     }
 
     /// Update the hovered element to whatever tappable sits under `pos`.
     /// Returns `true` if the hovered element changed (the UI should repaint).
-    pub fn hover_at(&mut self, pos: Point) -> bool {
-        self.ensure_tree();
+    fn hover_at(&mut self, state: &S, theme: &Theme, font: Option<&Font>, pos: Point) -> bool {
+        self.ensure_tree(state, theme, font);
         let now = self.tree.as_ref().and_then(|t| hit_test(t, pos));
         let changed = now != self.hovered;
         self.hovered = now;
@@ -538,8 +587,8 @@ where
     /// Scroll the container under the last pointer position by `dy` logical
     /// pixels (positive = reveal content further down). Returns whether anything
     /// scrolled (the offset is re-clamped to the content during the next build).
-    pub fn scroll_by(&mut self, dy: f64) -> bool {
-        self.ensure_tree();
+    fn scroll_by(&mut self, state: &S, theme: &Theme, font: Option<&Font>, dy: f64) -> bool {
+        self.ensure_tree(state, theme, font);
         let Some(id) = self
             .tree
             .as_ref()
@@ -558,21 +607,187 @@ where
         }
         moved
     }
+}
+
+impl<S> App<S> {
+    /// Build, paint, and rasterize the primary window's next frame, returning
+    /// the [`Pixmap`] and the [`Damage`] (changed region, logical pixels)
+    /// relative to the previously returned frame. The first call reports
+    /// [`Damage::Full`].
+    pub fn render_frame(&mut self) -> (Pixmap, Damage) {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].render_frame(state, theme, font.as_ref())
+    }
+
+    /// Render a single frame off-screen and return it as a [`Pixmap`]. Needs no
+    /// window — used for tests, thumbnails, and golden-image comparisons.
+    pub fn render_once(&mut self) -> Pixmap {
+        self.render_frame().0
+    }
+
+    /// The primary window's currently focused element, if any.
+    pub fn focused(&self) -> Option<FocusId> {
+        self.panes[0].focused
+    }
+
+    /// Build the [accessibility tree](forma_core::accessibility_tree) for the
+    /// primary window's current frame — the semantic view a platform AT backend
+    /// would expose. Returns `None` until a frame has been built (call
+    /// [`render_once`](App::render_once) or any event-routing method first).
+    pub fn accessibility_tree(&self) -> Option<forma_core::AccessNode> {
+        self.panes[0].accessibility_tree()
+    }
+
+    /// Route a completed click at `pos` (logical pixels) to the primary window.
+    pub fn click_at(&mut self, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].click_at(state, theme, font.as_ref(), pos)
+    }
+
+    /// Deliver committed `text` to the primary window's focused element.
+    pub fn type_text(&mut self, text: &str) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].type_text(state, theme, font.as_ref(), text)
+    }
+
+    /// Deliver an editing key to the primary window's focused element.
+    pub fn press_key(&mut self, input: KeyInput) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].press_key(state, theme, font.as_ref(), input)
+    }
+
+    /// Move focus to the next focusable element in the primary window (Tab).
+    pub fn focus_next(&mut self) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].focus_next(state, theme, font.as_ref())
+    }
+
+    /// Begin or continue a pointer drag at `pos` in the primary window.
+    pub fn drag_at_point(&mut self, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].drag_at_point(state, theme, font.as_ref(), pos)
+    }
+
+    /// End the current drag (pointer released).
+    pub fn end_drag(&mut self) {
+        self.panes[0].end_drag();
+    }
+
+    /// Begin a pointer text interaction at `pos` in the primary window.
+    pub fn text_press_at(&mut self, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].text_press_at(state, theme, font.as_ref(), pos)
+    }
+
+    /// Continue a latched text drag-selection at `pos` in the primary window.
+    pub fn text_drag_at(&mut self, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].text_drag_at(state, theme, font.as_ref(), pos)
+    }
+
+    /// End the current pointer text selection (pointer released).
+    pub fn end_text_select(&mut self) {
+        self.panes[0].end_text_select();
+    }
+
+    /// Update the primary window's hovered element to whatever sits under `pos`.
+    pub fn hover_at(&mut self, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].hover_at(state, theme, font.as_ref(), pos)
+    }
+
+    /// Scroll the container under the last pointer position in the primary
+    /// window by `dy` logical pixels.
+    pub fn scroll_by(&mut self, dy: f64) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[0].scroll_by(state, theme, font.as_ref(), dy)
+    }
 
     /// Run the app against the platform backend ([`backend::run`]): native X11
     /// when `$DISPLAY` is set, else a one-shot headless present. Frames are
     /// rendered into the window's [`Surface`]; pointer/keyboard events route
     /// through the same dispatch path used by the headless tests.
+    ///
+    /// Drives the primary window. (OS multi-window presentation for additional
+    /// [`open_window`](App::open_window) panes is wired per backend, X11 first.)
     pub fn run(mut self) {
-        let attrs = self.attrs.clone();
+        let attrs = self.panes[0].attrs.clone();
         let mut surface: Option<Box<dyn Surface>> = None;
         // `force` presents the whole frame regardless of computed damage — used
         // for expose/resize, where the window's pixels were lost and a partial
         // update would leave stale or blank regions.
         let mut present = |app: &mut Self, window: &dyn forma_platform::Window, force: bool| {
-            let scene = app.build_frame();
-            let pixmap = app.rasterize(scene, window.scale_factor());
-            let damage = app.take_damage();
+            let App {
+                state,
+                theme,
+                font,
+                panes,
+                ..
+            } = app;
+            let pane = &mut panes[0];
+            let scene = pane.build_frame(state, theme, font.as_ref());
+            let pixmap = pane.rasterize(scene, theme, window.scale_factor());
+            let damage = pane.take_damage();
             if !force && damage.is_empty() {
                 return; // Nothing changed since the last present.
             }
@@ -598,8 +813,8 @@ where
                 ControlFlow::Wait
             }
             Event::Resized(size) => {
-                self.attrs.logical_size = window.scale_factor().to_logical(size);
-                self.dirty = true;
+                self.panes[0].attrs.logical_size = window.scale_factor().to_logical(size);
+                self.panes[0].dirty = true;
                 present(&mut self, window, true);
                 ControlFlow::Wait
             }
@@ -608,7 +823,10 @@ where
                 position,
                 ..
             } => {
-                self.pressed = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                self.panes[0].pressed = self.panes[0]
+                    .tree
+                    .as_ref()
+                    .and_then(|t| hit_test(t, position));
                 // Editable text under the cursor starts a click/drag selection;
                 // otherwise latch a drag if a draggable sits there.
                 if self.text_press_at(position) || self.drag_at_point(position) {
@@ -617,12 +835,12 @@ where
                 ControlFlow::Wait
             }
             Event::PointerMoved { position } => {
-                self.last_pointer = position;
-                if self.text_selecting.is_some() {
+                self.panes[0].last_pointer = position;
+                if self.panes[0].text_selecting.is_some() {
                     if self.text_drag_at(position) {
                         present(&mut self, window, false);
                     }
-                } else if self.dragging.is_some() {
+                } else if self.panes[0].dragging.is_some() {
                     if self.drag_at_point(position) {
                         present(&mut self, window, false);
                     }
@@ -636,13 +854,16 @@ where
                 position,
                 ..
             } => {
-                if self.text_selecting.is_some() {
+                if self.panes[0].text_selecting.is_some() {
                     self.end_text_select();
-                } else if self.dragging.is_some() {
+                } else if self.panes[0].dragging.is_some() {
                     self.end_drag();
                 } else {
-                    let down = self.pressed.take();
-                    let up = self.tree.as_ref().and_then(|t| hit_test(t, position));
+                    let down = self.panes[0].pressed.take();
+                    let up = self.panes[0]
+                        .tree
+                        .as_ref()
+                        .and_then(|t| hit_test(t, position));
                     if down.is_some() && down == up && self.click_at(position) {
                         present(&mut self, window, false);
                     }
@@ -769,7 +990,7 @@ mod tests {
 
     /// A counter view: a single 200×80 button at the window origin that
     /// increments the count. Fixed geometry keeps the hit point predictable.
-    fn counter_app() -> App<Counter, impl FnMut(&Counter, &mut Cx<'_, Counter>) -> Element> {
+    fn counter_app() -> App<Counter> {
         App::new(
             Counter { n: 0 },
             |_state: &Counter, cx: &mut Cx<Counter>| {
@@ -816,7 +1037,7 @@ mod tests {
     /// Two stacked 200×40 boxes; tapping the top one flips a flag that only
     /// recolors the *bottom* box. The layout never moves, so a state change
     /// should damage just the bottom box — not the whole window.
-    fn damage_app() -> App<bool, impl FnMut(&bool, &mut Cx<'_, bool>) -> Element> {
+    fn damage_app() -> App<bool> {
         use forma_core::BoxStyle;
         use forma_render::Color;
         App::new(false, |flipped: &bool, cx: &mut Cx<bool>| {
@@ -882,7 +1103,7 @@ mod tests {
     }
 
     /// A form with a single text field filling the window.
-    fn form_app() -> App<Form, impl FnMut(&Form, &mut Cx<'_, Form>) -> Element> {
+    fn form_app() -> App<Form> {
         App::new(Form::default(), |state: &Form, cx: &mut Cx<Form>| {
             let theme = *cx.theme();
             forma_widgets::text_field(cx, &theme, &state.name, |s: &mut Form, k| {

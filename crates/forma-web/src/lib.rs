@@ -23,8 +23,7 @@ struct State {
     clicks: u32,
 }
 
-type Build = Box<dyn FnMut(&State, &mut Cx<State>) -> Element>;
-type WebApp = App<State, Build>;
+type WebApp = App<State>;
 
 thread_local! {
     static FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
@@ -87,7 +86,7 @@ pub unsafe extern "C" fn forma_set_font(ptr: *mut u8, len: usize) {
 /// Build the app at `width` × `height` logical pixels and render the first frame.
 #[unsafe(no_mangle)]
 pub extern "C" fn forma_init(width: u32, height: u32) {
-    let mut app = App::new(State::default(), Box::new(build) as Build)
+    let mut app = App::new(State::default(), build)
         .theme(Theme::dark())
         .logical_size(Size::new(width.max(1) as f64, height.max(1) as f64));
     if let Some(font) = FONT.with(|c| c.borrow_mut().take()) {
