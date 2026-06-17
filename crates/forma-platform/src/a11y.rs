@@ -15,6 +15,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 
 unsafe extern "C" {
     fn geteuid() -> u32;
@@ -136,6 +137,124 @@ impl DBus {
                 2 if m.reply_serial == serial => return read_u32(&m.body, &mut 0),
                 3 if m.reply_serial == serial => return Err("RequestName error".into()),
                 _ => continue,
+            }
+        }
+    }
+
+    /// Send a method call carrying a typed `body` (marshalled by the caller, its
+    /// D-Bus `signature` declared in the header) and return the reply body.
+    fn call_with_body(
+        &mut self,
+        destination: &str,
+        path: &str,
+        interface: &str,
+        member: &str,
+        signature: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.serial += 1;
+        let serial = self.serial;
+        let mut fields = Vec::new();
+        put_field(&mut fields, 1, b'o', path);
+        put_field(&mut fields, 6, b's', destination);
+        put_field(&mut fields, 2, b's', interface);
+        put_field(&mut fields, 3, b's', member);
+        if !signature.is_empty() {
+            put_field_sig(&mut fields, 8, signature);
+        }
+        let msg = build_message(1, serial, &fields, body);
+        self.stream.write_all(&msg).map_err(io)?;
+        loop {
+            let m = self.read_message()?;
+            match m.mtype {
+                2 if m.reply_serial == serial => return Ok(m.body),
+                3 if m.reply_serial == serial => return Err("D-Bus error reply".into()),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Install a match rule (`org.freedesktop.DBus.AddMatch`) so the bus routes
+    /// matching broadcast signals to us.
+    fn add_match(&mut self, rule: &str) -> Result<(), String> {
+        let mut body = Vec::new();
+        put_string(&mut body, rule);
+        self.call_with_body(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "AddMatch",
+            "s",
+            &body,
+        )?;
+        Ok(())
+    }
+
+    /// Emit a D-Bus signal (message type 4) with a marshalled `body`.
+    fn emit_signal(
+        &mut self,
+        path: &str,
+        interface: &str,
+        member: &str,
+        signature: &str,
+        body: &[u8],
+    ) -> Result<(), String> {
+        self.serial += 1;
+        let mut fields = Vec::new();
+        put_field(&mut fields, 1, b'o', path);
+        put_field(&mut fields, 2, b's', interface);
+        put_field(&mut fields, 3, b's', member);
+        if !signature.is_empty() {
+            put_field_sig(&mut fields, 8, signature);
+        }
+        let msg = build_message(4, self.serial, &fields, body);
+        self.stream.write_all(&msg).map_err(io)
+    }
+
+    /// Invoke `org.freedesktop.portal.FileChooser.{member}` (`OpenFile` or
+    /// `SaveFile`) on the desktop portal and block for the `Response` signal,
+    /// returning the first chosen path (`None` if the user cancelled).
+    ///
+    /// `directory` selects a folder rather than a file (portal `directory`
+    /// option). The portal returns a `Request` handle object path; the chosen
+    /// URIs arrive later as an `org.freedesktop.portal.Request.Response` signal
+    /// on that handle.
+    pub fn portal_file_chooser(
+        &mut self,
+        member: &str,
+        title: &str,
+        directory: bool,
+    ) -> Result<Option<PathBuf>, String> {
+        // Subscribe before calling so we can't miss the Response signal.
+        self.add_match(
+            "type='signal',interface='org.freedesktop.portal.Request',member='Response'",
+        )?;
+
+        // Body: parent_window (s) "", title (s), options (a{sv}).
+        let mut body = Vec::new();
+        put_string(&mut body, ""); // no parent window
+        put_string(&mut body, title);
+        let mut opts: Vec<(&str, Dv)> = vec![("handle_token", Dv::Str("forma1"))];
+        if directory {
+            opts.push(("directory", Dv::Bool(true)));
+        }
+        put_dict_sv(&mut body, &opts);
+
+        let reply = self.call_with_body(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.FileChooser",
+            member,
+            "ssa{sv}",
+            &body,
+        )?;
+        let handle = read_string(&reply, &mut 0)?;
+
+        // Wait for the Response signal addressed to that request handle.
+        loop {
+            let m = self.read_message()?;
+            if m.mtype == 4 && m.member == "Response" && m.path == handle {
+                return parse_portal_response(&m.body);
             }
         }
     }
@@ -302,6 +421,47 @@ impl DBus {
     }
 }
 
+/// A minimal mock of `org.freedesktop.portal.Desktop` for tests: it owns the
+/// portal name, answers one `FileChooser.OpenFile`/`SaveFile` call with a
+/// request-handle object path, then emits the `Request.Response` signal carrying
+/// `canned_uri`. Returns after serving a single request. Used by the file-dialog
+/// CI job under `dbus-run-session`, where no real portal backend exists.
+pub fn run_mock_file_portal(canned_uri: &str) -> Result<(), String> {
+    let mut bus = DBus::connect_session()?;
+    bus.request_name("org.freedesktop.portal.Desktop")?;
+    loop {
+        let m = bus.read_message()?;
+        if m.mtype != 1 {
+            continue; // method calls only
+        }
+        match (m.interface.as_str(), m.member.as_str()) {
+            ("org.freedesktop.portal.FileChooser", "OpenFile" | "SaveFile") => {
+                let handle = "/org/freedesktop/portal/desktop/request/forma/1";
+                let mut rbody = Vec::new();
+                put_string(&mut rbody, handle); // OUT o handle
+                bus.send_return(&m, "o", &rbody)?;
+                let mut sbody = Vec::new();
+                put_response_body(&mut sbody, 0, canned_uri);
+                bus.emit_signal(
+                    handle,
+                    "org.freedesktop.portal.Request",
+                    "Response",
+                    "ua{sv}",
+                    &sbody,
+                )?;
+                return Ok(());
+            }
+            ("org.freedesktop.DBus.Peer", "Ping") => bus.send_return(&m, "", &[])?,
+            ("org.freedesktop.DBus.Introspectable", "Introspect") => {
+                let mut body = Vec::new();
+                put_string(&mut body, "<node/>");
+                bus.send_return(&m, "s", &body)?;
+            }
+            _ => bus.send_error(&m, "org.freedesktop.DBus.Error.UnknownMethod")?,
+        }
+    }
+}
+
 /// A node of accessibility data to expose over AT-SPI — a transport-neutral view
 /// (so this crate needs no dependency on the widget tree). Higher layers map
 /// their `AccessNode` to this. `role` is an `org.a11y.atspi` role number.
@@ -453,6 +613,255 @@ fn put_variant_string(buf: &mut Vec<u8>, s: &str) {
     put_string(buf, s);
 }
 
+// ---- portal FileChooser marshalling ----------------------------------------
+
+/// A D-Bus variant value we know how to marshal into an `a{sv}` options dict.
+enum Dv<'a> {
+    Str(&'a str),
+    Bool(bool),
+}
+
+/// Append an `a{sv}` dictionary of `(key, variant)` entries.
+fn put_dict_sv(buf: &mut Vec<u8>, entries: &[(&str, Dv)]) {
+    align(buf, 4);
+    let len_pos = buf.len();
+    buf.extend_from_slice(&0u32.to_le_bytes()); // array byte-length placeholder
+    align(buf, 8); // DICT_ENTRY alignment
+    let start = buf.len();
+    for (key, val) in entries {
+        align(buf, 8);
+        put_string(buf, key);
+        match val {
+            Dv::Str(s) => put_variant_string(buf, s),
+            Dv::Bool(b) => {
+                buf.push(1);
+                buf.push(b'b');
+                buf.push(0);
+                align(buf, 4);
+                buf.extend_from_slice(&(*b as u32).to_le_bytes());
+            }
+        }
+    }
+    let len = (buf.len() - start) as u32;
+    buf[len_pos..len_pos + 4].copy_from_slice(&len.to_le_bytes());
+}
+
+/// Append a portal `Response` body (`ua{sv}`): a response code and a results
+/// dict whose single `uris` key is an array of one string.
+fn put_response_body(buf: &mut Vec<u8>, response: u32, uri: &str) {
+    buf.extend_from_slice(&response.to_le_bytes()); // u response (offset 0)
+    align(buf, 4);
+    let len_pos = buf.len();
+    buf.extend_from_slice(&0u32.to_le_bytes()); // a{sv} byte-length placeholder
+    align(buf, 8);
+    let start = buf.len();
+    align(buf, 8);
+    put_string(buf, "uris");
+    // VARIANT holding an array of strings: signature "as".
+    buf.push(2);
+    buf.push(b'a');
+    buf.push(b's');
+    buf.push(0);
+    align(buf, 4);
+    let as_len_pos = buf.len();
+    buf.extend_from_slice(&0u32.to_le_bytes()); // array byte-length
+    align(buf, 4);
+    let as_start = buf.len();
+    put_string(buf, uri);
+    let as_len = (buf.len() - as_start) as u32;
+    buf[as_len_pos..as_len_pos + 4].copy_from_slice(&as_len.to_le_bytes());
+    let len = (buf.len() - start) as u32;
+    buf[len_pos..len_pos + 4].copy_from_slice(&len.to_le_bytes());
+}
+
+/// Parse a portal `Response` body (`ua{sv}`): if the response code is 0
+/// (success) and the results carry a non-empty `uris`, return the first as a
+/// path. A non-zero code (cancelled / other) maps to `None`.
+fn parse_portal_response(body: &[u8]) -> Result<Option<PathBuf>, String> {
+    let mut off = 0;
+    let response = read_u32(body, &mut off)?;
+    if response != 0 {
+        return Ok(None);
+    }
+    Ok(read_results_uris(body, &mut off)?.map(|u| uri_to_path(&u)))
+}
+
+/// Walk an `a{sv}` dict at `*off`, returning the first string of the `uris`
+/// entry (skipping any other keys by their variant signature).
+fn read_results_uris(buf: &[u8], off: &mut usize) -> Result<Option<String>, String> {
+    align_to(off, 4);
+    let arr_len = read_u32(buf, off)? as usize;
+    align_to(off, 8);
+    let end = (*off + arr_len).min(buf.len());
+    let mut found = None;
+    while *off < end {
+        align_to(off, 8);
+        if *off >= end {
+            break;
+        }
+        let key = read_string(buf, off)?;
+        // Each value is a VARIANT: a 1-byte signature length, the signature, NUL.
+        let sig_len = *buf.get(*off).ok_or("truncated variant sig")? as usize;
+        *off += 1;
+        let sig = buf
+            .get(*off..*off + sig_len)
+            .ok_or("truncated variant sig")?
+            .to_vec();
+        *off += sig_len + 1; // signature + NUL
+        if key == "uris" && sig == b"as" {
+            align_to(off, 4);
+            let as_len = read_u32(buf, off)? as usize;
+            let as_end = (*off + as_len).min(buf.len());
+            if found.is_none() && *off < as_end {
+                found = Some(read_string(buf, off)?);
+            }
+            *off = as_end;
+        } else {
+            let mut si = 0;
+            skip_value(buf, off, &sig, &mut si)?;
+        }
+    }
+    Ok(found)
+}
+
+/// Advance `*off` to the next multiple of `n`.
+fn align_to(off: &mut usize, n: usize) {
+    while !off.is_multiple_of(n) {
+        *off += 1;
+    }
+}
+
+/// Natural alignment of a D-Bus type by its signature code.
+fn type_align(c: u8) -> usize {
+    match c {
+        b'n' | b'q' => 2,
+        b'b' | b'i' | b'u' | b'h' | b'a' | b's' | b'o' => 4,
+        b'x' | b't' | b'd' | b'(' | b'{' => 8,
+        _ => 1, // y, g, v
+    }
+}
+
+/// Skip one complete value of the type at `sig[*si]`, advancing both the
+/// signature index `*si` and the data offset `*off`. Handles the full D-Bus
+/// type grammar (basics, strings, variants, arrays, structs, dict entries) so
+/// unknown result keys can be stepped over.
+fn skip_value(buf: &[u8], off: &mut usize, sig: &[u8], si: &mut usize) -> Result<(), String> {
+    let t = *sig.get(*si).ok_or("signature underrun")?;
+    *si += 1;
+    match t {
+        b'y' => *off += 1,
+        b'n' | b'q' => {
+            align_to(off, 2);
+            *off += 2;
+        }
+        b'b' | b'i' | b'u' | b'h' => {
+            align_to(off, 4);
+            *off += 4;
+        }
+        b'x' | b't' | b'd' => {
+            align_to(off, 8);
+            *off += 8;
+        }
+        b's' | b'o' => {
+            read_string(buf, off)?;
+        }
+        b'g' => {
+            let l = *buf.get(*off).ok_or("truncated signature")? as usize;
+            *off += 1 + l + 1;
+        }
+        b'v' => {
+            let l = *buf.get(*off).ok_or("truncated variant")? as usize;
+            *off += 1;
+            let vsig = buf.get(*off..*off + l).ok_or("truncated variant")?.to_vec();
+            *off += l + 1;
+            let mut vi = 0;
+            skip_value(buf, off, &vsig, &mut vi)?;
+        }
+        b'a' => {
+            align_to(off, 4);
+            let len = read_u32(buf, off)? as usize;
+            let elem = *sig.get(*si).ok_or("array element type")?;
+            align_to(off, type_align(elem));
+            let target = (*off + len).min(buf.len());
+            skip_type_sig(sig, si)?;
+            *off = target;
+        }
+        b'(' => {
+            align_to(off, 8);
+            while sig.get(*si).copied() != Some(b')') {
+                skip_value(buf, off, sig, si)?;
+            }
+            *si += 1; // consume ')'
+        }
+        b'{' => {
+            align_to(off, 8);
+            skip_value(buf, off, sig, si)?; // key
+            skip_value(buf, off, sig, si)?; // value
+            *si += 1; // consume '}'
+        }
+        other => return Err(format!("unsupported D-Bus type '{}'", other as char)),
+    }
+    Ok(())
+}
+
+/// Advance `*si` past one complete type in a signature (no data consumed).
+fn skip_type_sig(sig: &[u8], si: &mut usize) -> Result<(), String> {
+    let t = *sig.get(*si).ok_or("signature underrun")?;
+    *si += 1;
+    match t {
+        b'a' => skip_type_sig(sig, si)?,
+        b'(' => {
+            while sig.get(*si).copied() != Some(b')') {
+                skip_type_sig(sig, si)?;
+            }
+            *si += 1;
+        }
+        b'{' => {
+            skip_type_sig(sig, si)?;
+            skip_type_sig(sig, si)?;
+            *si += 1;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Convert a `file://` URI to a filesystem path (percent-decoding the path).
+fn uri_to_path(uri: &str) -> PathBuf {
+    let rest = uri.strip_prefix("file://").unwrap_or(uri);
+    // A local file URI has an empty host, so `rest` begins with the path's '/'.
+    PathBuf::from(percent_decode(rest))
+}
+
+/// Decode `%XX` escapes in a URI path into raw bytes, then UTF-8.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex_digit(b[i + 1]), hex_digit(b[i + 2]))
+        {
+            out.push(h * 16 + l);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Append a VARIANT holding an int32: signature `i`, then the 4-aligned value.
 fn put_variant_i32(buf: &mut Vec<u8>, v: i32) {
     buf.push(1);
@@ -562,4 +971,69 @@ fn parse_fields(fields: &[u8]) -> Message {
         }
     }
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portal_response_round_trips_a_uri_to_a_path() {
+        // Marshal a success Response (ua{sv} with uris=[file://…]) exactly as the
+        // portal would, then parse it back — exercising the dict + array codec
+        // and the percent-decoding, without needing a live bus.
+        let mut body = Vec::new();
+        put_response_body(&mut body, 0, "file:///tmp/forma%20pick.txt");
+        let path = parse_portal_response(&body).unwrap();
+        assert_eq!(path, Some(PathBuf::from("/tmp/forma pick.txt")));
+    }
+
+    #[test]
+    fn portal_response_cancelled_is_none() {
+        // A non-zero response code (1 = user cancelled) yields no path.
+        let mut body = Vec::new();
+        put_response_body(&mut body, 1, "file:///tmp/x.txt");
+        assert_eq!(parse_portal_response(&body).unwrap(), None);
+    }
+
+    #[test]
+    fn skips_unknown_result_keys_before_uris() {
+        // A results dict whose first entry is an unrelated key (boolean
+        // "writable") must be stepped over so "uris" is still found.
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u32.to_le_bytes()); // response = 0
+        align(&mut body, 4);
+        let len_pos = body.len();
+        body.extend_from_slice(&0u32.to_le_bytes());
+        align(&mut body, 8);
+        let start = body.len();
+        // entry 1: "writable" -> variant b true
+        align(&mut body, 8);
+        put_string(&mut body, "writable");
+        body.push(1);
+        body.push(b'b');
+        body.push(0);
+        align(&mut body, 4);
+        body.extend_from_slice(&1u32.to_le_bytes());
+        // entry 2: "uris" -> variant as ["file:///tmp/y.txt"]
+        align(&mut body, 8);
+        put_string(&mut body, "uris");
+        body.push(2);
+        body.push(b'a');
+        body.push(b's');
+        body.push(0);
+        align(&mut body, 4);
+        let as_len_pos = body.len();
+        body.extend_from_slice(&0u32.to_le_bytes());
+        align(&mut body, 4);
+        let as_start = body.len();
+        put_string(&mut body, "file:///tmp/y.txt");
+        let as_len = (body.len() - as_start) as u32;
+        body[as_len_pos..as_len_pos + 4].copy_from_slice(&as_len.to_le_bytes());
+        let len = (body.len() - start) as u32;
+        body[len_pos..len_pos + 4].copy_from_slice(&len.to_le_bytes());
+
+        let path = parse_portal_response(&body).unwrap();
+        assert_eq!(path, Some(PathBuf::from("/tmp/y.txt")));
+    }
 }

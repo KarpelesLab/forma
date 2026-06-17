@@ -954,6 +954,41 @@ jobs:
             kill $SRV 2>/dev/null || true
           '
 
+  # Native file dialog over the xdg-desktop-portal FileChooser. No real portal
+  # backend exists headlessly, so the demo ships a mock portal (owns
+  # org.freedesktop.portal.Desktop, answers OpenFile, emits the Response signal
+  # with a canned URI). The client calls dialog::open_file and must receive that
+  # path — exercising the full hand-written D-Bus FileChooser client round-trip.
+  file-dialog-portal:
+    name: File dialog (xdg portal / Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install D-Bus
+        run: sudo apt-get update && sudo apt-get install -y dbus
+
+      - name: Build the file-dialog demo
+        run: cargo build --release -p filedialog
+
+      - name: Round-trip OpenFile through the mock portal
+        run: |
+          dbus-run-session -- bash -ec '
+            ./target/release/filedialog serve > serve.log 2>&1 &
+            SRV=$!
+            sleep 2
+            out=$(./target/release/filedialog)
+            echo "client: $out"
+            cat serve.log
+            # The mock portal served exactly one request...
+            grep -q "mock portal served one request" serve.log
+            # ...and the client got the URI it returned, decoded to a path.
+            [ "$out" = "PICKED: /tmp/forma-pick.txt" ]
+            kill $SRV 2>/dev/null || true
+          '
+
   # Run the native iOS UIKit backend on a booted simulator and confirm it boots,
   # builds the window, and renders a frame — a real runtime check of the backend
   # the cross-compile job only build-verifies.

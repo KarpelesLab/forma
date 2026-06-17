@@ -21,6 +21,8 @@
 #[cfg(target_os = "linux")]
 pub mod a11y;
 pub mod backend;
+/// Native file dialogs (open/save/folder) backed by each OS's picker.
+pub mod dialog;
 mod error;
 mod event;
 /// Hand-written UI Automation provider (Windows accessibility bridge).

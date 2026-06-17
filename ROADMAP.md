@@ -291,7 +291,17 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `Ctrl`/`Meta`+printable as an `Event::Key` shortcut rather than text.
   **CI-verified** (X11): the field text doubles after copy+paste, and `xclip`
   reads the copied text back off the OS `CLIPBOARD` selection.
-- 🚧 **Native file dialogs** and **true OS multi-window** — next, each CI-verified.
+- ✅ **Native file dialogs**: `forma::platform::dialog` (`open_file`/`save_file`/
+  `pick_folder`) backed by each OS's own picker. On Linux it drives
+  `org.freedesktop.portal.FileChooser` over the hand-written D-Bus client (the
+  `a11y` module gained `call_with_body`, `add_match`, signal emit, an `a{sv}`
+  marshaller, and a full type-skipping `ua{sv}` Response parser) — works in
+  sandboxes and across desktops without GTK/Qt. macOS/Windows/web wire their
+  native panels per backend. **CI-verified** (Linux): a built-in mock portal
+  (owns `org.freedesktop.portal.Desktop`, answers `OpenFile`, emits the
+  `Response` signal) round-trips a canned `file://` URI back through
+  `dialog::open_file` to a `PathBuf`, inside `dbus-run-session`.
+- 🚧 **True OS multi-window** — next, CI-verified.
 
 ---
 
