@@ -1116,8 +1116,10 @@ fn set_property_atoms(conn: &mut Conn, window: u32, prop: u32, atoms: &[u32]) ->
 /// Answer a `SelectionRequest`: fill the requestor's property with our clipboard
 /// text (or the supported target list) and send back a `SelectionNotify`.
 fn serve_selection_request(conn: &mut Conn, ev: &[u8; 32]) -> io::Result<()> {
+    // SelectionRequest event fields: time@4, owner@8, requestor@12,
+    // selection@16, target@20, property@24.
     let time = rd_u32(ev, 4).unwrap_or(0);
-    let requestor = rd_u32(ev, 8).unwrap_or(0);
+    let requestor = rd_u32(ev, 12).unwrap_or(0);
     let selection = rd_u32(ev, 16).unwrap_or(0);
     let target = rd_u32(ev, 20).unwrap_or(0);
     // An obsolete requestor may send property=None; reply into the target atom.
@@ -1170,9 +1172,9 @@ mod tests {
         // header (opcode, propagate, length, destination, mask) + 32-byte event.
         let mut conn_ev = [0u8; 32];
         conn_ev[0] = X_SELECTION_REQUEST;
-        conn_ev[8..12].copy_from_slice(&0xCAFEu32.to_le_bytes()); // requestor
+        conn_ev[12..16].copy_from_slice(&0xCAFEu32.to_le_bytes()); // requestor@12
         // (No live socket here; just assert the encoder shape via a hand build.)
-        let requestor = rd_u32(&conn_ev, 8).unwrap();
+        let requestor = rd_u32(&conn_ev, 12).unwrap();
         let mut notify = [0u8; 32];
         notify[0] = 31;
         let mut req = vec![OP_SEND_EVENT, 0, 0, 0];
