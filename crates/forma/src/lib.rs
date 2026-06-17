@@ -670,10 +670,23 @@ where
                 state: ButtonState::Pressed,
                 modifiers,
             } => {
-                if let Some(input) = map_key(code, modifiers)
-                    && self.press_key(input)
-                {
-                    present(&mut self, window, false);
+                if let Some(input) = map_key(code, modifiers) {
+                    // Pull the OS clipboard into the mirror before a paste, and
+                    // push the mirror to the OS after a copy/cut, so editing
+                    // interoperates with other apps (the mirror alone covers the
+                    // in-app case + headless).
+                    if input == KeyInput::Paste
+                        && let Some(text) = window.clipboard()
+                    {
+                        forma_core::set_clipboard_text(&text);
+                    }
+                    let writes_clipboard = matches!(input, KeyInput::Copy | KeyInput::Cut);
+                    if self.press_key(input) {
+                        present(&mut self, window, false);
+                    }
+                    if writes_clipboard {
+                        window.set_clipboard(&forma_core::clipboard_text());
+                    }
                 }
                 ControlFlow::Wait
             }
@@ -712,6 +725,15 @@ fn map_key(code: KeyCode, modifiers: Modifiers) -> Option<KeyInput> {
         KeyCode::End => KeyInput::End,
         KeyCode::Char('a') | KeyCode::Char('A') if modifiers.ctrl || modifiers.meta => {
             KeyInput::SelectAll
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::Copy
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::Cut
+        }
+        KeyCode::Char('v') | KeyCode::Char('V') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::Paste
         }
         KeyCode::Enter => KeyInput::Enter,
         KeyCode::Escape => KeyInput::Escape,

@@ -272,8 +272,26 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   and wheel events adjust a per-container offset (re-applied + clamped each frame
   by `apply_scroll`). **CI-verified** (X11/Xvfb): `xdotool` wheel-scrolls a tall
   list and the before/after screenshots differ while staying clipped.
-- 🚧 **Overlays** (menus/popovers/tooltips/dialogs), **clipboard**, **native
-  file dialogs**, and **true OS multi-window** — next, each CI-verified.
+- ✅ **Overlays**: a floating layer drawn above the main tree — the view declares
+  overlays via `Cx::overlay` (an `OverlaySpec` with an `Anchor` + `modal` flag),
+  and the app composes them with the main tree under one synthetic root (a
+  full-window catcher behind each — a dark scrim for a modal, an invisible
+  click-catcher for a non-modal — carries the dismiss action), so the existing
+  hit-test/paint/scroll routing treats overlays as topmost for free. Widgets:
+  `menu`/`menu_item`/`open_menu` (dropdown), `open_dialog` (modal + scrim),
+  `tooltip`, plus `radio`/`progress_bar`/`spinner`. **CI-verified** (X11): opening
+  the dropdown changes the frame and the modal's scrim darkens it.
+- ✅ **Clipboard**: copy/cut/paste in text fields via `Ctrl`/`Cmd`+`C`/`X`/`V`
+  (`map_key` → `KeyInput::Copy`/`Cut`/`Paste`, handled by `EditBuffer`). An
+  in-process mirror (`forma-core::clipboard`) makes copy/paste work in-app and
+  headless; the app syncs it with the OS clipboard around each op through the
+  `Window::clipboard`/`set_clipboard` seam. The X11 backend implements that seam
+  by owning the `CLIPBOARD` selection and answering `SelectionRequest`
+  (`UTF8_STRING`/`STRING`/`TARGETS`); the X11 keyboard path now delivers
+  `Ctrl`/`Meta`+printable as an `Event::Key` shortcut rather than text.
+  **CI-verified** (X11): the field text doubles after copy+paste, and `xclip`
+  reads the copied text back off the OS `CLIPBOARD` selection.
+- 🚧 **Native file dialogs** and **true OS multi-window** — next, each CI-verified.
 
 ---
 

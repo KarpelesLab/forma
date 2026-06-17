@@ -421,10 +421,34 @@ impl EditBuffer {
             KeyInput::SelectHome => self.select_home(),
             KeyInput::SelectEnd => self.select_end(),
             KeyInput::SelectAll => self.select_all(),
+            // Clipboard: copy/cut write the selection to the process clipboard
+            // mirror (the app syncs it to the OS); paste inserts the mirror text.
+            KeyInput::Copy => {
+                if let Some(sel) = self.selected_text() {
+                    forma_core::set_clipboard_text(&sel);
+                }
+            }
+            KeyInput::Cut => {
+                if let Some(sel) = self.selected_text() {
+                    forma_core::set_clipboard_text(&sel);
+                    self.delete_selection();
+                }
+            }
+            KeyInput::Paste => {
+                let text = forma_core::clipboard_text();
+                if !text.is_empty() {
+                    self.insert(&text);
+                }
+            }
             // Enter inserts a newline (the buffer is multi-line capable).
             KeyInput::Enter => self.insert("\n"),
             KeyInput::Escape => {}
         }
+    }
+
+    /// The currently selected text, or `None` if there is no selection.
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection().map(|(s, e)| self.text[s..e].to_string())
     }
 
     /// The char boundary strictly before `i`, or `None` at the start.
@@ -1007,6 +1031,23 @@ mod tests {
         assert_eq!(u.caret(), "é🦀".len());
         u.place_caret(1); // inside "é" -> snaps down to 0
         assert_eq!(u.caret(), 0);
+    }
+
+    #[test]
+    fn edit_buffer_copy_paste_round_trips_through_the_clipboard() {
+        let mut b = EditBuffer::from_text("Clip");
+        b.apply(&KeyInput::SelectAll);
+        b.apply(&KeyInput::Copy); // clipboard = "Clip"
+        b.apply(&KeyInput::End); // collapse selection, caret at end
+        b.apply(&KeyInput::Paste); // insert "Clip" → "ClipClip"
+        assert_eq!(b.text(), "ClipClip");
+        assert_eq!(forma_core::clipboard_text(), "Clip");
+
+        // Cut removes the selection and leaves it on the clipboard.
+        b.apply(&KeyInput::SelectAll);
+        b.apply(&KeyInput::Cut);
+        assert_eq!(b.text(), "");
+        assert_eq!(forma_core::clipboard_text(), "ClipClip");
     }
 
     #[test]

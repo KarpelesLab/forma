@@ -65,4 +65,13 @@ pub trait Window {
 
     /// Create a [`Surface`] that presents into this window's drawable.
     fn create_surface(&self) -> Box<dyn Surface>;
+
+    /// Read the system clipboard's text, if any. Default: `None` (backends that
+    /// don't implement the clipboard fall back to the in-process mirror).
+    fn clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Set the system clipboard's text. Default: a no-op.
+    fn set_clipboard(&self, _text: &str) {}
 }

@@ -105,6 +105,12 @@ pub enum KeyInput {
     SelectEnd,
     /// Select everything (e.g. Ctrl/Cmd+A).
     SelectAll,
+    /// Copy the selection to the clipboard (Ctrl/Cmd+C).
+    Copy,
+    /// Cut the selection to the clipboard (Ctrl/Cmd+X).
+    Cut,
+    /// Paste the clipboard at the caret, replacing the selection (Ctrl/Cmd+V).
+    Paste,
     Enter,
     Escape,
 }

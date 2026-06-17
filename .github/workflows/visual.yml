@@ -217,6 +217,74 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Clipboard: copy a field's text and paste it back, doubling it. Verifies the
+  # in-app copy/paste path (Ctrl+A/C/V) via a before/after screenshot diff, and
+  # the OS round-trip by reading the X11 CLIPBOARD selection back with xclip.
+  visual-clipboard:
+    name: Visual test (Clipboard / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, xdotool, xclip, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool xclip fonts-dejavu-core
+
+      - name: Build the clipboard demo
+        run: cargo build --release -p clipboarddemo
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Copy + paste in the field and check the OS selection
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/clipboarddemo > visual_output/clipboard.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          xdotool key Tab            # focus the field ("Clip")
+          sleep 0.5
+          import -window root visual_output/clip-before.png
+          xdotool key ctrl+a         # select all
+          xdotool key ctrl+c         # copy → clipboard + OS selection
+          sleep 0.5
+          xdotool key End            # collapse selection, caret at end
+          xdotool key ctrl+v         # paste → "ClipClip"
+          sleep 1
+          import -window root visual_output/clip-after.png
+          echo "=== clipboard.log ==="; cat visual_output/clipboard.log || true
+          # The paste must have changed the field (text doubled).
+          diff=$(compare -metric AE visual_output/clip-before.png visual_output/clip-after.png null: 2>&1 || true)
+          echo "changed pixels: $diff"
+          [ "${diff%%[.e]*}" -gt 500 ]
+          # The copy must have populated the X11 CLIPBOARD selection with "Clip"
+          # (the X11 backend owns the selection and serves SelectionRequest).
+          sel=$(xclip -o -selection clipboard 2>/dev/null || true)
+          echo "X11 CLIPBOARD = '$sel'"
+          [ "$sel" = "Clip" ]
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshots + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-clipboard-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render a real window whose frames are produced on the GPU (forma-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).
