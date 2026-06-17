@@ -55,6 +55,32 @@ pub struct TextPosId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ScrollId(pub(crate) u32);
 
+/// Where an [`OverlaySpec`] is positioned within the window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Anchor {
+    /// Place the overlay's top-left at an absolute window point (e.g. a menu
+    /// dropped below its button).
+    At(Point),
+    /// Center the overlay in the window (e.g. a modal dialog).
+    Center,
+}
+
+/// A floating layer drawn above the main tree — a menu, popover, tooltip, or
+/// dialog. Declared during a build via [`Cx::overlay`]; the app lays it out at
+/// its [`Anchor`] and paints it last (topmost). Its `content`'s handlers
+/// register through the same [`Cx`], so taps/keys inside it work normally.
+#[derive(Clone, Debug)]
+pub struct OverlaySpec {
+    pub content: Element,
+    pub anchor: Anchor,
+    /// When `true`, a translucent scrim is painted behind the overlay and blocks
+    /// pointer events from reaching the main tree (a modal dialog).
+    pub modal: bool,
+    /// Action fired when the scrim (modal) or the area outside the overlay
+    /// (non-modal) is pressed — typically a dismiss handler.
+    pub dismiss: Option<ActionId>,
+}
+
 /// A platform-neutral keyboard input, delivered to the focused element. The
 /// app/platform layer translates raw key events into these.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +124,8 @@ pub struct Cx<'a, S> {
     /// Next scroll-container id to hand out (scroll offsets live in the app, not
     /// here, so we only need a stable per-frame counter).
     next_scroll: u32,
+    /// Floating layers (menus/dialogs/…) declared this frame via [`Cx::overlay`].
+    overlays: Vec<OverlaySpec>,
     /// Cross-frame cache for [`Cx::memo`]: cached subtrees by key, plus the keys
     /// touched this frame (so stale entries can be evicted afterward).
     memo: HashMap<u64, Element>,
@@ -114,6 +142,7 @@ impl<'a, S> Cx<'a, S> {
             drags: Vec::new(),
             text_pos: Vec::new(),
             next_scroll: 0,
+            overlays: Vec::new(),
             memo: HashMap::new(),
             memo_used: HashSet::new(),
         }
@@ -166,6 +195,19 @@ impl<'a, S> Cx<'a, S> {
         let id = ScrollId(self.next_scroll);
         self.next_scroll += 1;
         id
+    }
+
+    /// Declare a floating overlay layer (menu/popover/tooltip/dialog) drawn above
+    /// the main tree this frame. Build `spec.content` with this same `Cx` first
+    /// so its handlers register normally.
+    pub fn overlay(&mut self, spec: OverlaySpec) {
+        self.overlays.push(spec);
+    }
+
+    /// Take the overlays declared this frame (the app lays them out + paints them
+    /// on top). Call before [`into_handlers`](Cx::into_handlers).
+    pub fn take_overlays(&mut self) -> Vec<OverlaySpec> {
+        std::mem::take(&mut self.overlays)
     }
 
     /// Return a cached, **static** subtree for `key`, building it with `build`
@@ -359,6 +401,28 @@ pub struct LayoutNode {
     /// (set for scroll containers and overlay panels).
     pub clip: bool,
     pub children: Vec<LayoutNode>,
+}
+
+impl LayoutNode {
+    /// A bare container: bounds + `children`, no decoration or handlers. Used to
+    /// stack the main tree and overlay layers under one routable/paintable root.
+    pub fn container(bounds: Rect, children: Vec<LayoutNode>) -> LayoutNode {
+        LayoutNode {
+            bounds,
+            decoration: BoxStyle::default(),
+            content: NodeContent::None,
+            action: None,
+            focus: None,
+            drag: None,
+            caret: None,
+            selection: None,
+            text_pos: None,
+            wrap: false,
+            scroll: None,
+            clip: false,
+            children,
+        }
+    }
 }
 
 /// Find the [`ActionId`] of the top-most tappable node containing `point`.

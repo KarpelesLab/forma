@@ -39,9 +39,9 @@ pub use forma_style as style;
 pub use forma_widgets as widgets;
 
 use forma_core::{
-    ActionId, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput, LayoutNode, TextPosId,
-    caret_index_at, collect_focusables, drag_at, find_text_pos, focus_at, hit_test, layout, paint,
-    paint_focus, paint_hover, text_pos_at,
+    ActionId, Anchor, BoxStyle, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput,
+    LayoutNode, TextPosId, caret_index_at, collect_focusables, drag_at, find_text_pos, focus_at,
+    hit_test, layout, measure, paint, paint_focus, paint_hover, text_pos_at,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{
@@ -95,6 +95,10 @@ where
     // Last pointer position, so a `Scroll` event (which carries only a delta)
     // can find the scroll container under the cursor.
     last_pointer: Point,
+    // Whether the frame just built / on screen has overlay layers — overlays
+    // can't be localized by the tree diff, so their presence forces full damage.
+    overlay_active: bool,
+    painted_overlay_active: bool,
     // Optional GPU (or other) rasterizer used in place of the software renderer
     // to turn each frame's `Scene` into the `Pixmap` that is presented. Lets a
     // GPU backend (forma-gpu) drive on-screen present through the `Surface` seam
@@ -149,6 +153,8 @@ where
             memo_cache: std::collections::HashMap::new(),
             scroll_offsets: std::collections::HashMap::new(),
             last_pointer: Point::new(0.0, 0.0),
+            overlay_active: false,
+            painted_overlay_active: false,
             frame_renderer: None,
         }
     }
@@ -223,15 +229,52 @@ where
         cx.set_memo_cache(std::mem::take(&mut self.memo_cache));
         let element = (self.build)(&self.state, &mut cx);
         self.memo_cache = cx.take_memo_cache();
+        let overlays = cx.take_overlays();
         self.handlers = cx.into_handlers();
 
         let size = self.attrs.logical_size;
         let font = self.font.as_ref();
-        let mut tree = layout(
-            &element,
-            Rect::from_xywh(0.0, 0.0, size.width, size.height),
-            font,
-        );
+        let win = Rect::from_xywh(0.0, 0.0, size.width, size.height);
+        let main = layout(&element, win, font);
+
+        // Compose the main tree with any floating overlay layers under one
+        // routable/paintable root: each overlay (with a scrim behind a modal
+        // one) is a later child, so it paints on top and hit-tests first.
+        let mut tree = if overlays.is_empty() {
+            main
+        } else {
+            let mut roots = Vec::with_capacity(overlays.len() * 2 + 1);
+            roots.push(main);
+            for spec in &overlays {
+                // A full-window catcher behind the overlay: a dark scrim for a
+                // modal, or an invisible click-catcher for a non-modal that wants
+                // outside-press dismissal. Either way it carries the dismiss
+                // action and blocks clicks from reaching the tree below.
+                if spec.modal || spec.dismiss.is_some() {
+                    let mut catcher = Element::boxed(BoxStyle {
+                        fill: spec.modal.then(|| Color::rgba(0, 0, 0, 0x80)),
+                        radius: 0.0,
+                        border: None,
+                    })
+                    .width(size.width)
+                    .height(size.height);
+                    catcher.action = spec.dismiss;
+                    roots.push(layout(&catcher, win, font));
+                }
+                let m = measure(&spec.content, size, font);
+                let origin = match spec.anchor {
+                    Anchor::At(p) => p,
+                    Anchor::Center => Point::new(
+                        ((size.width - m.width) / 2.0).max(0.0),
+                        ((size.height - m.height) / 2.0).max(0.0),
+                    ),
+                };
+                let bounds = Rect::from_xywh(origin.x, origin.y, m.width, m.height);
+                roots.push(layout(&spec.content, bounds, font));
+            }
+            LayoutNode::container(win, roots)
+        };
+        self.overlay_active = !overlays.is_empty();
         // Apply (and clamp) scroll-container offsets to the laid-out tree before
         // painting, so the retained tree matches what's drawn for event routing.
         forma_core::apply_scroll(&mut tree, &mut self.scroll_offsets);
@@ -266,8 +309,12 @@ where
     /// change to either can't be localized by the tree diff — those frames, plus
     /// the first frame and any root-size (resize) change, report [`Damage::Full`].
     fn take_damage(&mut self) -> Damage {
-        let overlay_changed =
-            self.hovered != self.painted_hovered || self.focused != self.painted_focused;
+        let overlay_changed = self.hovered != self.painted_hovered
+            || self.focused != self.painted_focused
+            // Floating overlays paint above the tree and can't be localized by
+            // the diff, so any frame with overlays (or that just had them) is full.
+            || self.overlay_active
+            || self.painted_overlay_active;
         let damage = match (&self.presented, &self.tree) {
             (Some(old), Some(new)) if !overlay_changed && old.bounds == new.bounds => {
                 forma_core::diff_trees(old, new)
@@ -277,6 +324,7 @@ where
         self.presented = self.tree.clone();
         self.painted_hovered = self.hovered;
         self.painted_focused = self.focused;
+        self.painted_overlay_active = self.overlay_active;
         damage
     }
 
@@ -675,15 +723,16 @@ fn map_key(code: KeyCode, modifiers: Modifiers) -> Option<KeyInput> {
 pub mod prelude {
     pub use crate::App;
     pub use forma_anim::{Easing, Spring, Tween};
-    pub use forma_core::{Align, Axis, BoxStyle, Cx, Element, KeyInput, View};
+    pub use forma_core::{Align, Anchor, Axis, BoxStyle, Cx, Element, KeyInput, OverlaySpec, View};
     pub use forma_geometry::{Insets, Point, Rect, ScaleFactor, Size};
     pub use forma_render::{Color, Font};
     pub use forma_style::Theme;
     pub use forma_style::{Palette, Spacing, Typography};
     pub use forma_widgets::{
         EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
-        edit_string, heading, label, panel, paragraph, row, scroll, setting_row, slider, spacer,
-        swatch, switch, text_area, text_editor, text_field,
+        edit_string, heading, label, menu, menu_item, open_dialog, open_menu, panel, paragraph,
+        progress_bar, radio, row, scroll, setting_row, slider, spacer, spinner, swatch, switch,
+        text_area, text_editor, text_field, tooltip,
     };
 }
 

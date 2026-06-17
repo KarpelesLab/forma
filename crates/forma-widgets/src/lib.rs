@@ -15,8 +15,8 @@
 
 #![forbid(unsafe_code)]
 
-use forma_core::{Align, Axis, BoxStyle, Cx, Element, KeyInput};
-use forma_geometry::Insets;
+use forma_core::{Align, Anchor, Axis, BoxStyle, Cx, Element, KeyInput, OverlaySpec};
+use forma_geometry::{Insets, Point};
 use forma_render::Color;
 use forma_style::Theme;
 
@@ -699,6 +699,162 @@ pub fn setting_row(theme: &Theme, accent: Color) -> Element {
     .gap(theme.spacing.md)
     .align(Align::Start, Align::Center)
     .height(40.0)
+}
+
+/// A radio button: a circle filled with the primary color when `selected`.
+/// Tapping calls `on_select`.
+pub fn radio<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    selected: bool,
+    on_select: impl FnMut(&mut S) + 'static,
+) -> Element {
+    let dot = if selected {
+        vec![
+            Element::boxed(BoxStyle {
+                fill: Some(theme.palette.primary),
+                radius: 5.0,
+                border: None,
+            })
+            .width(10.0)
+            .height(10.0),
+        ]
+    } else {
+        Vec::new()
+    };
+    Element::stack(Axis::Horizontal, dot)
+        .fill(theme.palette.surface)
+        .border(theme.palette.border, 1.0)
+        .radius(11.0) // half the size → a circle
+        .width(22.0)
+        .height(22.0)
+        .align(Align::Center, Align::Center)
+        .on_tap(cx, on_select)
+}
+
+/// A progress bar: a track with a primary-filled portion for `fraction` (0..=1).
+/// Default width 200 px; override with `.width(..)`.
+pub fn progress_bar(theme: &Theme, fraction: f64) -> Element {
+    let f = fraction.clamp(0.0, 1.0);
+    let fill = Element::boxed(BoxStyle {
+        fill: Some(theme.palette.primary),
+        radius: 4.0,
+        border: None,
+    })
+    .grow(f);
+    Element::stack(Axis::Horizontal, vec![fill, spacer().grow(1.0 - f)])
+        .fill(theme.palette.border)
+        .radius(4.0)
+        .width(200.0)
+        .height(8.0)
+}
+
+/// A simple busy indicator: a primary-colored ring. Static for now; wire it to
+/// the animation clock for a spin later.
+pub fn spinner(theme: &Theme) -> Element {
+    Element::boxed(BoxStyle {
+        fill: None,
+        radius: 11.0,
+        border: Some((theme.palette.primary, 3.0)),
+    })
+    .width(22.0)
+    .height(22.0)
+}
+
+/// A tappable menu row showing `text`, running `on_select` when clicked. Stretch
+/// it across a [`menu`] panel (the panel stretches its children).
+pub fn menu_item<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    text: impl Into<String>,
+    on_select: impl FnMut(&mut S) + 'static,
+) -> Element {
+    Element::stack(Axis::Horizontal, vec![label(theme, text)])
+        .radius(theme.radius / 2.0)
+        .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
+        .align(Align::Start, Align::Center)
+        .on_tap(cx, on_select)
+}
+
+/// A floating vertical menu panel (surface, border, padding) holding `items`
+/// (build them with [`menu_item`]). The visual body of a dropdown — show it via
+/// [`open_menu`] or `cx.overlay`.
+pub fn menu(theme: &Theme, items: Vec<Element>) -> Element {
+    Element::stack(Axis::Vertical, items)
+        .fill(theme.palette.surface)
+        .border(theme.palette.border, 1.0)
+        .radius(theme.radius)
+        .padding(Insets::uniform(theme.spacing.xs))
+        .gap(2.0)
+        .align(Align::Start, Align::Stretch)
+        .width(180.0)
+}
+
+/// Declare a non-modal dropdown overlay anchored with its top-left at `at`,
+/// containing `items` (from [`menu_item`]). `on_dismiss` fires on a press
+/// outside the menu. Call when the menu should be open.
+pub fn open_menu<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    at: Point,
+    items: Vec<Element>,
+    on_dismiss: impl FnMut(&mut S) + 'static,
+) {
+    let content = menu(theme, items);
+    let dismiss = cx.register(on_dismiss);
+    cx.overlay(OverlaySpec {
+        content,
+        anchor: Anchor::At(at),
+        modal: false,
+        dismiss: Some(dismiss),
+    });
+}
+
+/// Declare a modal dialog overlay: a centered panel with `title`, a `body`
+/// element, and a right-aligned row of `actions` (buttons). A dark scrim behind
+/// it blocks the tree; pressing the scrim runs `on_dismiss`.
+pub fn open_dialog<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    title: impl Into<String>,
+    body: Element,
+    actions: Vec<Element>,
+    on_dismiss: impl FnMut(&mut S) + 'static,
+) {
+    let dismiss = cx.register(on_dismiss);
+    let content = panel(
+        theme,
+        vec![
+            heading(theme, title),
+            body,
+            row(actions)
+                .gap(theme.spacing.sm)
+                .align(Align::End, Align::Center),
+        ],
+    )
+    .width(340.0);
+    cx.overlay(OverlaySpec {
+        content,
+        anchor: Anchor::Center,
+        modal: true,
+        dismiss: Some(dismiss),
+    });
+}
+
+/// A small tooltip bubble showing `text` (a dark rounded label). Show it via
+/// `cx.overlay` anchored near the hovered element (non-modal, no dismiss).
+pub fn tooltip(theme: &Theme, text: impl Into<String>) -> Element {
+    Element::stack(
+        Axis::Horizontal,
+        vec![Element::text(
+            text.into(),
+            theme.typography.caption,
+            theme.palette.on_primary,
+        )],
+    )
+    .fill(theme.palette.text)
+    .radius(theme.radius / 2.0)
+    .padding(Insets::symmetric(theme.spacing.sm, theme.spacing.xs))
 }
 
 #[cfg(test)]

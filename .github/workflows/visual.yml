@@ -144,6 +144,79 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Overlays: a dropdown menu and a modal dialog drawn above the main tree.
+  # xdotool opens each; the dropdown must change the frame, and the modal must
+  # darken it (the scrim) — proving the overlay layer + hit-routing work.
+  visual-overlay:
+    name: Visual test (Overlays / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, xdotool, x11-utils, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool x11-utils fonts-dejavu-core
+
+      - name: Build the overlay demo
+        run: cargo build --release -p overlaydemo
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Open a dropdown and a modal, asserting the overlay layer paints
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/overlaydemo > visual_output/overlay.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/overlay-base.png
+
+          # Open the dropdown (Menu button center ~ (96,56)).
+          xdotool mousemove 96 56 click 1
+          sleep 1
+          import -window root visual_output/overlay-menu.png
+          # Dismiss by pressing empty space (the non-modal catcher).
+          xdotool mousemove 440 360 click 1
+          sleep 0.5
+
+          # Open the modal dialog (Dialog button center ~ (228,56)).
+          xdotool mousemove 228 56 click 1
+          sleep 1
+          import -window root visual_output/overlay-dialog.png
+          echo "=== overlay.log ==="; cat visual_output/overlay.log || true
+
+          # The dropdown must have changed the frame...
+          menudiff=$(compare -metric AE visual_output/overlay-base.png visual_output/overlay-menu.png null: 2>&1 || true)
+          echo "menu changed pixels: $menudiff"
+          [ "${menudiff%%[.e]*}" -gt 1500 ]
+          # ...and the modal's scrim must darken the whole frame.
+          mb=$(convert visual_output/overlay-base.png -colorspace Gray -format "%[fx:mean]" info:)
+          mdg=$(convert visual_output/overlay-dialog.png -colorspace Gray -format "%[fx:mean]" info:)
+          echo "mean brightness base=$mb dialog=$mdg"
+          awk "BEGIN{exit !($mdg < $mb)}"
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshots + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-overlay-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render a real window whose frames are produced on the GPU (forma-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).

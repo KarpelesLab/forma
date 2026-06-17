@@ -1,0 +1,16 @@
+[package]
+name = "overlaydemo"
+description = "Forma example: a dropdown menu and a modal dialog rendered as overlay layers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true
