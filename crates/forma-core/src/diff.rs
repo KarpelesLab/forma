@@ -175,6 +175,8 @@ mod tests {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             children,
         }
     }
@@ -195,6 +197,8 @@ mod tests {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             children: Vec::new(),
         }
     }

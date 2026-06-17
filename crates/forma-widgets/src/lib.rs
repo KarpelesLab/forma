@@ -35,6 +35,18 @@ pub fn spacer() -> Element {
     Element::stack(Axis::Horizontal, Vec::new()).grow(1.0)
 }
 
+/// A fixed-height vertical scroll viewport around `content`. Content taller than
+/// `height` overflows and is clipped to the viewport; wheel events over it
+/// scroll the app's offset (re-clamped each frame). Register the container once
+/// per frame via `cx` so its scroll position is stable across rebuilds.
+pub fn scroll<S>(cx: &mut Cx<S>, height: f64, content: Element) -> Element {
+    let id = cx.register_scroll();
+    Element::stack(Axis::Vertical, vec![content])
+        .height(height)
+        .scrollable(id)
+        .align(Align::Start, Align::Stretch)
+}
+
 /// A raised surface card: themed fill, hairline border, rounded corners, and
 /// comfortable padding. Lays its `children` vertically.
 pub fn panel(theme: &Theme, children: Vec<Element>) -> Element {

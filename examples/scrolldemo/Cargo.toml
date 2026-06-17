@@ -1,0 +1,16 @@
+[package]
+name = "scrolldemo"
+description = "Forma example: a tall list inside a fixed-height scroll viewport (clipped + wheel-scrollable)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true

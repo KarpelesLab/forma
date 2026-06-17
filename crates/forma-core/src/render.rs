@@ -13,9 +13,9 @@
 
 use crate::element::{Align, BoxStyle, Element, ElementKind};
 use crate::runtime::{
-    ActionId, FocusId, LayoutNode, NodeContent, find_action, find_focus, first_text,
+    ActionId, FocusId, LayoutNode, NodeContent, ScrollId, find_action, find_focus, first_text,
 };
-use forma_geometry::{Point, Rect, Size};
+use forma_geometry::{Point, Rect, Size, Vec2};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
 use forma_render::{Color, Font, Scene};
 
@@ -94,6 +94,8 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         selection: el.selection,
         text_pos: el.text_pos,
         wrap: el.wrap,
+        scroll: el.scroll,
+        clip: el.clip,
         children: Vec::new(),
     };
 
@@ -117,24 +119,41 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
 
     // Main-axis distribution.
     let measured: Vec<Size> = children.iter().map(|c| measure(c, avail, font)).collect();
-    let items: Vec<FlexItem> = children
-        .iter()
-        .zip(&measured)
-        .map(|(c, m)| FlexItem {
-            basis: axis.main(*m),
-            grow: c.layout.grow,
-        })
-        .collect();
-    let spans = solve_main_axis(axis.main(avail), *gap, &items);
-
-    // If nothing grows, the block may be shorter than the content area; shift
-    // it as a whole per the main-axis alignment.
-    let used_main = spans.last().map(|s| s.offset + s.length).unwrap_or(0.0);
-    let leftover = (axis.main(avail) - used_main).max(0.0);
-    let main_shift = match main_align {
-        Align::Start | Align::Stretch => 0.0,
-        Align::Center => leftover / 2.0,
-        Align::End => leftover,
+    // A scroll container lays its children out at their *natural* main size
+    // (so content can overflow the viewport), stacked from the start with no
+    // grow/shrink; the offset + clip are applied afterward (see `apply_scroll`).
+    let (spans, main_shift) = if el.scroll.is_some() {
+        let mut spans = Vec::with_capacity(children.len());
+        let mut cursor = 0.0;
+        for m in &measured {
+            let length = axis.main(*m);
+            spans.push(forma_layout::Span {
+                offset: cursor,
+                length,
+            });
+            cursor += length + *gap;
+        }
+        (spans, 0.0)
+    } else {
+        let items: Vec<FlexItem> = children
+            .iter()
+            .zip(&measured)
+            .map(|(c, m)| FlexItem {
+                basis: axis.main(*m),
+                grow: c.layout.grow,
+            })
+            .collect();
+        let spans = solve_main_axis(axis.main(avail), *gap, &items);
+        // If nothing grows, the block may be shorter than the content area;
+        // shift it as a whole per the main-axis alignment.
+        let used_main = spans.last().map(|s| s.offset + s.length).unwrap_or(0.0);
+        let leftover = (axis.main(avail) - used_main).max(0.0);
+        let main_shift = match main_align {
+            Align::Start | Align::Stretch => 0.0,
+            Align::Center => leftover / 2.0,
+            Align::End => leftover,
+        };
+        (spans, main_shift)
     };
 
     node.children.reserve(children.len());
@@ -309,8 +328,56 @@ pub fn paint(node: &LayoutNode, scene: &mut Scene, font: Option<&Font>) {
             scene.fill_text(f, text, node.bounds.origin, *size, *color);
         }
     }
-    for child in &node.children {
-        paint(child, scene, font);
+    // Clip children to this node's bounds (scroll containers, overlay panels)
+    // so overflowing content is masked to the viewport.
+    if node.clip && !node.children.is_empty() {
+        scene.push_clip(node.bounds);
+        for child in &node.children {
+            paint(child, scene, font);
+        }
+        scene.pop_clip();
+    } else {
+        for child in &node.children {
+            paint(child, scene, font);
+        }
+    }
+}
+
+/// Apply scroll offsets to a laid-out tree: for each scroll container, clamp its
+/// stored offset to the content overflow and shift its descendants up by that
+/// amount (so the offset is the source of truth, re-applied each frame). Returns
+/// nothing; clamps `offsets` in place so the app keeps valid values.
+pub fn apply_scroll(node: &mut LayoutNode, offsets: &mut std::collections::HashMap<ScrollId, f64>) {
+    if let Some(id) = node.scroll {
+        // Content height = furthest child extent below the viewport top; viewport
+        // height = this node's bounds height.
+        let top = node.bounds.min_y();
+        let content_bottom = node
+            .children
+            .iter()
+            .map(|c| c.bounds.max_y())
+            .fold(top, f64::max);
+        let content_h = content_bottom - top;
+        let max_off = (content_h - node.bounds.height()).max(0.0);
+        let off = offsets.entry(id).or_insert(0.0);
+        *off = off.clamp(0.0, max_off);
+        let dy = *off;
+        if dy > 0.0 {
+            for child in &mut node.children {
+                translate(child, -dy);
+            }
+        }
+    }
+    for child in &mut node.children {
+        apply_scroll(child, offsets);
+    }
+}
+
+/// Shift a node and all its descendants vertically by `dy` (logical pixels).
+fn translate(node: &mut LayoutNode, dy: f64) {
+    node.bounds = node.bounds.translate(Vec2::new(0.0, dy));
+    for child in &mut node.children {
+        translate(child, dy);
     }
 }
 

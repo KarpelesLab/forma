@@ -38,13 +38,32 @@ pub enum DrawCmd {
         size: f64,
         color: Color,
     },
+    /// Begin clipping subsequent primitives to `rect` (nests until [`PopClip`]).
+    /// GPU backends map this to a scissor rectangle.
+    ///
+    /// [`PopClip`]: DrawCmd::PopClip
+    PushClip(Rect),
+    /// End the innermost clip region opened by [`PushClip`](DrawCmd::PushClip).
+    PopClip,
+}
+
+/// A clip region under construction: the primitives emitted while it is open,
+/// plus the optional clip path applied to them when it closes. The scene keeps a
+/// stack of these so [`Scene::push_clip`]/[`Scene::pop_clip`] can nest.
+#[derive(Clone, Debug)]
+struct ClipFrame {
+    clip: Option<Path>,
+    nodes: Vec<Node>,
 }
 
 /// A builder of vector draw primitives in logical-pixel space.
 #[derive(Clone, Debug)]
 pub struct Scene {
     logical_size: Size,
-    nodes: Vec<Node>,
+    // A stack of clip frames; the base (index 0) is the unclipped root. Every
+    // primitive is emitted into the top frame; `pop_clip` wraps a frame's nodes
+    // in a clipped `Group` and folds it into the frame below.
+    stack: Vec<ClipFrame>,
     commands: Vec<DrawCmd>,
 }
 
@@ -53,9 +72,45 @@ impl Scene {
     pub fn new(logical_size: Size) -> Self {
         Self {
             logical_size,
-            nodes: Vec::new(),
+            stack: vec![ClipFrame {
+                clip: None,
+                nodes: Vec::new(),
+            }],
             commands: Vec::new(),
         }
+    }
+
+    /// Emit a node into the current (innermost) clip frame.
+    fn emit(&mut self, node: Node) {
+        // The stack always has at least the base frame.
+        self.stack.last_mut().unwrap().nodes.push(node);
+    }
+
+    /// Begin clipping subsequently-emitted primitives to `rect`; nests until the
+    /// matching [`pop_clip`](Scene::pop_clip). Used by scroll containers to mask
+    /// overflowing content to the viewport.
+    pub fn push_clip(&mut self, rect: Rect) {
+        self.stack.push(ClipFrame {
+            clip: Some(rect_path(rect)),
+            nodes: Vec::new(),
+        });
+        self.commands.push(DrawCmd::PushClip(rect));
+    }
+
+    /// End the innermost clip region opened by [`push_clip`](Scene::push_clip),
+    /// folding its primitives into a clipped group. A no-op if none is open.
+    pub fn pop_clip(&mut self) {
+        if self.stack.len() <= 1 {
+            return; // unbalanced pop — ignore rather than drop the base frame
+        }
+        let frame = self.stack.pop().unwrap();
+        let group = Group {
+            children: frame.nodes,
+            clip: frame.clip,
+            ..Group::new()
+        };
+        self.emit(Node::Group(group));
+        self.commands.push(DrawCmd::PopClip);
     }
 
     /// The structured draw commands recorded by the typed helpers (for a GPU
@@ -70,21 +125,21 @@ impl Scene {
         self.logical_size
     }
 
-    /// Number of top-level primitives queued.
+    /// Number of top-level primitives queued (at the root clip level).
     #[inline]
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.stack[0].nodes.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.stack.iter().all(|f| f.nodes.is_empty())
     }
 
     /// Fill an axis-aligned rectangle with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let path = rect_path(rect);
-        self.nodes.push(Node::Path(
+        self.emit(Node::Path(
             PathNode::new(path).with_fill(Paint::Solid(color.into())),
         ));
         self.commands.push(DrawCmd::Rect {
@@ -99,7 +154,7 @@ impl Scene {
     /// pixels, clamped to half the shorter side).
     pub fn fill_round_rect(&mut self, rect: Rect, radius: f64, color: Color) {
         let path = round_rect_path(rect, radius);
-        self.nodes.push(Node::Path(
+        self.emit(Node::Path(
             PathNode::new(path).with_fill(Paint::Solid(color.into())),
         ));
         self.commands.push(DrawCmd::Rect {
@@ -114,8 +169,7 @@ impl Scene {
     pub fn stroke_rect(&mut self, rect: Rect, color: Color, width: f64) {
         let path = rect_path(rect);
         let stroke = Stroke::solid(width as f32, Rgba::from(color));
-        self.nodes
-            .push(Node::Path(PathNode::new(path).with_stroke(stroke)));
+        self.emit(Node::Path(PathNode::new(path).with_stroke(stroke)));
         self.commands.push(DrawCmd::Rect {
             rect,
             color,
@@ -139,7 +193,7 @@ impl Scene {
     /// emit text runs, images, gradients, or clips that the typed helpers
     /// don't yet cover.
     pub fn push_node(&mut self, node: Node) {
-        self.nodes.push(node);
+        self.emit(node);
     }
 
     /// Lower the scene to an `oxideav-core` [`VectorFrame`].
@@ -147,11 +201,15 @@ impl Scene {
     /// The frame carries a view box equal to the logical size, so the
     /// rasterizer maps logical pixels onto whatever physical canvas size the
     /// renderer was constructed with — that mapping *is* the DPI scale.
-    pub fn into_vector_frame(self) -> VectorFrame {
+    pub fn into_vector_frame(mut self) -> VectorFrame {
+        // Defensively close any clip regions the caller left open.
+        while self.stack.len() > 1 {
+            self.pop_clip();
+        }
         let w = self.logical_size.width as f32;
         let h = self.logical_size.height as f32;
         let root = Group {
-            children: self.nodes,
+            children: self.stack.pop().unwrap().nodes,
             ..Group::new()
         };
         VectorFrame::new(w, h)
@@ -257,6 +315,31 @@ mod tests {
         );
         assert!(matches!(cmds[1], DrawCmd::Rect { radius, .. } if radius == 4.0));
         assert!(matches!(cmds[2], DrawCmd::Rect { border, .. } if border == 2.0));
+    }
+
+    #[test]
+    fn push_pop_clip_nests_a_clipped_group() {
+        let mut scene = Scene::new(Size::new(200.0, 200.0));
+        scene.fill_rect(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), Color::WHITE); // root level
+        scene.push_clip(Rect::from_xywh(20.0, 20.0, 50.0, 50.0));
+        scene.fill_rect(Rect::from_xywh(25.0, 25.0, 100.0, 100.0), Color::BLACK); // clipped
+        scene.fill_rect(Rect::from_xywh(30.0, 30.0, 5.0, 5.0), Color::BLACK); // clipped
+        scene.pop_clip();
+        // Root has the first rect plus one clipped group.
+        assert_eq!(scene.len(), 2);
+        // Commands record the clip bracket around the two inner rects.
+        let cmds = scene.commands();
+        assert!(matches!(cmds[1], DrawCmd::PushClip(_)));
+        assert!(matches!(cmds[4], DrawCmd::PopClip));
+        let frame = scene.into_vector_frame();
+        // Root group: rect + clipped group.
+        assert_eq!(frame.root.children.len(), 2);
+        let clipped = match &frame.root.children[1] {
+            Node::Group(g) => g,
+            _ => panic!("expected a clipped group as the second child"),
+        };
+        assert!(clipped.clip.is_some(), "nested group carries the clip path");
+        assert_eq!(clipped.children.len(), 2, "two clipped rects");
     }
 
     #[test]

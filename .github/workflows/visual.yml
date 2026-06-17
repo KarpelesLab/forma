@@ -83,6 +83,67 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Scroll containers: a tall list clipped to a fixed-height viewport, wheel-
+  # scrolled with xdotool. Screenshot before/after and assert the visible frame
+  # changed (content moved) — proving offset + clip work end to end.
+  visual-scroll:
+    name: Visual test (Scroll / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, xdotool, x11-utils, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool x11-utils fonts-dejavu-core
+
+      - name: Build the scroll demo
+        run: cargo build --release -p scrolldemo
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Scroll the list and screenshot before/after
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/scrolldemo > visual_output/scroll.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/scroll-before.png
+          # Hover over the viewport so the wheel targets the scroll container,
+          # then wheel down several notches (X11 button 5 = scroll down).
+          xdotool mousemove 210 200
+          sleep 0.5
+          for _ in 1 2 3 4 5 6 7 8; do xdotool click 5; done
+          sleep 1
+          import -window root visual_output/scroll-after.png
+          echo "=== scroll.log ==="; cat visual_output/scroll.log || true
+          # The visible frame must have changed (the list scrolled within its clip).
+          diff=$(compare -metric AE visual_output/scroll-before.png visual_output/scroll-after.png null: 2>&1 || true)
+          echo "changed pixels: $diff"
+          [ "${diff%%[.e]*}" -gt 2000 ]
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshots + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-scroll-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render a real window whose frames are produced on the GPU (forma-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).

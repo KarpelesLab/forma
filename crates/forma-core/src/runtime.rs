@@ -49,6 +49,12 @@ pub struct DragId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextPosId(pub(crate) u32);
 
+/// An opaque handle to a scroll container. The app keeps a scroll offset per id
+/// (adjusted by wheel events) and re-applies it each frame; the id is stable as
+/// long as the view registers scroll containers in the same order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ScrollId(pub(crate) u32);
+
 /// A platform-neutral keyboard input, delivered to the focused element. The
 /// app/platform layer translates raw key events into these.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +95,9 @@ pub struct Cx<'a, S> {
     keys: Vec<KeyFn<S>>,
     drags: Vec<DragFn<S>>,
     text_pos: Vec<TextPosFn<S>>,
+    /// Next scroll-container id to hand out (scroll offsets live in the app, not
+    /// here, so we only need a stable per-frame counter).
+    next_scroll: u32,
     /// Cross-frame cache for [`Cx::memo`]: cached subtrees by key, plus the keys
     /// touched this frame (so stale entries can be evicted afterward).
     memo: HashMap<u64, Element>,
@@ -104,6 +113,7 @@ impl<'a, S> Cx<'a, S> {
             keys: Vec::new(),
             drags: Vec::new(),
             text_pos: Vec::new(),
+            next_scroll: 0,
             memo: HashMap::new(),
             memo_used: HashSet::new(),
         }
@@ -146,6 +156,15 @@ impl<'a, S> Cx<'a, S> {
     ) -> TextPosId {
         let id = TextPosId(self.text_pos.len() as u32);
         self.text_pos.push(Box::new(handler));
+        id
+    }
+
+    /// Register a scroll container, returning a stable [`ScrollId`]. The app
+    /// keeps the scroll offset for this id and re-applies it each frame; there is
+    /// no handler closure (scrolling adjusts the offset directly).
+    pub fn register_scroll(&mut self) -> ScrollId {
+        let id = ScrollId(self.next_scroll);
+        self.next_scroll += 1;
         id
     }
 
@@ -333,6 +352,12 @@ pub struct LayoutNode {
     pub text_pos: Option<TextPosId>,
     /// When `true`, the text content word-wraps to `bounds.width` when painted.
     pub wrap: bool,
+    /// Scroll container handle: wheel events over this node adjust the app's
+    /// offset for `id`, and its children are laid out at natural size + shifted.
+    pub scroll: Option<ScrollId>,
+    /// When `true`, children are clipped to this node's `bounds` when painted
+    /// (set for scroll containers and overlay panels).
+    pub clip: bool,
     pub children: Vec<LayoutNode>,
 }
 
@@ -397,6 +422,28 @@ pub fn drag_at(node: &LayoutNode, point: Point) -> Option<(DragId, Rect)> {
     }
 }
 
+/// Find the [`ScrollId`] of the top-most scroll container containing `point`
+/// (the wheel target). Children are tested first so a nested scroll area wins.
+pub fn scroll_at(node: &LayoutNode, point: Point) -> Option<ScrollId> {
+    for child in node.children.iter().rev() {
+        if let Some(id) = scroll_at(child, point) {
+            return Some(id);
+        }
+    }
+    match node.scroll {
+        Some(id) if node.bounds.contains(point) => Some(id),
+        _ => None,
+    }
+}
+
+/// Find the scroll-container node carrying `id`, if present.
+pub fn find_scroll(node: &LayoutNode, id: ScrollId) -> Option<&LayoutNode> {
+    if node.scroll == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|c| find_scroll(c, id))
+}
+
 /// Find the node carrying focus `id`, if present.
 pub fn find_focus(node: &LayoutNode, id: FocusId) -> Option<&LayoutNode> {
     if node.focus == Some(id) {
@@ -458,6 +505,8 @@ mod tests {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             children: Vec::new(),
         }
     }
@@ -540,6 +589,8 @@ mod tests {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             children: vec![
                 leaf(
                     Rect::from_xywh(10.0, 10.0, 30.0, 30.0),

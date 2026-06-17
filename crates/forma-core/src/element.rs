@@ -5,7 +5,7 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
-use crate::runtime::{ActionId, Cx, DragId, FocusId, KeyInput, TextPosId};
+use crate::runtime::{ActionId, Cx, DragId, FocusId, KeyInput, ScrollId, TextPosId};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -104,6 +104,13 @@ pub struct Element {
     /// element's content width instead of laying out on one line. Set via
     /// [`Element::wrap`].
     pub wrap: bool,
+    /// Scroll-container handle: when set, this element lays its children out at
+    /// natural size (overflowing its bounds), clips them, and routes wheel events
+    /// to the app's offset for this id. Set via [`Element::scrollable`].
+    pub scroll: Option<ScrollId>,
+    /// When `true`, children are clipped to this element's painted bounds. Set
+    /// implicitly by [`Element::scrollable`] and via [`Element::clip`].
+    pub clip: bool,
     pub kind: ElementKind,
 }
 
@@ -120,6 +127,8 @@ impl Element {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             kind: ElementKind::Leaf,
         }
     }
@@ -136,6 +145,8 @@ impl Element {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             kind: ElementKind::Text {
                 text: text.into(),
                 size,
@@ -156,6 +167,8 @@ impl Element {
             selection: None,
             text_pos: None,
             wrap: false,
+            scroll: None,
+            clip: false,
             kind: ElementKind::Stack {
                 axis,
                 gap: 0.0,
@@ -282,6 +295,23 @@ impl Element {
     /// elements.
     pub fn wrap(mut self) -> Self {
         self.wrap = true;
+        self
+    }
+
+    /// Clip this element's children to its painted bounds (e.g. for an overlay
+    /// panel). [`scrollable`](Element::scrollable) sets this implicitly.
+    pub fn clip(mut self) -> Self {
+        self.clip = true;
+        self
+    }
+
+    /// Make this element a scroll container for `id`: its children lay out at
+    /// natural size (overflowing), are clipped to its bounds, and wheel events
+    /// over it scroll the app's offset for `id`. Give it a fixed height (e.g.
+    /// `.height(..)`) to define the viewport.
+    pub fn scrollable(mut self, id: ScrollId) -> Self {
+        self.scroll = Some(id);
+        self.clip = true;
         self
     }
 

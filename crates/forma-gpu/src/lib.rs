@@ -426,6 +426,9 @@ pub fn render_scene(scene: &Scene, background: Color, font: &Font) -> Result<Pix
                     }
                 }
             }
+            // Clip regions are honored by the CPU rasterizer (nested clipped
+            // groups); the GPU path's scissor support is a follow-up.
+            DrawCmd::PushClip(_) | DrawCmd::PopClip => {}
         }
     }
 

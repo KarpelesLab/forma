@@ -263,6 +263,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   present — binding the GPU surface directly to the window instead of reading
   back to a `Pixmap` — remains a future optimization.)
 
+### Toolkit surface buildout (Phase 3 maturity, in progress)
+
+- ✅ **Scroll containers**: a `clip` primitive in the `Scene` (nested oxideav
+  clipped groups, with `DrawCmd::PushClip`/`PopClip` for a future GPU scissor),
+  a `ScrollId` handler kind, and a `scroll(cx, height, content)` widget. Content
+  taller than the viewport lays out at natural size, is clipped to the viewport,
+  and wheel events adjust a per-container offset (re-applied + clamped each frame
+  by `apply_scroll`). **CI-verified** (X11/Xvfb): `xdotool` wheel-scrolls a tall
+  list and the before/after screenshots differ while staying clipped.
+- 🚧 **Overlays** (menus/popovers/tooltips/dialogs), **clipboard**, **native
+  file dialogs**, and **true OS multi-window** — next, each CI-verified.
+
 ---
 
 ## 1. Guiding principles

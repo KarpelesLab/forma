@@ -89,6 +89,12 @@ where
     painted_focused: Option<FocusId>,
     // Cross-frame memo cache for `Cx::memo` (static subtree reuse).
     memo_cache: std::collections::HashMap<u64, Element>,
+    // Per-container scroll offsets (vertical, logical px), adjusted by wheel
+    // events and re-applied + clamped each frame by `apply_scroll`.
+    scroll_offsets: std::collections::HashMap<forma_core::ScrollId, f64>,
+    // Last pointer position, so a `Scroll` event (which carries only a delta)
+    // can find the scroll container under the cursor.
+    last_pointer: Point,
     // Optional GPU (or other) rasterizer used in place of the software renderer
     // to turn each frame's `Scene` into the `Pixmap` that is presented. Lets a
     // GPU backend (forma-gpu) drive on-screen present through the `Surface` seam
@@ -141,6 +147,8 @@ where
             painted_hovered: None,
             painted_focused: None,
             memo_cache: std::collections::HashMap::new(),
+            scroll_offsets: std::collections::HashMap::new(),
+            last_pointer: Point::new(0.0, 0.0),
             frame_renderer: None,
         }
     }
@@ -219,11 +227,14 @@ where
 
         let size = self.attrs.logical_size;
         let font = self.font.as_ref();
-        let tree = layout(
+        let mut tree = layout(
             &element,
             Rect::from_xywh(0.0, 0.0, size.width, size.height),
             font,
         );
+        // Apply (and clamp) scroll-container offsets to the laid-out tree before
+        // painting, so the retained tree matches what's drawn for event routing.
+        forma_core::apply_scroll(&mut tree, &mut self.scroll_offsets);
         let mut scene = Scene::new(size);
         paint(&tree, &mut scene, font);
         // Lighten the hovered tappable element with the theme's overlay.
@@ -476,6 +487,30 @@ where
         changed
     }
 
+    /// Scroll the container under the last pointer position by `dy` logical
+    /// pixels (positive = reveal content further down). Returns whether anything
+    /// scrolled (the offset is re-clamped to the content during the next build).
+    pub fn scroll_by(&mut self, dy: f64) -> bool {
+        self.ensure_tree();
+        let Some(id) = self
+            .tree
+            .as_ref()
+            .and_then(|t| forma_core::scroll_at(t, self.last_pointer))
+        else {
+            return false;
+        };
+        let off = self.scroll_offsets.entry(id).or_insert(0.0);
+        let before = *off;
+        *off = (*off + dy).max(0.0);
+        // A scroll always rebuilds (apply_scroll re-clamps to the content); only
+        // report movement when the unclamped offset actually changed.
+        let moved = (*off - before).abs() > f64::EPSILON;
+        if moved {
+            self.dirty = true;
+        }
+        moved
+    }
+
     /// Run the app against the platform backend ([`backend::run`]): native X11
     /// when `$DISPLAY` is set, else a one-shot headless present. Frames are
     /// rendered into the window's [`Surface`]; pointer/keyboard events route
@@ -534,6 +569,7 @@ where
                 ControlFlow::Wait
             }
             Event::PointerMoved { position } => {
+                self.last_pointer = position;
                 if self.text_selecting.is_some() {
                     if self.text_drag_at(position) {
                         present(&mut self, window, false);
@@ -593,6 +629,12 @@ where
                 }
                 ControlFlow::Wait
             }
+            Event::Scroll { delta } => {
+                if self.scroll_by(delta.dy) {
+                    present(&mut self, window, false);
+                }
+                ControlFlow::Wait
+            }
             Event::CloseRequested => ControlFlow::Exit,
             _ => ControlFlow::Wait,
         });
@@ -640,8 +682,8 @@ pub mod prelude {
     pub use forma_style::{Palette, Spacing, Typography};
     pub use forma_widgets::{
         EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
-        edit_string, heading, label, panel, paragraph, row, setting_row, slider, spacer, swatch,
-        switch, text_area, text_editor, text_field,
+        edit_string, heading, label, panel, paragraph, row, scroll, setting_row, slider, spacer,
+        swatch, switch, text_area, text_editor, text_field,
     };
 }
 
