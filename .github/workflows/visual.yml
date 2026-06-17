@@ -327,8 +327,12 @@ jobs:
           # (both 320x240).
           convert visual_output/multiwindow.png -crop 280x180+20+20 +repage visual_output/a.png
           convert visual_output/multiwindow.png -crop 280x180+360+20 +repage visual_output/b.png
-          read ar ab < <(convert visual_output/a.png -format "%[fx:mean.r] %[fx:mean.b]" info:)
-          read br bb < <(convert visual_output/b.png -format "%[fx:mean.r] %[fx:mean.b]" info:)
+          # Command substitution (not `read`, whose non-zero EOF status would
+          # trip `set -e` since ImageMagick's info: output has no trailing NL).
+          a=$(convert visual_output/a.png -format "%[fx:mean.r] %[fx:mean.b]" info:)
+          b=$(convert visual_output/b.png -format "%[fx:mean.r] %[fx:mean.b]" info:)
+          ar=${a% *}; ab=${a#* }
+          br=${b% *}; bb=${b#* }
           echo "window A region: mean.r=$ar mean.b=$ab"
           echo "window B region: mean.r=$br mean.b=$bb"
           # A must be red-dominant and B blue-dominant — proving both windows

@@ -680,7 +680,14 @@ impl Window for X11Window {
         // events arrive through the same handler, keyed by `id()`.
         let win = {
             let mut conn = self.conn.lock().unwrap();
-            create_window(&mut conn, &attrs, self.conn.clone(), self.reg.clone()).ok()?
+            create_window(
+                &mut conn,
+                &attrs,
+                self.conn.clone(),
+                self.reg.clone(),
+                false,
+            )
+            .ok()?
         };
         let id = win.id();
         self.reg.borrow_mut().opened.push(win);
@@ -787,6 +794,7 @@ fn create_window(
     attrs: &WindowAttributes,
     shared: SharedConn,
     reg: Registry,
+    use_shm: bool,
 ) -> Result<X11Window, PlatformError> {
     let size = ScaleFactor::IDENTITY.to_physical(attrs.logical_size);
     let (w, h) = (size.width.max(1) as u16, size.height.max(1) as u16);
@@ -832,10 +840,16 @@ fn create_window(
     let (wm_protocols, wm_delete) = (conn.atom_wm_protocols, conn.atom_wm_delete);
     set_property_atoms(conn, window, wm_protocols, &[wm_delete]).map_err(os)?;
 
-    // Set up MIT-SHM presentation before mapping (its handshake needs a reply
+    // Set up MIT-SHM presentation before mapping (its handshake needs replies
     // that must not interleave with window events). Falls back to PutImage when
-    // unavailable.
-    let shm = setup_shm(conn, (w as usize) * (h as usize) * 4);
+    // unavailable. Siblings opened mid-loop pass `use_shm = false`: the first
+    // window is already emitting events, so reply-reads here would race the
+    // event stream — those windows present via PutImage instead.
+    let shm = if use_shm {
+        setup_shm(conn, (w as usize) * (h as usize) * 4)
+    } else {
+        None
+    };
     dbg(format_args!("shm present path: {}", shm.is_some()));
 
     // MapWindow.
@@ -902,7 +916,7 @@ where
     let shared: SharedConn = Arc::new(Mutex::new(conn));
     let initial = {
         let mut conn = shared.lock().unwrap();
-        create_window(&mut conn, &attrs, shared.clone(), reg.clone())?
+        create_window(&mut conn, &attrs, shared.clone(), reg.clone(), true)?
     };
 
     // The live set of windows, keyed by XID via linear scan (tiny N).
