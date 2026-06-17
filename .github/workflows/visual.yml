@@ -287,6 +287,68 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # True OS multi-window: the multiwindow example opens two real top-level X11
+  # windows (one parent App, two panes over shared state) side by side, a red
+  # one at x=0 and a blue one at x=340. Screenshot the root and confirm BOTH
+  # painted — the left region is red-dominant and the right region blue-dominant.
+  visual-multiwindow:
+    name: Visual test (Multi-window / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick fonts-dejavu-core
+
+      - name: Build the multi-window demo
+        run: cargo build --release -p multiwindow
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Open two windows and screenshot the root
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/multiwindow > visual_output/multiwindow.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/multiwindow.png
+          echo "=== multiwindow.log ==="; cat visual_output/multiwindow.log || true
+          # Crop a patch well inside each window: A at 0,0 and B at 340,0
+          # (both 320x240).
+          convert visual_output/multiwindow.png -crop 280x180+20+20 +repage visual_output/a.png
+          convert visual_output/multiwindow.png -crop 280x180+360+20 +repage visual_output/b.png
+          read ar ab < <(convert visual_output/a.png -format "%[fx:mean.r] %[fx:mean.b]" info:)
+          read br bb < <(convert visual_output/b.png -format "%[fx:mean.r] %[fx:mean.b]" info:)
+          echo "window A region: mean.r=$ar mean.b=$ab"
+          echo "window B region: mean.r=$br mean.b=$bb"
+          # A must be red-dominant and B blue-dominant — proving both windows
+          # exist, side by side, each painting its own pane.
+          awk "BEGIN{exit !($ar > $ab && $bb > $br)}"
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshots + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-multiwindow-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render a real window whose frames are produced on the GPU (forma-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).

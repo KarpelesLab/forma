@@ -45,7 +45,7 @@ use forma_core::{
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{
-    ButtonState, ControlFlow, Event, KeyCode, Modifiers, WindowAttributes, backend,
+    ButtonState, ControlFlow, Event, KeyCode, Modifiers, WindowAttributes, WindowId, backend,
 };
 use forma_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
@@ -646,62 +646,27 @@ impl<S> App<S> {
 
     /// Route a completed click at `pos` (logical pixels) to the primary window.
     pub fn click_at(&mut self, pos: Point) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].click_at(state, theme, font.as_ref(), pos)
+        self.pane_click_at(0, pos)
     }
 
     /// Deliver committed `text` to the primary window's focused element.
     pub fn type_text(&mut self, text: &str) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].type_text(state, theme, font.as_ref(), text)
+        self.pane_type_text(0, text)
     }
 
     /// Deliver an editing key to the primary window's focused element.
     pub fn press_key(&mut self, input: KeyInput) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].press_key(state, theme, font.as_ref(), input)
+        self.pane_press_key(0, input)
     }
 
     /// Move focus to the next focusable element in the primary window (Tab).
     pub fn focus_next(&mut self) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].focus_next(state, theme, font.as_ref())
+        self.pane_focus_next(0)
     }
 
     /// Begin or continue a pointer drag at `pos` in the primary window.
     pub fn drag_at_point(&mut self, pos: Point) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].drag_at_point(state, theme, font.as_ref(), pos)
+        self.pane_drag_at_point(0, pos)
     }
 
     /// End the current drag (pointer released).
@@ -711,26 +676,12 @@ impl<S> App<S> {
 
     /// Begin a pointer text interaction at `pos` in the primary window.
     pub fn text_press_at(&mut self, pos: Point) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].text_press_at(state, theme, font.as_ref(), pos)
+        self.pane_text_press_at(0, pos)
     }
 
     /// Continue a latched text drag-selection at `pos` in the primary window.
     pub fn text_drag_at(&mut self, pos: Point) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].text_drag_at(state, theme, font.as_ref(), pos)
+        self.pane_text_drag_at(0, pos)
     }
 
     /// End the current pointer text selection (pointer released).
@@ -740,19 +691,20 @@ impl<S> App<S> {
 
     /// Update the primary window's hovered element to whatever sits under `pos`.
     pub fn hover_at(&mut self, pos: Point) -> bool {
-        let App {
-            state,
-            theme,
-            font,
-            panes,
-            ..
-        } = self;
-        panes[0].hover_at(state, theme, font.as_ref(), pos)
+        self.pane_hover_at(0, pos)
     }
 
     /// Scroll the container under the last pointer position in the primary
     /// window by `dy` logical pixels.
     pub fn scroll_by(&mut self, dy: f64) -> bool {
+        self.pane_scroll_by(0, dy)
+    }
+
+    // --- Per-pane event routing (by window index) --------------------------
+    // The live multi-window loop routes each event to the pane that owns the
+    // window it arrived on; the public methods above are these against pane 0.
+
+    fn pane_click_at(&mut self, idx: usize, pos: Point) -> bool {
         let App {
             state,
             theme,
@@ -760,23 +712,126 @@ impl<S> App<S> {
             panes,
             ..
         } = self;
-        panes[0].scroll_by(state, theme, font.as_ref(), dy)
+        panes[idx].click_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_type_text(&mut self, idx: usize, text: &str) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].type_text(state, theme, font.as_ref(), text)
+    }
+
+    fn pane_press_key(&mut self, idx: usize, input: KeyInput) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].press_key(state, theme, font.as_ref(), input)
+    }
+
+    fn pane_focus_next(&mut self, idx: usize) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].focus_next(state, theme, font.as_ref())
+    }
+
+    fn pane_drag_at_point(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].drag_at_point(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_text_press_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].text_press_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_text_drag_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].text_drag_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_hover_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].hover_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_scroll_by(&mut self, idx: usize, dy: f64) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].scroll_by(state, theme, font.as_ref(), dy)
     }
 
     /// Run the app against the platform backend ([`backend::run`]): native X11
     /// when `$DISPLAY` is set, else a one-shot headless present. Frames are
-    /// rendered into the window's [`Surface`]; pointer/keyboard events route
+    /// rendered into each window's [`Surface`]; pointer/keyboard events route
     /// through the same dispatch path used by the headless tests.
     ///
-    /// Drives the primary window. (OS multi-window presentation for additional
-    /// [`open_window`](App::open_window) panes is wired per backend, X11 first.)
+    /// Every window registered with [`open_window`](App::open_window) is opened
+    /// as a real OS window on backends that support it (X11 today); each renders
+    /// its own pane onto the shared state, and events are routed to the window
+    /// they arrived on. Backends without multi-window show only the primary
+    /// window. The loop ends when the last window closes.
     pub fn run(mut self) {
-        let attrs = self.panes[0].attrs.clone();
-        let mut surface: Option<Box<dyn Surface>> = None;
+        let primary_attrs = self.panes[0].attrs.clone();
+        // Per-pane surfaces, created lazily on first present, parallel to panes.
+        let mut surfaces: Vec<Option<Box<dyn Surface>>> =
+            (0..self.panes.len()).map(|_| None).collect();
+        // native window id -> pane index, filled as windows are created.
+        let mut id_to_pane: std::collections::HashMap<WindowId, usize> =
+            std::collections::HashMap::new();
+        let mut open_count = 0usize;
+        let mut opened_extras = false;
+
         // `force` presents the whole frame regardless of computed damage — used
         // for expose/resize, where the window's pixels were lost and a partial
         // update would leave stale or blank regions.
-        let mut present = |app: &mut Self, window: &dyn forma_platform::Window, force: bool| {
+        let present = |app: &mut Self,
+                       surfaces: &mut [Option<Box<dyn Surface>>],
+                       idx: usize,
+                       window: &dyn forma_platform::Window,
+                       force: bool| {
             let App {
                 state,
                 theme,
@@ -784,14 +839,14 @@ impl<S> App<S> {
                 panes,
                 ..
             } = app;
-            let pane = &mut panes[0];
+            let pane = &mut panes[idx];
             let scene = pane.build_frame(state, theme, font.as_ref());
             let pixmap = pane.rasterize(scene, theme, window.scale_factor());
             let damage = pane.take_damage();
             if !force && damage.is_empty() {
                 return; // Nothing changed since the last present.
             }
-            let surface = surface.get_or_insert_with(|| window.create_surface());
+            let surface = surfaces[idx].get_or_insert_with(|| window.create_surface());
             surface.resize(window.inner_size());
             // Limit the present to the changed region (empty slice = full frame).
             let regions = if force {
@@ -807,118 +862,150 @@ impl<S> App<S> {
             };
             surface.present(&pixmap, &regions);
         };
-        backend::run(attrs, |event, window| match event {
-            Event::RedrawRequested => {
-                present(&mut self, window, true);
-                ControlFlow::Wait
-            }
-            Event::Resized(size) => {
-                self.panes[0].attrs.logical_size = window.scale_factor().to_logical(size);
-                self.panes[0].dirty = true;
-                present(&mut self, window, true);
-                ControlFlow::Wait
-            }
-            Event::PointerButton {
-                state: ButtonState::Pressed,
-                position,
-                ..
-            } => {
-                self.panes[0].pressed = self.panes[0]
-                    .tree
-                    .as_ref()
-                    .and_then(|t| hit_test(t, position));
-                // Editable text under the cursor starts a click/drag selection;
-                // otherwise latch a drag if a draggable sits there.
-                if self.text_press_at(position) || self.drag_at_point(position) {
-                    present(&mut self, window, false);
-                }
-                ControlFlow::Wait
-            }
-            Event::PointerMoved { position } => {
-                self.panes[0].last_pointer = position;
-                if self.panes[0].text_selecting.is_some() {
-                    if self.text_drag_at(position) {
-                        present(&mut self, window, false);
+
+        backend::run(primary_attrs, |event, window| {
+            let wid = window.id();
+            // On the first event we learn the primary window's id; register it
+            // and ask the backend to open the remaining panes as OS windows.
+            if !opened_extras {
+                opened_extras = true;
+                id_to_pane.insert(wid, 0);
+                open_count = 1;
+                for idx in 1..self.panes.len() {
+                    let attrs = self.panes[idx].attrs.clone();
+                    if let Some(id) = window.open_window(attrs) {
+                        id_to_pane.insert(id, idx);
+                        open_count += 1;
                     }
-                } else if self.panes[0].dragging.is_some() {
-                    if self.drag_at_point(position) {
-                        present(&mut self, window, false);
-                    }
-                } else if self.hover_at(position) {
-                    present(&mut self, window, false);
                 }
-                ControlFlow::Wait
             }
-            Event::PointerButton {
-                state: ButtonState::Released,
-                position,
-                ..
-            } => {
-                if self.panes[0].text_selecting.is_some() {
-                    self.end_text_select();
-                } else if self.panes[0].dragging.is_some() {
-                    self.end_drag();
-                } else {
-                    let down = self.panes[0].pressed.take();
-                    let up = self.panes[0]
+            let idx = id_to_pane.get(&wid).copied().unwrap_or(0);
+            match event {
+                Event::RedrawRequested => {
+                    present(&mut self, &mut surfaces, idx, window, true);
+                    ControlFlow::Wait
+                }
+                Event::Resized(size) => {
+                    self.panes[idx].attrs.logical_size = window.scale_factor().to_logical(size);
+                    self.panes[idx].dirty = true;
+                    present(&mut self, &mut surfaces, idx, window, true);
+                    ControlFlow::Wait
+                }
+                Event::PointerButton {
+                    state: ButtonState::Pressed,
+                    position,
+                    ..
+                } => {
+                    self.panes[idx].pressed = self.panes[idx]
                         .tree
                         .as_ref()
                         .and_then(|t| hit_test(t, position));
-                    if down.is_some() && down == up && self.click_at(position) {
-                        present(&mut self, window, false);
-                    }
-                }
-                ControlFlow::Wait
-            }
-            Event::Text(text) => {
-                if self.type_text(&text) {
-                    present(&mut self, window, false);
-                }
-                ControlFlow::Wait
-            }
-            Event::Key {
-                code: KeyCode::Tab,
-                state: ButtonState::Pressed,
-                ..
-            } => {
-                if self.focus_next() {
-                    present(&mut self, window, false);
-                }
-                ControlFlow::Wait
-            }
-            Event::Key {
-                code,
-                state: ButtonState::Pressed,
-                modifiers,
-            } => {
-                if let Some(input) = map_key(code, modifiers) {
-                    // Pull the OS clipboard into the mirror before a paste, and
-                    // push the mirror to the OS after a copy/cut, so editing
-                    // interoperates with other apps (the mirror alone covers the
-                    // in-app case + headless).
-                    if input == KeyInput::Paste
-                        && let Some(text) = window.clipboard()
+                    // Editable text under the cursor starts a click/drag
+                    // selection; otherwise latch a drag if a draggable sits there.
+                    if self.pane_text_press_at(idx, position)
+                        || self.pane_drag_at_point(idx, position)
                     {
-                        forma_core::set_clipboard_text(&text);
+                        present(&mut self, &mut surfaces, idx, window, false);
                     }
-                    let writes_clipboard = matches!(input, KeyInput::Copy | KeyInput::Cut);
-                    if self.press_key(input) {
-                        present(&mut self, window, false);
+                    ControlFlow::Wait
+                }
+                Event::PointerMoved { position } => {
+                    self.panes[idx].last_pointer = position;
+                    if self.panes[idx].text_selecting.is_some() {
+                        if self.pane_text_drag_at(idx, position) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                    } else if self.panes[idx].dragging.is_some() {
+                        if self.pane_drag_at_point(idx, position) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                    } else if self.pane_hover_at(idx, position) {
+                        present(&mut self, &mut surfaces, idx, window, false);
                     }
-                    if writes_clipboard {
-                        window.set_clipboard(&forma_core::clipboard_text());
+                    ControlFlow::Wait
+                }
+                Event::PointerButton {
+                    state: ButtonState::Released,
+                    position,
+                    ..
+                } => {
+                    if self.panes[idx].text_selecting.is_some() {
+                        self.panes[idx].end_text_select();
+                    } else if self.panes[idx].dragging.is_some() {
+                        self.panes[idx].end_drag();
+                    } else {
+                        let down = self.panes[idx].pressed.take();
+                        let up = self.panes[idx]
+                            .tree
+                            .as_ref()
+                            .and_then(|t| hit_test(t, position));
+                        if down.is_some() && down == up && self.pane_click_at(idx, position) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Text(text) => {
+                    if self.pane_type_text(idx, &text) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Key {
+                    code: KeyCode::Tab,
+                    state: ButtonState::Pressed,
+                    ..
+                } => {
+                    if self.pane_focus_next(idx) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Key {
+                    code,
+                    state: ButtonState::Pressed,
+                    modifiers,
+                } => {
+                    if let Some(input) = map_key(code, modifiers) {
+                        // Pull the OS clipboard into the mirror before a paste,
+                        // and push the mirror to the OS after a copy/cut, so
+                        // editing interoperates with other apps (the mirror alone
+                        // covers the in-app case + headless).
+                        if input == KeyInput::Paste
+                            && let Some(text) = window.clipboard()
+                        {
+                            forma_core::set_clipboard_text(&text);
+                        }
+                        let writes_clipboard = matches!(input, KeyInput::Copy | KeyInput::Cut);
+                        if self.pane_press_key(idx, input) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                        if writes_clipboard {
+                            window.set_clipboard(&forma_core::clipboard_text());
+                        }
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Scroll { delta } => {
+                    if self.pane_scroll_by(idx, delta.dy) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::CloseRequested => {
+                    // Close just this window; end the loop only when the last
+                    // window goes away.
+                    id_to_pane.remove(&wid);
+                    open_count = open_count.saturating_sub(1);
+                    if open_count == 0 {
+                        ControlFlow::Exit
+                    } else {
+                        window.close_window();
+                        ControlFlow::Wait
                     }
                 }
-                ControlFlow::Wait
+                _ => ControlFlow::Wait,
             }
-            Event::Scroll { delta } => {
-                if self.scroll_by(delta.dy) {
-                    present(&mut self, window, false);
-                }
-                ControlFlow::Wait
-            }
-            Event::CloseRequested => ControlFlow::Exit,
-            _ => ControlFlow::Wait,
         });
     }
 }

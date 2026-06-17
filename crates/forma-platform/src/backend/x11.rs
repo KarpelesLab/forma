@@ -25,8 +25,10 @@
 
 #![allow(unsafe_code)]
 
+use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::ControlFlow;
@@ -39,6 +41,7 @@ use forma_render::{Pixmap, Surface};
 // ---- X11 protocol constants -------------------------------------------------
 
 const OP_CREATE_WINDOW: u8 = 1;
+const OP_DESTROY_WINDOW: u8 = 4;
 const OP_MAP_WINDOW: u8 = 8;
 const OP_INTERN_ATOM: u8 = 16;
 const OP_CHANGE_PROPERTY: u8 = 18;
@@ -487,6 +490,10 @@ struct Conn {
     atom_clipboard: u32,
     atom_utf8: u32,
     atom_targets: u32,
+    /// WM_PROTOCOLS / WM_DELETE_WINDOW, interned once so every window (including
+    /// ones opened later) registers the close protocol the same way.
+    atom_wm_protocols: u32,
+    atom_wm_delete: u32,
 }
 
 impl Conn {
@@ -550,6 +557,8 @@ impl Conn {
             atom_clipboard: 0,
             atom_utf8: 0,
             atom_targets: 0,
+            atom_wm_protocols: 0,
+            atom_wm_delete: 0,
         })
     }
 
@@ -590,6 +599,20 @@ fn finish(mut req: Vec<u8>) -> Vec<u8> {
 /// both talk to the server.
 type SharedConn = Arc<Mutex<Conn>>;
 
+/// Windows opened (or closed) from inside the event loop — e.g. by
+/// [`Window::open_window`]. The loop drains these after each handler call and
+/// merges them into its live set. Single-threaded (`Rc`/`RefCell`): every X11
+/// window shares one connection and one loop, so there is no cross-thread use.
+#[derive(Debug, Default)]
+struct WindowReg {
+    /// Newly created windows awaiting adoption into the loop's live set.
+    opened: Vec<X11Window>,
+    /// XIDs of windows the app asked to close.
+    closed: Vec<u32>,
+}
+
+type Registry = Rc<RefCell<WindowReg>>;
+
 #[derive(Debug)]
 struct X11Window {
     conn: SharedConn,
@@ -597,7 +620,11 @@ struct X11Window {
     gc: u32,
     size: PhysicalSize,
     // Set up once before mapping; moved into the surface on `create_surface`.
-    shm: std::cell::RefCell<Option<ShmState>>,
+    shm: RefCell<Option<ShmState>>,
+    // Shared with the event loop so opening/closing siblings reaches it. Held by
+    // every window but normally points at empty queues (drained each iteration),
+    // so there is no retained reference cycle through the loop's live set.
+    reg: Registry,
 }
 
 impl std::fmt::Debug for Conn {
@@ -646,6 +673,21 @@ impl Window for X11Window {
             size: self.size,
             shm: self.shm.borrow_mut().take(),
         })
+    }
+    fn open_window(&self, attrs: WindowAttributes) -> Option<WindowId> {
+        // Create + map a sibling window on the same connection, then hand it to
+        // the event loop (which shares `reg`) to adopt into its live set. Its
+        // events arrive through the same handler, keyed by `id()`.
+        let win = {
+            let mut conn = self.conn.lock().unwrap();
+            create_window(&mut conn, &attrs, self.conn.clone(), self.reg.clone()).ok()?
+        };
+        let id = win.id();
+        self.reg.borrow_mut().opened.push(win);
+        Some(id)
+    }
+    fn close_window(&self) {
+        self.reg.borrow_mut().closed.push(self.window);
     }
 }
 
@@ -736,35 +778,29 @@ impl Surface for X11Surface {
 
 // ---- Run loop ---------------------------------------------------------------
 
-/// Connect to the X server, create a window, and drive `handler` over its event
-/// stream until the handler returns [`ControlFlow::Exit`] or the window closes.
-pub fn run<H>(attrs: WindowAttributes, mut handler: H) -> Result<(), PlatformError>
-where
-    H: FnMut(Event, &dyn Window) -> ControlFlow,
-{
-    let mut conn = Conn::connect()?;
+/// Create, configure, and map one top-level window on `conn`, returning a live
+/// [`X11Window`]. Used both for the initial window and for siblings opened later
+/// via [`Window::open_window`]. Requires the WM/clipboard atoms to be interned
+/// on `conn` already (see [`run`]).
+fn create_window(
+    conn: &mut Conn,
+    attrs: &WindowAttributes,
+    shared: SharedConn,
+    reg: Registry,
+) -> Result<X11Window, PlatformError> {
     let size = ScaleFactor::IDENTITY.to_physical(attrs.logical_size);
     let (w, h) = (size.width.max(1) as u16, size.height.max(1) as u16);
-
-    // Fetch the keyboard mapping up front (no window yet, so the reply is the
-    // next message and won't interleave with events).
-    let keymap = fetch_keymap(&mut conn).map_err(os)?;
-    dbg(format_args!(
-        "keymap: {} keysyms, {}/keycode",
-        keymap.syms.len(),
-        keymap.per
-    ));
-
     let window = conn.new_id();
     let gc = conn.new_id();
     let setup = conn.setup;
 
     // CreateWindow.
+    let (x, y) = attrs.position.unwrap_or((0, 0));
     let mut req = vec![OP_CREATE_WINDOW, setup.root_depth, 0, 0];
     req.extend_from_slice(&window.to_le_bytes());
     req.extend_from_slice(&setup.root.to_le_bytes());
-    req.extend_from_slice(&0i16.to_le_bytes()); // x
-    req.extend_from_slice(&0i16.to_le_bytes()); // y
+    req.extend_from_slice(&(x as i16).to_le_bytes()); // x
+    req.extend_from_slice(&(y as i16).to_le_bytes()); // y
     req.extend_from_slice(&w.to_le_bytes());
     req.extend_from_slice(&h.to_le_bytes());
     req.extend_from_slice(&0u16.to_le_bytes()); // border width
@@ -790,24 +826,16 @@ where
     conn.send(&finish(req)).map_err(os)?;
 
     // Title via WM_NAME (atom 39 = WM_NAME, predefined; type STRING = 31).
-    set_property_str(&mut conn, window, 39, 31, attrs.title.as_bytes()).map_err(os)?;
+    set_property_str(conn, window, 39, 31, attrs.title.as_bytes()).map_err(os)?;
 
     // WM_PROTOCOLS / WM_DELETE_WINDOW so the close button delivers an event.
-    let wm_protocols = intern_atom(&mut conn, b"WM_PROTOCOLS").map_err(os)?;
-    let wm_delete = intern_atom(&mut conn, b"WM_DELETE_WINDOW").map_err(os)?;
-    // type ATOM = 4.
-    set_property_atoms(&mut conn, window, wm_protocols, &[wm_delete]).map_err(os)?;
-
-    // Clipboard atoms — interned once so the event loop can answer
-    // `SelectionRequest` and `set_clipboard` can take ownership.
-    conn.atom_clipboard = intern_atom(&mut conn, b"CLIPBOARD").map_err(os)?;
-    conn.atom_utf8 = intern_atom(&mut conn, b"UTF8_STRING").map_err(os)?;
-    conn.atom_targets = intern_atom(&mut conn, b"TARGETS").map_err(os)?;
+    let (wm_protocols, wm_delete) = (conn.atom_wm_protocols, conn.atom_wm_delete);
+    set_property_atoms(conn, window, wm_protocols, &[wm_delete]).map_err(os)?;
 
     // Set up MIT-SHM presentation before mapping (its handshake needs a reply
     // that must not interleave with window events). Falls back to PutImage when
     // unavailable.
-    let shm = setup_shm(&mut conn, (w as usize) * (h as usize) * 4);
+    let shm = setup_shm(conn, (w as usize) * (h as usize) * 4);
     dbg(format_args!("shm present path: {}", shm.is_some()));
 
     // MapWindow.
@@ -828,14 +856,57 @@ where
         w, h
     ));
 
-    let shared: SharedConn = Arc::new(Mutex::new(conn));
-    let win = X11Window {
-        conn: shared.clone(),
+    Ok(X11Window {
+        conn: shared,
         window,
         gc,
         size,
-        shm: std::cell::RefCell::new(shm),
+        shm: RefCell::new(shm),
+        reg,
+    })
+}
+
+/// Connect to the X server, create a window, and drive `handler` over the event
+/// stream until the handler returns [`ControlFlow::Exit`] or every window has
+/// closed. Additional top-level windows opened via [`Window::open_window`] share
+/// this one connection and loop; their events are dispatched to the same handler
+/// against the [`Window`] they belong to.
+pub fn run<H>(attrs: WindowAttributes, mut handler: H) -> Result<(), PlatformError>
+where
+    H: FnMut(Event, &dyn Window) -> ControlFlow,
+{
+    let mut conn = Conn::connect()?;
+
+    // Fetch the keyboard mapping up front (no window yet, so the reply is the
+    // next message and won't interleave with events).
+    let keymap = fetch_keymap(&mut conn).map_err(os)?;
+    dbg(format_args!(
+        "keymap: {} keysyms, {}/keycode",
+        keymap.syms.len(),
+        keymap.per
+    ));
+
+    // Intern the WM + clipboard atoms once, up front, so `create_window` (used
+    // for the first window and every later sibling) and the event loop can rely
+    // on them.
+    conn.atom_wm_protocols = intern_atom(&mut conn, b"WM_PROTOCOLS").map_err(os)?;
+    conn.atom_wm_delete = intern_atom(&mut conn, b"WM_DELETE_WINDOW").map_err(os)?;
+    conn.atom_clipboard = intern_atom(&mut conn, b"CLIPBOARD").map_err(os)?;
+    conn.atom_utf8 = intern_atom(&mut conn, b"UTF8_STRING").map_err(os)?;
+    conn.atom_targets = intern_atom(&mut conn, b"TARGETS").map_err(os)?;
+    let wm_delete = conn.atom_wm_delete;
+
+    // Wrap the connection for sharing, then create the first window against it
+    // exactly as `open_window` creates later siblings.
+    let reg: Registry = Rc::new(RefCell::new(WindowReg::default()));
+    let shared: SharedConn = Arc::new(Mutex::new(conn));
+    let initial = {
+        let mut conn = shared.lock().unwrap();
+        create_window(&mut conn, &attrs, shared.clone(), reg.clone())?
     };
+
+    // The live set of windows, keyed by XID via linear scan (tiny N).
+    let mut windows: Vec<X11Window> = vec![initial];
 
     // Event loop. Events are 32 bytes each.
     let mut buf = [0u8; 32];
@@ -855,15 +926,19 @@ where
             ));
             continue;
         }
+        // Route the event to the window it names (falling back to the first).
+        let xid = event_window(&buf);
+        let idx = windows.iter().position(|w| w.window == xid).unwrap_or(0);
+        let win = &windows[idx];
         let flow = match buf[0] & 0x7f {
             X_EXPOSE => {
                 dbg(format_args!("expose"));
-                handler(Event::RedrawRequested, &win)
+                handler(Event::RedrawRequested, win)
             }
             X_CONFIGURE_NOTIFY => {
                 let nw = u16::from_le_bytes([buf[20], buf[21]]) as u32;
                 let nh = u16::from_le_bytes([buf[22], buf[23]]) as u32;
-                handler(Event::Resized(PhysicalSize::new(nw, nh)), &win)
+                handler(Event::Resized(PhysicalSize::new(nw, nh)), win)
             }
             X_MOTION_NOTIFY => {
                 let (x, y) = event_xy(&buf);
@@ -871,7 +946,7 @@ where
                     Event::PointerMoved {
                         position: Point::new(x, y),
                     },
-                    &win,
+                    win,
                 )
             }
             code @ (X_BUTTON_PRESS | X_BUTTON_RELEASE) => {
@@ -890,7 +965,7 @@ where
                             Event::Scroll {
                                 delta: ScrollDelta { dx: 0.0, dy },
                             },
-                            &win,
+                            win,
                         )
                     } else {
                         ControlFlow::Wait
@@ -908,7 +983,7 @@ where
                             state,
                             position: Point::new(x, y),
                         },
-                        &win,
+                        win,
                     )
                 }
             }
@@ -932,7 +1007,7 @@ where
                 };
                 let ks = keymap.keysym(keycode, modifiers.shift);
                 match keysym_to_event(ks, state, modifiers) {
-                    Some(ev) => handler(ev, &win),
+                    Some(ev) => handler(ev, win),
                     None => ControlFlow::Wait,
                 }
             }
@@ -940,7 +1015,7 @@ where
                 // data starts at byte 12; first 32-bit word is the protocol atom.
                 let atom = rd_u32(&buf, 12).unwrap_or(0);
                 if atom == wm_delete {
-                    handler(Event::CloseRequested, &win)
+                    handler(Event::CloseRequested, win)
                 } else {
                     ControlFlow::Wait
                 }
@@ -961,6 +1036,23 @@ where
         };
         if flow == ControlFlow::Exit {
             break;
+        }
+        // Adopt windows opened during this iteration, and destroy closed ones.
+        {
+            let mut r = reg.borrow_mut();
+            windows.append(&mut r.opened);
+            for xid in r.closed.drain(..) {
+                if let Some(pos) = windows.iter().position(|w| w.window == xid) {
+                    windows.remove(pos);
+                    let mut conn = shared.lock().unwrap();
+                    let mut req = vec![OP_DESTROY_WINDOW, 0, 0, 0];
+                    req.extend_from_slice(&xid.to_le_bytes());
+                    let _ = conn.send(&finish(req));
+                }
+            }
+        }
+        if windows.is_empty() {
+            break; // every window closed
         }
     }
     Ok(())
@@ -1058,6 +1150,20 @@ fn keysym_to_event(ks: u32, state: ButtonState, modifiers: Modifiers) -> Option<
         });
     }
     Some(Event::Text(c.to_string()))
+}
+
+/// The XID of the window an event belongs to, read from the per-event-type
+/// offset (Expose/ClientMessage at 4, ConfigureNotify's window at 8, input
+/// events' event-window at 12). 0 for events that don't name a window.
+fn event_window(buf: &[u8; 32]) -> u32 {
+    match buf[0] & 0x7f {
+        X_EXPOSE | X_CLIENT_MESSAGE => rd_u32(buf, 4).unwrap_or(0),
+        X_CONFIGURE_NOTIFY => rd_u32(buf, 8).unwrap_or(0),
+        X_MOTION_NOTIFY | X_BUTTON_PRESS | X_BUTTON_RELEASE | X_KEY_PRESS | X_KEY_RELEASE => {
+            rd_u32(buf, 12).unwrap_or(0)
+        }
+        _ => 0,
+    }
 }
 
 fn event_xy(buf: &[u8; 32]) -> (f64, f64) {

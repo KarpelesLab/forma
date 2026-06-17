@@ -1,0 +1,16 @@
+[package]
+name = "multiwindow"
+description = "Forma example: two real OS windows (X11), each a pane with its own view onto the shared app state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true

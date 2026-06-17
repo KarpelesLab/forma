@@ -301,7 +301,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   (owns `org.freedesktop.portal.Desktop`, answers `OpenFile`, emits the
   `Response` signal) round-trips a canned `file://` URI back through
   `dialog::open_file` to a `PathBuf`, inside `dbus-run-session`.
-- 🚧 **True OS multi-window** — next, CI-verified.
+- ✅ **True OS multi-window**: the parent `App<S>` owns the global state and a
+  `Vec<Pane<S>>` — one pane per OS window, each with its own view onto the shared
+  state plus its own tree/focus/hover/scroll/damage. `App::open_window(attrs,
+  view)` registers additional windows; `App::run` opens each as a real native
+  window and routes every event to the pane that owns the window it arrived on,
+  ending when the last window closes. The X11 backend drives multiple top-level
+  windows on one connection (a shared `WindowReg` adopts windows opened mid-loop
+  via the new `Window::open_window`/`close_window` seam; events route by XID),
+  and `WindowAttributes::with_position` lays them out. Other backends keep the
+  single-window default until they adopt the seam. **CI-verified** (X11): the
+  multiwindow example opens a red and a blue window side by side and the root
+  screenshot confirms both painted, each its own color.
 
 ---
 

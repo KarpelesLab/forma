@@ -10,6 +10,10 @@ pub struct WindowAttributes {
     /// Initial inner (content) size in logical pixels.
     pub logical_size: Size,
     pub resizable: bool,
+    /// Optional initial top-left position in logical pixels. `None` lets the
+    /// window manager place the window (and, with no WM, the server uses 0,0).
+    /// Used to lay multiple windows out side by side.
+    pub position: Option<(i32, i32)>,
 }
 
 impl Default for WindowAttributes {
@@ -18,6 +22,7 @@ impl Default for WindowAttributes {
             title: "Forma".to_string(),
             logical_size: Size::new(800.0, 600.0),
             resizable: true,
+            position: None,
         }
     }
 }
@@ -39,6 +44,12 @@ impl WindowAttributes {
 
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
+        self
+    }
+
+    /// Set the initial top-left position in logical pixels.
+    pub fn with_position(mut self, x: i32, y: i32) -> Self {
+        self.position = Some((x, y));
         self
     }
 }
@@ -74,4 +85,19 @@ pub trait Window {
 
     /// Set the system clipboard's text. Default: a no-op.
     fn set_clipboard(&self, _text: &str) {}
+
+    /// Open a new top-level sibling window sharing this window's event loop /
+    /// connection, returning its [`WindowId`]. Default: `None` — the backend is
+    /// single-window. Backends that support multiple native windows (X11)
+    /// override this; the new window's events arrive through the same handler,
+    /// distinguished by [`Window::id`].
+    fn open_window(&self, _attrs: WindowAttributes) -> Option<WindowId> {
+        None
+    }
+
+    /// Request that *this* window be closed and removed from the event loop.
+    /// Default: a no-op (single-window backends instead end the loop when the
+    /// handler returns [`ControlFlow::Exit`](crate::ControlFlow)). Multi-window
+    /// backends destroy just this window and keep running while others remain.
+    fn close_window(&self) {}
 }
