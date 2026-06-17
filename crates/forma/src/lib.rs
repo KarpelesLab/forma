@@ -52,15 +52,19 @@ use forma_style::Theme;
 
 /// A Forma application.
 ///
-/// Holds the app `state`, a `build` closure mapping state (and a [`Cx`] for
-/// registering event handlers) to an [`Element`] tree, the active [`Theme`],
-/// and window attributes. Pointer taps are routed through the laid-out tree
-/// back to the `on_tap` handlers the build closure registered.
+/// Owns the global app `state` and shared presentation (the active [`Theme`] and
+/// font), plus one [`Pane`] per OS window. The primary window's `build` closure
+/// is passed to [`App::new`]; further windows are added with
+/// [`App::open_window`], each with its own view onto the same shared state.
+/// Every pane maps state (via a [`Cx`] for registering event handlers) to an
+/// [`Element`] tree; pointer/keyboard events route through that window's laid-out
+/// tree back to the handlers the view registered.
 ///
 /// [`App::run`] drives the platform backend (native X11 when `$DISPLAY` is set,
 /// else a one-shot headless present) through the full build → layout → paint →
-/// rasterize → present path, routing pointer and keyboard events back to the
-/// registered handlers.
+/// rasterize → present path for each window, opening every registered window as
+/// a real native window where the backend supports it (X11) and ending when the
+/// last one closes.
 pub struct App<S> {
     // Global application state, shared by every window's view.
     state: S,
