@@ -175,6 +175,7 @@ unsafe extern "C" {
         pixels: *mut c_void,
     );
     fn glFinish();
+    fn glGetError() -> GLenum;
 }
 
 const VERTEX_SRC: &[u8] = b"attribute vec2 pos;\nattribute vec2 uv;\nvarying vec2 v_uv;\nvoid main() {\n  v_uv = uv;\n  gl_Position = vec4(pos, 0.0, 1.0);\n}\n\0";
@@ -830,6 +831,11 @@ const EGL_LINUX_DRM_FOURCC_EXT: EGLint = 0x3271;
 const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
 const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
 const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
+const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: EGLint = 0x3443;
+const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: EGLint = 0x3444;
+// Sentinel: "no explicit modifier" (let the driver pick). Real tiled buffers
+// report a concrete modifier that the importer must echo back.
+const DRM_FORMAT_MOD_INVALID: u64 = u64::MAX;
 // DRM fourcc for 8-bit RGBA in memory order [R,G,B,A] — matches `Pixmap`.
 const DRM_FORMAT_ABGR8888: i32 = 0x3432_4241; // 'AB24'
 
@@ -925,6 +931,7 @@ pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
             GL_UNSIGNED_BYTE,
             src.as_ptr() as *const c_void,
         );
+        glFinish(); // ensure the upload lands before the image is exported
 
         // Wrap it in an EGLImage, then export that image as a dma-buf.
         let preserve = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
@@ -958,7 +965,7 @@ pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
 
         // Consumer: import the dma-buf as a fresh texture. In the browser this fd
         // arrives over a socket from the content process.
-        let import_attribs = [
+        let mut import_attribs = vec![
             EGL_WIDTH,
             w,
             EGL_HEIGHT,
@@ -975,8 +982,17 @@ pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
             offset,
             EGL_DMA_BUF_PLANE0_PITCH_EXT,
             stride,
-            EGL_NONE,
         ];
+        // Echo back the export's format modifier — buffers are routinely tiled,
+        // and importing such a dma-buf as LINEAR yields an invalid image (the
+        // glEGLImageTargetTexture2DOES INVALID_OPERATION we hit otherwise).
+        if modifier != DRM_FORMAT_MOD_INVALID {
+            import_attribs.push(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT);
+            import_attribs.push((modifier & 0xFFFF_FFFF) as EGLint);
+            import_attribs.push(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT);
+            import_attribs.push((modifier >> 32) as EGLint);
+        }
+        import_attribs.push(EGL_NONE);
         let img_dst = create_image(
             dpy,
             core::ptr::null_mut(),
@@ -1000,6 +1016,15 @@ pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         target_texture(GL_TEXTURE_2D, img_dst);
+        let gl_err = glGetError();
+        if gl_err != 0 {
+            libc_close(fd);
+            return Err(format!(
+                "glEGLImageTargetTexture2DOES failed (GL error {gl_err:#x}); \
+                 export fourcc={fourcc:#x} planes={planes} modifier={modifier:#x} \
+                 stride={stride} offset={offset}"
+            ));
+        }
 
         // Imported dma-buf textures are sample-only (not color-renderable), so
         // verify the way Forma will actually use one: SAMPLE the imported texture
