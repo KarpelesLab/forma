@@ -353,6 +353,77 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # The calculator demo end to end: render the button grid, then click 7 + 8 =
+  # via xdotool and confirm the display region changed (0 -> 15). Button centers
+  # are computed from the fixed 300x460 layout (16px panel padding, 76px display,
+  # 60px rows with 8px gaps, four 61px columns with 8px gaps). The arithmetic
+  # itself is covered by the example's unit tests in the main CI test job.
+  visual-calculator:
+    name: Visual test (Calculator / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, xdotool, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
+
+      - name: Build the calculator demo
+        run: cargo build --release -p calculator
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Render, click 7 + 8 =, and check the display changed
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/calculator > visual_output/calculator.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/calc-before.png
+          # Button centers (logical px == physical at 1x; window at 0,0):
+          #   columns ~x: 46, 115, 184, 253   rows ~y: 134(C..),202(7..),
+          #   270(4..),338(1..),406(0/./=)
+          xdotool mousemove 46 202 click 1    # 7
+          sleep 0.3
+          xdotool mousemove 253 338 click 1   # +
+          sleep 0.3
+          xdotool mousemove 115 202 click 1   # 8
+          sleep 0.3
+          xdotool mousemove 253 406 click 1   # =
+          sleep 0.6
+          import -window root visual_output/calc-after.png
+          echo "=== calculator.log ==="; cat visual_output/calculator.log || true
+          # Crop the display strip (x16..284, y16..92) from both and require it to
+          # have changed: "0" became "15".
+          convert visual_output/calc-before.png -crop 268x76+16+16 +repage visual_output/disp-before.png
+          convert visual_output/calc-after.png -crop 268x76+16+16 +repage visual_output/disp-after.png
+          diff=$(compare -metric AE visual_output/disp-before.png visual_output/disp-after.png null: 2>&1 || true)
+          echo "display changed pixels: $diff"
+          [ "${diff%%[.e]*}" -gt 40 ]
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshots + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-calculator-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render a real window whose frames are produced on the GPU (forma-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).

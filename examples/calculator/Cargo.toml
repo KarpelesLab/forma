@@ -1,0 +1,16 @@
+[package]
+name = "calculator"
+description = "Forma example: a four-function calculator — a button grid (rows in a column), a result display, and a small state machine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true
