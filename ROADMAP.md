@@ -328,7 +328,12 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `dma-buf` and re-import it (`EGL_MESA_image_dma_buf_export` /
   `EGL_EXT_image_dma_buf_import`), proving the zero-copy handoff; the
   `dmabuftest` spike self-tests the round-trip (surfaceless, run on a GPU box;
-  CI build-verifies and probes extension availability under software Mesa). Next:
+  CI build-verifies and probes extension availability under software Mesa).
+  **Confirmed PASS on real GPU hardware** — the key subtlety: exported buffers
+  are tiled, so the importer must echo the export's **DRM format modifier**
+  (`EGL_DMA_BUF_PLANE0_MODIFIER_LO/HI_EXT`) or the image is incomplete; and an
+  imported dma-buf texture is **sample-only** (not color-renderable), which is
+  exactly how the compositor uses it. Next:
   productionize the on-GPU windowed compositor (no Pixmap readback), a viewport
   element, the IPC + fd-passing + sync, input forwarding, and the content-process
   sandbox; then macOS/Windows parity.
