@@ -279,8 +279,12 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   click-catcher for a non-modal — carries the dismiss action), so the existing
   hit-test/paint/scroll routing treats overlays as topmost for free. Widgets:
   `menu`/`menu_item`/`open_menu` (dropdown), `open_dialog` (modal + scrim),
-  `tooltip`, plus `radio`/`progress_bar`/`spinner`. **CI-verified** (X11): opening
-  the dropdown changes the frame and the modal's scrim darkens it.
+  `tooltip`, `tabs` (segmented control), plus `radio`/`progress_bar`/`spinner`.
+  **Right-click context menus** are wired through a core `on_context` handler
+  (a new `ContextId`, carrying the click position) that the app routes on the
+  secondary button to open a menu at the cursor. **CI-verified** (X11): opening
+  the dropdown changes the frame and the modal's scrim darkens it; the tabs demo
+  switches the body on a tab click and opens a context menu on right-click.
 - ✅ **Clipboard**: copy/cut/paste in text fields via `Ctrl`/`Cmd`+`C`/`X`/`V`
   (`map_key` → `KeyInput::Copy`/`Cut`/`Paste`, handled by `EditBuffer`). An
   in-process mirror (`forma-core::clipboard`) makes copy/paste work in-app and

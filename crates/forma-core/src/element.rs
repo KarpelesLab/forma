@@ -5,7 +5,7 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
-use crate::runtime::{ActionId, Cx, DragId, FocusId, KeyInput, ScrollId, TextPosId};
+use crate::runtime::{ActionId, ContextId, Cx, DragId, FocusId, KeyInput, ScrollId, TextPosId};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -89,6 +89,9 @@ pub struct Element {
     /// Drag handle, if this element responds to pointer drags. Set via
     /// [`Element::on_drag`].
     pub drag: Option<DragId>,
+    /// Secondary-click (context) handle: this element opens a context menu on
+    /// right-click. Set via [`Element::on_context`].
+    pub context: Option<ContextId>,
     /// Caret position as a byte index into this element's text, for an editable
     /// text leaf. `None` for non-editable text and non-text elements. Set via
     /// [`Element::caret`]; the focus overlay draws the caret bar there.
@@ -123,6 +126,7 @@ impl Element {
             action: None,
             focus: None,
             drag: None,
+            context: None,
             caret: None,
             selection: None,
             text_pos: None,
@@ -141,6 +145,7 @@ impl Element {
             action: None,
             focus: None,
             drag: None,
+            context: None,
             caret: None,
             selection: None,
             text_pos: None,
@@ -163,6 +168,7 @@ impl Element {
             action: None,
             focus: None,
             drag: None,
+            context: None,
             caret: None,
             selection: None,
             text_pos: None,
@@ -195,6 +201,19 @@ impl Element {
     /// ```
     pub fn on_tap<S>(mut self, cx: &mut Cx<'_, S>, handler: impl FnMut(&mut S) + 'static) -> Self {
         self.action = Some(cx.register(handler));
+        self
+    }
+
+    /// Route secondary (right) clicks on this element to `handler`, which runs
+    /// against the app state and receives the click position in logical pixels —
+    /// typically used to open a context menu there via [`Cx::overlay`]. Registers
+    /// the handler in `cx` and stamps its [`ContextId`].
+    pub fn on_context<S>(
+        mut self,
+        cx: &mut Cx<'_, S>,
+        handler: impl FnMut(&mut S, forma_geometry::Point) + 'static,
+    ) -> Self {
+        self.context = Some(cx.register_context(handler));
         self
     }
 

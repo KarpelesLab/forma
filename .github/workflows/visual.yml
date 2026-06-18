@@ -424,6 +424,73 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Tabs + right-click context menu: render the tabsdemo, click the "Settings"
+  # tab (the body swatch recolors), then right-click the body and confirm a
+  # context menu appears. Each interaction must change the frame.
+  visual-tabs:
+    name: Visual test (Tabs + context menu / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, xdotool, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick xdotool fonts-dejavu-core
+
+      - name: Build the tabs demo
+        run: cargo build --release -p tabsdemo
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Switch tabs and open a context menu
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/tabsdemo > visual_output/tabs.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/tabs-0.png
+          # Click the middle tab ("Settings"): tabs sit ~y32, three across a
+          # 360px window — centers near x69 / x180 / x291.
+          xdotool mousemove 180 32 click 1
+          sleep 0.6
+          import -window root visual_output/tabs-1.png
+          # Right-click the body to open the context menu.
+          xdotool mousemove 180 250 click 3
+          sleep 0.6
+          import -window root visual_output/tabs-2.png
+          echo "=== tabs.log ==="; cat visual_output/tabs.log || true
+          sw=$(compare -metric AE visual_output/tabs-0.png visual_output/tabs-1.png null: 2>&1 || true)
+          mn=$(compare -metric AE visual_output/tabs-1.png visual_output/tabs-2.png null: 2>&1 || true)
+          echo "tab-switch changed pixels: $sw"
+          echo "context-menu changed pixels: $mn"
+          # Switching tabs recolors a big swatch (large change); opening the menu
+          # paints a panel of items over the body (also large).
+          [ "${sw%%[.e]*}" -gt 500 ]
+          [ "${mn%%[.e]*}" -gt 500 ]
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshots + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-tabs-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Render a real window whose frames are produced on the GPU (forma-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).

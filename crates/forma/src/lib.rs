@@ -40,12 +40,13 @@ pub use forma_widgets as widgets;
 
 use forma_core::{
     ActionId, Anchor, BoxStyle, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput,
-    LayoutNode, TextPosId, caret_index_at, collect_focusables, drag_at, find_text_pos, focus_at,
-    hit_test, layout, measure, paint, paint_focus, paint_hover, text_pos_at,
+    LayoutNode, TextPosId, caret_index_at, collect_focusables, context_at, drag_at, find_text_pos,
+    focus_at, hit_test, layout, measure, paint, paint_focus, paint_hover, text_pos_at,
 };
 use forma_geometry::{Point, Rect, ScaleFactor, Size};
 use forma_platform::{
-    ButtonState, ControlFlow, Event, KeyCode, Modifiers, WindowAttributes, WindowId, backend,
+    ButtonState, ControlFlow, Event, KeyCode, Modifiers, PointerButton, WindowAttributes, WindowId,
+    backend,
 };
 use forma_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
@@ -424,6 +425,27 @@ impl<S> Pane<S> {
         }
     }
 
+    /// Route a secondary (right) click at `pos` to the context handler under the
+    /// cursor, passing the click position (so it can open a context menu there).
+    /// Returns `true` if a handler ran.
+    fn context_at(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
+        let Some(id) = self.tree.as_ref().and_then(|t| context_at(t, pos)) else {
+            return false;
+        };
+        let ran = self.handlers.dispatch_context(id, pos, state);
+        if ran {
+            self.dirty = true;
+        }
+        ran
+    }
+
     /// Deliver committed `text` to the focused element. Returns `true` if a
     /// focused key handler consumed it.
     fn type_text(&mut self, state: &mut S, theme: &Theme, font: Option<&Font>, text: &str) -> bool {
@@ -719,6 +741,17 @@ impl<S> App<S> {
         panes[idx].click_at(state, theme, font.as_ref(), pos)
     }
 
+    fn pane_context_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].context_at(state, theme, font.as_ref(), pos)
+    }
+
     fn pane_type_text(&mut self, idx: usize, text: &str) -> bool {
         let App {
             state,
@@ -895,10 +928,22 @@ impl<S> App<S> {
                     present(&mut self, &mut surfaces, idx, window, true);
                     ControlFlow::Wait
                 }
+                // Secondary (right) click: route to a context handler, which
+                // typically opens a context menu at the click position.
                 Event::PointerButton {
+                    button: PointerButton::Right,
                     state: ButtonState::Pressed,
                     position,
-                    ..
+                } => {
+                    if self.pane_context_at(idx, position) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::PointerButton {
+                    button: PointerButton::Left,
+                    state: ButtonState::Pressed,
+                    position,
                 } => {
                     self.panes[idx].pressed = self.panes[idx]
                         .tree
@@ -929,9 +974,9 @@ impl<S> App<S> {
                     ControlFlow::Wait
                 }
                 Event::PointerButton {
+                    button: PointerButton::Left,
                     state: ButtonState::Released,
                     position,
-                    ..
                 } => {
                     if self.panes[idx].text_selecting.is_some() {
                         self.panes[idx].end_text_select();
@@ -1066,7 +1111,7 @@ pub mod prelude {
         EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
         edit_string, heading, label, menu, menu_item, open_dialog, open_menu, panel, paragraph,
         progress_bar, radio, row, scroll, setting_row, slider, spacer, spinner, swatch, switch,
-        text_area, text_editor, text_field, tooltip,
+        tabs, text_area, text_editor, text_field, tooltip,
     };
 }
 

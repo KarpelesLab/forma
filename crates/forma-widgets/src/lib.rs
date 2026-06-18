@@ -756,6 +756,48 @@ pub fn radio<S>(
         .on_tap(cx, on_select)
 }
 
+/// A horizontal tab strip (segmented control): one cell per label, the
+/// `selected` one filled with the accent color and the rest on the surface.
+/// Tapping a tab runs `on_select` with that tab's index. Stateless — store the
+/// selected index in your app state and render the matching content yourself.
+///
+/// `on_select` must be `Clone` because it is stamped onto every tab (each with
+/// its own index); a plain closure capturing `Copy`/`Clone` data satisfies this.
+pub fn tabs<S>(
+    cx: &mut Cx<S>,
+    theme: &Theme,
+    labels: &[&str],
+    selected: usize,
+    on_select: impl Fn(&mut S, usize) + Clone + 'static,
+) -> Element {
+    let p = &theme.palette;
+    let mut cells = Vec::with_capacity(labels.len());
+    for (i, text) in labels.iter().enumerate() {
+        let active = i == selected;
+        let (fill, ink) = if active {
+            (p.primary, p.on_primary)
+        } else {
+            (p.surface, p.text)
+        };
+        let on = on_select.clone();
+        let cell = Element::stack(
+            Axis::Horizontal,
+            vec![Element::text(*text, theme.typography.body, ink)],
+        )
+        .fill(fill)
+        .border(p.border, 1.0)
+        .radius(theme.radius)
+        .padding(Insets::symmetric(theme.spacing.md, theme.spacing.sm))
+        .align(Align::Center, Align::Center)
+        .grow(1.0)
+        .on_tap(cx, move |s: &mut S| on(s, i));
+        cells.push(cell);
+    }
+    Element::stack(Axis::Horizontal, cells)
+        .gap(theme.spacing.xs)
+        .align(Align::Start, Align::Stretch)
+}
+
 /// A progress bar: a track with a primary-filled portion for `fraction` (0..=1).
 /// Default width 200 px; override with `.width(..)`.
 pub fn progress_bar(theme: &Theme, fraction: f64) -> Element {

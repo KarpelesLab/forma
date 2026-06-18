@@ -90,6 +90,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
         action: el.action,
         focus: el.focus,
         drag: el.drag,
+        context: el.context,
         caret: el.caret,
         selection: el.selection,
         text_pos: el.text_pos,

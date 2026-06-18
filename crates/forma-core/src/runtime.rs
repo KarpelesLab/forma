@@ -30,6 +30,9 @@ type DragFn<S> = Box<dyn FnMut(&mut S, f64)>;
 /// element's text and whether the gesture *extends* a selection (drag) or
 /// *places* the caret (initial press).
 type TextPosFn<S> = Box<dyn FnMut(&mut S, usize, bool)>;
+/// A boxed secondary-click (context) handler: receives the click position in
+/// logical pixels, so it can open a context menu there.
+type ContextFn<S> = Box<dyn FnMut(&mut S, Point)>;
 
 /// An opaque handle to a registered tap handler, stamped onto the element that
 /// owns it and resolved against the [`Cx`] tap table on dispatch.
@@ -48,6 +51,11 @@ pub struct DragId(pub(crate) u32);
 /// handler (click-to-position / drag-to-select).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextPosId(pub(crate) u32);
+
+/// An opaque handle to an element with a registered secondary-click (context)
+/// handler, resolved against the [`Cx`] context table on a right-click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ContextId(pub(crate) u32);
 
 /// An opaque handle to a scroll container. The app keeps a scroll offset per id
 /// (adjusted by wheel events) and re-applies it each frame; the id is stable as
@@ -127,6 +135,7 @@ pub struct Cx<'a, S> {
     keys: Vec<KeyFn<S>>,
     drags: Vec<DragFn<S>>,
     text_pos: Vec<TextPosFn<S>>,
+    contexts: Vec<ContextFn<S>>,
     /// Next scroll-container id to hand out (scroll offsets live in the app, not
     /// here, so we only need a stable per-frame counter).
     next_scroll: u32,
@@ -147,6 +156,7 @@ impl<'a, S> Cx<'a, S> {
             keys: Vec::new(),
             drags: Vec::new(),
             text_pos: Vec::new(),
+            contexts: Vec::new(),
             next_scroll: 0,
             overlays: Vec::new(),
             memo: HashMap::new(),
@@ -191,6 +201,15 @@ impl<'a, S> Cx<'a, S> {
     ) -> TextPosId {
         let id = TextPosId(self.text_pos.len() as u32);
         self.text_pos.push(Box::new(handler));
+        id
+    }
+
+    /// Register a secondary-click (context) handler, returning its
+    /// [`ContextId`]. The handler receives the right-click position in logical
+    /// pixels — typically used to open a context menu there via [`Cx::overlay`].
+    pub fn register_context(&mut self, handler: impl FnMut(&mut S, Point) + 'static) -> ContextId {
+        let id = ContextId(self.contexts.len() as u32);
+        self.contexts.push(Box::new(handler));
         id
     }
 
@@ -255,6 +274,7 @@ impl<'a, S> Cx<'a, S> {
             keys: self.keys,
             drags: self.drags,
             text_pos: self.text_pos,
+            contexts: self.contexts,
         }
     }
 }
@@ -277,6 +297,7 @@ pub struct Handlers<S> {
     keys: Vec<KeyFn<S>>,
     drags: Vec<DragFn<S>>,
     text_pos: Vec<TextPosFn<S>>,
+    contexts: Vec<ContextFn<S>>,
 }
 
 impl<S> Handlers<S> {
@@ -329,9 +350,25 @@ impl<S> Handlers<S> {
         }
     }
 
-    /// Total number of registered handlers (taps + keys + drags + text-pointer).
+    /// Invoke the context (secondary-click) handler for `id` with the click
+    /// `pos`. Returns `true` if one existed and ran.
+    pub fn dispatch_context(&mut self, id: ContextId, pos: Point, state: &mut S) -> bool {
+        if let Some(handler) = self.contexts.get_mut(id.0 as usize) {
+            handler(state, pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Total number of registered handlers (taps + keys + drags + text-pointer
+    /// + context).
     pub fn len(&self) -> usize {
-        self.taps.len() + self.keys.len() + self.drags.len() + self.text_pos.len()
+        self.taps.len()
+            + self.keys.len()
+            + self.drags.len()
+            + self.text_pos.len()
+            + self.contexts.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -339,6 +376,7 @@ impl<S> Handlers<S> {
             && self.keys.is_empty()
             && self.drags.is_empty()
             && self.text_pos.is_empty()
+            && self.contexts.is_empty()
     }
 }
 
@@ -349,6 +387,7 @@ impl<S> Default for Handlers<S> {
             keys: Vec::new(),
             drags: Vec::new(),
             text_pos: Vec::new(),
+            contexts: Vec::new(),
         }
     }
 }
@@ -390,6 +429,9 @@ pub struct LayoutNode {
     pub action: Option<ActionId>,
     pub focus: Option<FocusId>,
     pub drag: Option<DragId>,
+    /// Secondary-click (context) handle: this element opens a context menu on
+    /// right-click.
+    pub context: Option<ContextId>,
     /// Caret byte index for an editable text leaf (drawn by the focus overlay).
     pub caret: Option<usize>,
     /// Selected byte range `[start, end)` for an editable text leaf (the focus
@@ -420,6 +462,7 @@ impl LayoutNode {
             action: None,
             focus: None,
             drag: None,
+            context: None,
             caret: None,
             selection: None,
             text_pos: None,
@@ -443,6 +486,21 @@ pub fn hit_test(node: &LayoutNode, point: Point) -> Option<ActionId> {
     }
     if node.action.is_some() && node.bounds.contains(point) {
         node.action
+    } else {
+        None
+    }
+}
+
+/// Find the [`ContextId`] of the top-most node with a secondary-click handler
+/// containing `point` (mirrors [`hit_test`], for right-clicks).
+pub fn context_at(node: &LayoutNode, point: Point) -> Option<ContextId> {
+    for child in node.children.iter().rev() {
+        if let Some(id) = context_at(child, point) {
+            return Some(id);
+        }
+    }
+    if node.context.is_some() && node.bounds.contains(point) {
+        node.context
     } else {
         None
     }
@@ -571,6 +629,7 @@ mod tests {
             action,
             focus,
             drag: None,
+            context: None,
             caret: None,
             selection: None,
             text_pos: None,
@@ -655,6 +714,7 @@ mod tests {
             action: Some(ActionId(0)),
             focus: None,
             drag: None,
+            context: None,
             caret: None,
             selection: None,
             text_pos: None,
@@ -680,5 +740,30 @@ mod tests {
         let mut focusables = Vec::new();
         collect_focusables(&root, &mut focusables);
         assert_eq!(focusables, vec![FocusId(0), FocusId(1)]);
+    }
+
+    #[test]
+    fn context_handler_resolves_and_receives_the_click_point() {
+        struct St {
+            at: Option<Point>,
+        }
+        let theme = Theme::light();
+        let mut cx = Cx::<St>::new(&theme);
+        // A right-click handler that records where it was invoked.
+        let id = cx.register_context(|s: &mut St, p: Point| s.at = Some(p));
+        let mut handlers = cx.into_handlers();
+
+        // A node carrying that context handle.
+        let mut node = leaf(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), None, None);
+        node.context = Some(id);
+
+        // context_at finds it; a point outside misses.
+        assert_eq!(context_at(&node, Point::new(50.0, 50.0)), Some(id));
+        assert_eq!(context_at(&node, Point::new(150.0, 50.0)), None);
+
+        // Dispatch passes the click position through to the handler.
+        let mut st = St { at: None };
+        assert!(handlers.dispatch_context(id, Point::new(12.0, 34.0), &mut st));
+        assert_eq!(st.at, Some(Point::new(12.0, 34.0)));
     }
 }
