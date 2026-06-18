@@ -7,7 +7,7 @@
 //! ┌───────────────────────────┐
 //! │                      0    │  ← right-aligned display
 //! ├─────┬─────┬─────┬─────────┤
-//! │  C  │  ⌫  │  %  │   ÷     │
+//! │  C  │  ←  │  %  │   ÷     │
 //! │  7  │  8  │  9  │   ×     │
 //! │  4  │  5  │  6  │   −     │
 //! │  1  │  2  │  3  │   +     │
@@ -199,7 +199,7 @@ fn view(state: &Calc, cx: &mut Cx<Calc>) -> Element {
     let keypad = column(vec![
         keypad_row(vec![
             key(&theme, cx, "C", Variant::Danger, 1.0, |s| s.clear()),
-            key(&theme, cx, "⌫", Variant::Secondary, 1.0, |s| {
+            key(&theme, cx, "←", Variant::Secondary, 1.0, |s| {
                 s.backspace()
             }),
             key(&theme, cx, "%", Variant::Secondary, 1.0, |s| s.percent()),
