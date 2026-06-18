@@ -259,6 +259,38 @@ pub fn present_offscreen(input: &Pixmap) -> Result<Pixmap, String> {
     }
 }
 
+/// The device's EGL extension string — used to check for the dma-buf
+/// import/export extensions before relying on them
+/// (`EGL_EXT_image_dma_buf_import`, `EGL_MESA_image_dma_buf_export`). Errors if
+/// the `gl` feature is off or EGL can't initialize.
+pub fn dmabuf_extensions() -> Result<String, String> {
+    #[cfg(all(target_os = "linux", feature = "gl"))]
+    {
+        gl::dmabuf_extensions()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "gl")))]
+    {
+        Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
+    }
+}
+
+/// Prove the cross-process surface seam end to end in one process: render a
+/// known pattern to a GPU texture, **export** it as a `dma-buf` (the handle a
+/// browser content process would send the UI process), **re-import** that
+/// `dma-buf` as a texture, and confirm the pixels survived. Returns the imported
+/// pixels (top-first RGBA). Runs surfaceless (no window). Errors if the `gl`
+/// feature is off, EGL can't initialize, or the dma-buf extensions are absent.
+pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "linux", feature = "gl"))]
+    {
+        gl::dmabuf_export_import_self_test()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "gl")))]
+    {
+        Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
+    }
+}
+
 /// Draw solid-color `rects` **GPU-natively** (as tessellated geometry through a
 /// flat-color shader, not by compositing a CPU frame) on a `background`-cleared
 /// target of `size`, returning the rendered frame — the first step toward a

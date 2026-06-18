@@ -552,6 +552,48 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Cross-process GPU surface seam (browser content path): export a GL texture as
+  # a dma-buf and re-import it. Build-verified always; functionally verified only
+  # where the device supports the dma-buf EGL extensions. CI runs software Mesa
+  # (llvmpipe), which often lacks dma-buf export — so the demo reports UNSUPPORTED
+  # (exit 2) there and that is accepted; a real failure (exit 1) is not. The full
+  # functional pass is expected on real GPU hardware.
+  gpu-dmabuf:
+    name: GPU dma-buf export/import (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Mesa GL/EGL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1
+
+      - name: Build the dma-buf spike (GLES backend)
+        run: cargo build --release -p dmabuftest --features forma-gpu/gl
+
+      - name: Run the export/import self-test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          set +e
+          ./target/release/dmabuftest | tee dmabuf.log
+          rc=${PIPESTATUS[0]}
+          echo "exit code: $rc"
+          # 0 = functional pass, 2 = unsupported on this (software) device — both
+          # acceptable in CI; 1 = extensions present but pixels wrong (a real bug).
+          if [ "$rc" -eq 1 ]; then
+            echo "dma-buf round-trip produced wrong pixels"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "unexpected exit code $rc"
+            exit 1
+          fi
+
   # Render the window example under a headless wlroots compositor (sway) and
   # screenshot it with grim, proving the hand-authored Wayland backend connects,
   # binds the globals, creates an xdg-shell window, and presents via wl_shm.

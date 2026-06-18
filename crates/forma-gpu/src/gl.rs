@@ -92,6 +92,11 @@ unsafe extern "C" {
         ctx: EGLContext,
     ) -> EGLBoolean;
     fn eglGetError() -> EGLint;
+    fn eglQueryString(dpy: EGLDisplay, name: EGLint) -> *const c_char;
+    fn eglGetCurrentContext() -> EGLContext;
+    /// Resolve an EGL/GL extension entry point by name (extensions aren't
+    /// guaranteed to be directly linkable symbols).
+    fn eglGetProcAddress(procname: *const c_char) -> *const c_void;
 }
 
 #[link(name = "GLESv2")]
@@ -223,6 +228,12 @@ unsafe fn compile(kind: GLenum, src: &[u8]) -> Result<GLuint, String> {
 /// Create a surfaceless EGL display + GLES2 context and make it current. Shared
 /// by the present and GPU-native-draw paths; runs headlessly under Mesa.
 unsafe fn egl_make_current() -> Result<(), String> {
+    unsafe { egl_init().map(|_| ()) }
+}
+
+/// Like [`egl_make_current`] but returns the [`EGLDisplay`], which the dma-buf
+/// import/export path needs for `eglCreateImageKHR` / `eglExportDMABUFImageMESA`.
+unsafe fn egl_init() -> Result<EGLDisplay, String> {
     unsafe {
         let dpy = eglGetPlatformDisplay(
             EGL_PLATFORM_SURFACELESS_MESA,
@@ -268,7 +279,7 @@ unsafe fn egl_make_current() -> Result<(), String> {
                 eglGetError()
             ));
         }
-        Ok(())
+        Ok(dpy)
     }
 }
 
@@ -794,4 +805,194 @@ pub fn render_scene_gl(
         glFinish();
         Ok(read_back(w, h))
     }
+}
+
+// ---- dma-buf import/export (the cross-process zero-copy surface seam) --------
+//
+// The browser content process renders the page into a GPU texture, *exports* it
+// as a `dma-buf` (a kernel handle to GPU memory), and passes the fd to the UI
+// (Forma) process over a socket; Forma *imports* it as a texture and composites
+// it. Both ends use standard Mesa EGL extensions — no kernel `udmabuf` ioctls:
+//   producer: EGL_MESA_image_dma_buf_export
+//   consumer: EGL_EXT_image_dma_buf_import
+// The self-test below does both ends in one process (the fd never leaves it) to
+// prove the GPU mechanism; cross-process fd passing is the next step.
+
+const EGL_EXTENSIONS: EGLint = 0x3055;
+const EGL_GL_TEXTURE_2D: EGLenum = 0x30B1;
+const EGL_IMAGE_PRESERVED_KHR: EGLint = 0x30D2;
+const EGL_TRUE: EGLint = 1;
+const EGL_LINUX_DMA_BUF_EXT: EGLenum = 0x3270;
+const EGL_WIDTH: EGLint = 0x3057;
+const EGL_HEIGHT: EGLint = 0x3056;
+const EGL_LINUX_DRM_FOURCC_EXT: EGLint = 0x3271;
+const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
+const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
+const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
+// DRM fourcc for 8-bit RGBA in memory order [R,G,B,A] — matches `Pixmap`.
+const DRM_FORMAT_ABGR8888: i32 = 0x3432_4241; // 'AB24'
+
+type EglClientBuffer = *mut c_void;
+type EglImage = *mut c_void;
+
+type PfnCreateImage =
+    unsafe extern "C" fn(EGLDisplay, EGLContext, EGLenum, EglClientBuffer, *const EGLint) -> EglImage;
+type PfnDestroyImage = unsafe extern "C" fn(EGLDisplay, EglImage) -> EGLBoolean;
+type PfnExportQuery =
+    unsafe extern "C" fn(EGLDisplay, EglImage, *mut i32, *mut i32, *mut u64) -> EGLBoolean;
+type PfnExport =
+    unsafe extern "C" fn(EGLDisplay, EglImage, *mut i32, *mut EGLint, *mut EGLint) -> EGLBoolean;
+type PfnTargetTexture = unsafe extern "C" fn(GLenum, EglImage);
+
+/// Resolve an extension entry point by (NUL-terminated) name.
+unsafe fn load_proc<T: Copy>(name: &[u8]) -> Result<T, String> {
+    unsafe {
+        debug_assert_eq!(name.last(), Some(&0), "proc name must be NUL-terminated");
+        let p = eglGetProcAddress(name.as_ptr() as *const c_char);
+        if p.is_null() {
+            return Err(format!(
+                "missing entry point {}",
+                String::from_utf8_lossy(&name[..name.len() - 1])
+            ));
+        }
+        Ok(core::mem::transmute_copy::<*const c_void, T>(&p))
+    }
+}
+
+/// Bring up surfaceless EGL and return the device's EGL extension string — used
+/// to check for `EGL_EXT_image_dma_buf_import` / `EGL_MESA_image_dma_buf_export`
+/// before relying on them. Errors if EGL can't initialize.
+pub fn dmabuf_extensions() -> Result<String, String> {
+    unsafe {
+        let dpy = egl_init()?;
+        let s = eglQueryString(dpy, EGL_EXTENSIONS);
+        if s.is_null() {
+            return Err("eglQueryString(EGL_EXTENSIONS) returned null".into());
+        }
+        Ok(core::ffi::CStr::from_ptr(s).to_string_lossy().into_owned())
+    }
+}
+
+/// Prove the cross-process surface mechanism end to end (in one process): upload
+/// a known 2×2 pattern to a GL texture, export it as a `dma-buf`, re-import that
+/// `dma-buf` as a second texture, read it back, and confirm the pixels survived.
+/// Returns the imported pixels (top-first RGBA) on success.
+///
+/// Runs surfaceless, so it touches no window/X server and is safe to run
+/// directly on a GPU box. Requires `EGL_MESA_image_dma_buf_export` +
+/// `EGL_EXT_image_dma_buf_import` (real Mesa/GPU drivers; may be absent on
+/// software-only Mesa).
+pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
+    unsafe {
+        let dpy = egl_init()?;
+        let ctx = eglGetCurrentContext();
+
+        let create_image: PfnCreateImage = load_proc(b"eglCreateImageKHR\0")?;
+        let destroy_image: PfnDestroyImage = load_proc(b"eglDestroyImageKHR\0")?;
+        let export_query: PfnExportQuery = load_proc(b"eglExportDMABUFImageQueryMESA\0")?;
+        let export: PfnExport = load_proc(b"eglExportDMABUFImageMESA\0")?;
+        let target_texture: PfnTargetTexture = load_proc(b"glEGLImageTargetTexture2DOES\0")?;
+
+        let (w, h) = (2i32, 2i32);
+        // Source pattern: four distinct opaque colors, one per texel.
+        let src: [u8; 16] = [
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            255, 255, 255, 255, // white
+        ];
+
+        // Producer: a normal GL texture holding the pattern.
+        let mut tex_src: GLuint = 0;
+        glGenTextures(1, &mut tex_src);
+        glBindTexture(GL_TEXTURE_2D, tex_src);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_RGBA as GLint, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+            src.as_ptr() as *const c_void,
+        );
+
+        // Wrap it in an EGLImage, then export that image as a dma-buf.
+        let preserve = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
+        let img_src = create_image(
+            dpy, ctx, EGL_GL_TEXTURE_2D, tex_src as usize as EglClientBuffer, preserve.as_ptr(),
+        );
+        if img_src.is_null() {
+            return Err(format!("eglCreateImageKHR(GL_TEXTURE_2D) failed: {:#x}", eglGetError()));
+        }
+        let (mut fourcc, mut planes, mut modifier) = (0i32, 0i32, 0u64);
+        if export_query(dpy, img_src, &mut fourcc, &mut planes, &mut modifier) == 0 {
+            return Err(format!("eglExportDMABUFImageQueryMESA failed: {:#x}", eglGetError()));
+        }
+        let (mut fd, mut stride, mut offset) = (-1i32, 0i32, 0i32);
+        if export(dpy, img_src, &mut fd, &mut stride, &mut offset) == 0 || fd < 0 {
+            return Err(format!("eglExportDMABUFImageMESA failed: {:#x}", eglGetError()));
+        }
+
+        // Consumer: import the dma-buf as a fresh texture. In the browser this fd
+        // arrives over a socket from the content process.
+        let import_attribs = [
+            EGL_WIDTH, w,
+            EGL_HEIGHT, h,
+            EGL_LINUX_DRM_FOURCC_EXT, if fourcc != 0 { fourcc } else { DRM_FORMAT_ABGR8888 },
+            EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT, offset,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, stride,
+            EGL_NONE,
+        ];
+        let img_dst = create_image(
+            dpy, core::ptr::null_mut(), EGL_LINUX_DMA_BUF_EXT,
+            core::ptr::null_mut(), import_attribs.as_ptr(),
+        );
+        if img_dst.is_null() {
+            libc_close(fd);
+            return Err(format!("eglCreateImageKHR(LINUX_DMA_BUF) failed: {:#x}", eglGetError()));
+        }
+        let mut tex_dst: GLuint = 0;
+        glGenTextures(1, &mut tex_dst);
+        glBindTexture(GL_TEXTURE_2D, tex_dst);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        target_texture(GL_TEXTURE_2D, img_dst);
+
+        // Read the imported texture's storage back via an FBO. If the import
+        // aliased the producer's memory, the pattern is intact.
+        let mut fbo: GLuint = 0;
+        glGenFramebuffers(1, &mut fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_dst, 0);
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
+            libc_close(fd);
+            return Err("FBO incomplete for imported dma-buf texture".into());
+        }
+        let out = read_back(w, h);
+
+        destroy_image(dpy, img_dst);
+        destroy_image(dpy, img_src);
+        libc_close(fd);
+
+        // The four source colors must all be present in the imported readback
+        // (row order may flip between GL and the upload, so compare as a set).
+        let pix = out.as_bytes();
+        let want = [[255u8, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]];
+        for w3 in want {
+            let found = pix
+                .chunks_exact(4)
+                .any(|p| p[0] == w3[0] && p[1] == w3[1] && p[2] == w3[2]);
+            if !found {
+                return Err(format!(
+                    "imported pixels missing color {w3:?}; got {:?}",
+                    pix
+                ));
+            }
+        }
+        Ok(pix.to_vec())
+    }
+}
+
+unsafe extern "C" {
+    /// `close(2)` for the exported dma-buf fd (std has no stable fd-close).
+    #[link_name = "close"]
+    fn libc_close(fd: i32) -> i32;
 }

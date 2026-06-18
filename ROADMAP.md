@@ -317,6 +317,21 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   single-window default until they adopt the seam. **CI-verified** (X11): the
   multiwindow example opens a red and a blue window side by side and the root
   screenshot confirms both painted, each its own color.
+- 🚧 **Embedded GPU content (browser viewport)**: toward using Forma as a web
+  browser's UI, the chosen model is **Forma-as-compositor with shared GPU
+  textures** (the Chromium model): a separate, sandboxed content process renders
+  the page into a GPU texture, exports it as a `dma-buf` (Linux) / `IOSurface`
+  (macOS) / shared D3D handle (Windows), and Forma imports it as a texture and
+  composites it into a viewport element — so chrome (menus, tabs, dropdowns)
+  draws over/around the page and input is routed by Forma and forwarded to the
+  content process. **Phase A (done):** `forma-gpu` can export a GL texture as a
+  `dma-buf` and re-import it (`EGL_MESA_image_dma_buf_export` /
+  `EGL_EXT_image_dma_buf_import`), proving the zero-copy handoff; the
+  `dmabuftest` spike self-tests the round-trip (surfaceless, run on a GPU box;
+  CI build-verifies and probes extension availability under software Mesa). Next:
+  productionize the on-GPU windowed compositor (no Pixmap readback), a viewport
+  element, the IPC + fd-passing + sync, input forwarding, and the content-process
+  sandbox; then macOS/Windows parity.
 
 ---
 
