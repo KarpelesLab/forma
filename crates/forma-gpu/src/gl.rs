@@ -44,6 +44,7 @@ const GL_TEXTURE_MAG_FILTER: GLenum = 0x2800;
 const GL_TEXTURE_WRAP_S: GLenum = 0x2802;
 const GL_TEXTURE_WRAP_T: GLenum = 0x2803;
 const GL_LINEAR: GLint = 0x2601;
+const GL_NEAREST: GLint = 0x2600;
 const GL_CLAMP_TO_EDGE: GLint = 0x812F;
 const GL_FRAMEBUFFER: GLenum = 0x8D40;
 const GL_COLOR_ATTACHMENT0: GLenum = 0x8CE0;
@@ -835,8 +836,13 @@ const DRM_FORMAT_ABGR8888: i32 = 0x3432_4241; // 'AB24'
 type EglClientBuffer = *mut c_void;
 type EglImage = *mut c_void;
 
-type PfnCreateImage =
-    unsafe extern "C" fn(EGLDisplay, EGLContext, EGLenum, EglClientBuffer, *const EGLint) -> EglImage;
+type PfnCreateImage = unsafe extern "C" fn(
+    EGLDisplay,
+    EGLContext,
+    EGLenum,
+    EglClientBuffer,
+    *const EGLint,
+) -> EglImage;
 type PfnDestroyImage = unsafe extern "C" fn(EGLDisplay, EglImage) -> EGLBoolean;
 type PfnExportQuery =
     unsafe extern "C" fn(EGLDisplay, EglImage, *mut i32, *mut i32, *mut u64) -> EGLBoolean;
@@ -909,63 +915,191 @@ pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexImage2D(
-            GL_TEXTURE_2D, 0, GL_RGBA as GLint, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA as GLint,
+            w,
+            h,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
             src.as_ptr() as *const c_void,
         );
 
         // Wrap it in an EGLImage, then export that image as a dma-buf.
         let preserve = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let img_src = create_image(
-            dpy, ctx, EGL_GL_TEXTURE_2D, tex_src as usize as EglClientBuffer, preserve.as_ptr(),
+            dpy,
+            ctx,
+            EGL_GL_TEXTURE_2D,
+            tex_src as usize as EglClientBuffer,
+            preserve.as_ptr(),
         );
         if img_src.is_null() {
-            return Err(format!("eglCreateImageKHR(GL_TEXTURE_2D) failed: {:#x}", eglGetError()));
+            return Err(format!(
+                "eglCreateImageKHR(GL_TEXTURE_2D) failed: {:#x}",
+                eglGetError()
+            ));
         }
         let (mut fourcc, mut planes, mut modifier) = (0i32, 0i32, 0u64);
         if export_query(dpy, img_src, &mut fourcc, &mut planes, &mut modifier) == 0 {
-            return Err(format!("eglExportDMABUFImageQueryMESA failed: {:#x}", eglGetError()));
+            return Err(format!(
+                "eglExportDMABUFImageQueryMESA failed: {:#x}",
+                eglGetError()
+            ));
         }
         let (mut fd, mut stride, mut offset) = (-1i32, 0i32, 0i32);
         if export(dpy, img_src, &mut fd, &mut stride, &mut offset) == 0 || fd < 0 {
-            return Err(format!("eglExportDMABUFImageMESA failed: {:#x}", eglGetError()));
+            return Err(format!(
+                "eglExportDMABUFImageMESA failed: {:#x}",
+                eglGetError()
+            ));
         }
 
         // Consumer: import the dma-buf as a fresh texture. In the browser this fd
         // arrives over a socket from the content process.
         let import_attribs = [
-            EGL_WIDTH, w,
-            EGL_HEIGHT, h,
-            EGL_LINUX_DRM_FOURCC_EXT, if fourcc != 0 { fourcc } else { DRM_FORMAT_ABGR8888 },
-            EGL_DMA_BUF_PLANE0_FD_EXT, fd,
-            EGL_DMA_BUF_PLANE0_OFFSET_EXT, offset,
-            EGL_DMA_BUF_PLANE0_PITCH_EXT, stride,
+            EGL_WIDTH,
+            w,
+            EGL_HEIGHT,
+            h,
+            EGL_LINUX_DRM_FOURCC_EXT,
+            if fourcc != 0 {
+                fourcc
+            } else {
+                DRM_FORMAT_ABGR8888
+            },
+            EGL_DMA_BUF_PLANE0_FD_EXT,
+            fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+            offset,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT,
+            stride,
             EGL_NONE,
         ];
         let img_dst = create_image(
-            dpy, core::ptr::null_mut(), EGL_LINUX_DMA_BUF_EXT,
-            core::ptr::null_mut(), import_attribs.as_ptr(),
+            dpy,
+            core::ptr::null_mut(),
+            EGL_LINUX_DMA_BUF_EXT,
+            core::ptr::null_mut(),
+            import_attribs.as_ptr(),
         );
         if img_dst.is_null() {
             libc_close(fd);
-            return Err(format!("eglCreateImageKHR(LINUX_DMA_BUF) failed: {:#x}", eglGetError()));
+            return Err(format!(
+                "eglCreateImageKHR(LINUX_DMA_BUF) failed: {:#x}",
+                eglGetError()
+            ));
         }
         let mut tex_dst: GLuint = 0;
         glGenTextures(1, &mut tex_dst);
         glBindTexture(GL_TEXTURE_2D, tex_dst);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // NEAREST so the 2x2 source texels map through cleanly (no blending).
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         target_texture(GL_TEXTURE_2D, img_dst);
 
-        // Read the imported texture's storage back via an FBO. If the import
-        // aliased the producer's memory, the pattern is intact.
+        // Imported dma-buf textures are sample-only (not color-renderable), so
+        // verify the way Forma will actually use one: SAMPLE the imported texture
+        // into a normal renderable target, then read THAT back.
+        let mut tex_out: GLuint = 0;
+        glGenTextures(1, &mut tex_out);
+        glBindTexture(GL_TEXTURE_2D, tex_out);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA as GLint,
+            w,
+            h,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            core::ptr::null(),
+        );
         let mut fbo: GLuint = 0;
         glGenFramebuffers(1, &mut fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_dst, 0);
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D,
+            tex_out,
+            0,
+        );
         if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
             libc_close(fd);
-            return Err("FBO incomplete for imported dma-buf texture".into());
+            return Err("FBO incomplete for output texture".into());
         }
+        glViewport(0, 0, w, h);
+
+        // Pass-through sampler program (same as the present path).
+        let vs = compile(GL_VERTEX_SHADER, VERTEX_SRC)?;
+        let fs = compile(GL_FRAGMENT_SHADER, FRAGMENT_SRC)?;
+        let prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        let mut linked: GLint = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &mut linked);
+        if linked == 0 {
+            libc_close(fd);
+            return Err("self-test program link failed".into());
+        }
+        glUseProgram(prog);
+        #[rustfmt::skip]
+        let verts: [f32; 16] = [
+            -1.0, -1.0, 0.0, 1.0,
+             1.0, -1.0, 1.0, 1.0,
+            -1.0,  1.0, 0.0, 0.0,
+             1.0,  1.0, 1.0, 0.0,
+        ];
+        let mut vbo: GLuint = 0;
+        glGenBuffers(1, &mut vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            std::mem::size_of_val(&verts) as isize,
+            verts.as_ptr() as *const c_void,
+            GL_STATIC_DRAW,
+        );
+        let stride = 4 * std::mem::size_of::<f32>() as GLsizei;
+        let pos_loc = glGetAttribLocation(prog, c"pos".as_ptr());
+        let uv_loc = glGetAttribLocation(prog, c"uv".as_ptr());
+        if pos_loc < 0 || uv_loc < 0 {
+            libc_close(fd);
+            return Err("self-test attribute location not found".into());
+        }
+        glEnableVertexAttribArray(pos_loc as GLuint);
+        glVertexAttribPointer(
+            pos_loc as GLuint,
+            2,
+            GL_FLOAT,
+            GL_FALSE,
+            stride,
+            core::ptr::null(),
+        );
+        glEnableVertexAttribArray(uv_loc as GLuint);
+        glVertexAttribPointer(
+            uv_loc as GLuint,
+            2,
+            GL_FLOAT,
+            GL_FALSE,
+            stride,
+            (2 * std::mem::size_of::<f32>()) as *const c_void,
+        );
+        // Sample the imported dma-buf texture into the output target.
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex_dst);
+        let tex_loc = glGetUniformLocation(prog, c"tex".as_ptr());
+        glUniform1i(tex_loc, 0);
+        glClearColor(0.0, 0.0, 0.0, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glFinish();
         let out = read_back(w, h);
 
         destroy_image(dpy, img_dst);
