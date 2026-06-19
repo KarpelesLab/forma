@@ -25,6 +25,10 @@ pub mod backend;
 pub mod dialog;
 mod error;
 mod event;
+/// File-descriptor passing over a Unix socket (`SCM_RIGHTS`) — the transport for
+/// DRI3/Present GPU buffers and the browser content-process IPC.
+#[cfg(target_os = "linux")]
+pub mod scm;
 /// Hand-written UI Automation provider (Windows accessibility bridge).
 #[cfg(target_os = "windows")]
 pub mod uia;
