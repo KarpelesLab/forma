@@ -423,13 +423,19 @@ fn dri3_open(conn: &mut Conn, drawable: u32) -> io::Result<Option<RawFd>> {
     Ok(fds.first().copied())
 }
 
-/// Connect to `$DISPLAY`, negotiate DRI3, and open the server's DRM device —
-/// a probe for the GPU-present path. Returns a short human-readable result.
+/// Connect to `$DISPLAY`, negotiate DRI3, and open the server's DRM device,
+/// returning its fd (owned by the caller). `None` if the server lacks DRI3.
 /// Maps no window (DRI3Open targets the root drawable), so it's a benign query.
-pub fn dri3_open_probe() -> Result<String, PlatformError> {
+/// The fd can be handed to `forma-gpu` to bind EGL/GBM to the server's GPU.
+pub fn dri3_open_drm_fd() -> Result<Option<RawFd>, PlatformError> {
     let mut conn = Conn::connect()?;
     let root = conn.setup.root;
-    match dri3_open(&mut conn, root).map_err(os)? {
+    dri3_open(&mut conn, root).map_err(os)
+}
+
+/// As [`dri3_open_drm_fd`] but closes the fd and returns a human-readable result.
+pub fn dri3_open_probe() -> Result<String, PlatformError> {
+    match dri3_open_drm_fd()? {
         Some(fd) => {
             let msg = format!("DRI3Open ok: DRM device fd = {fd}");
             unsafe { libc_close_fd(fd) };
