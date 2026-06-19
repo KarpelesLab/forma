@@ -201,21 +201,35 @@ impl Scene {
     /// The frame carries a view box equal to the logical size, so the
     /// rasterizer maps logical pixels onto whatever physical canvas size the
     /// renderer was constructed with — that mapping *is* the DPI scale.
-    pub fn into_vector_frame(mut self) -> VectorFrame {
+    pub fn into_vector_frame(self) -> VectorFrame {
+        let size = self.logical_size;
+        self.into_vector_frame_view(Rect::from_xywh(0.0, 0.0, size.width, size.height))
+    }
+
+    /// Lower to a frame whose view box is `view` — a logical-pixel sub-rect of
+    /// the scene. A renderer sized to that region's physical pixels then
+    /// rasterizes only the region; content outside it is clipped by the canvas
+    /// bounds. Used for area-limited repaints (see `SoftwareRenderer::render_region`).
+    pub fn into_vector_frame_region(self, view: Rect) -> VectorFrame {
+        self.into_vector_frame_view(view)
+    }
+
+    /// Shared lowering: close any open clips, wrap the root nodes in a group,
+    /// and attach `view` as the frame's view box.
+    fn into_vector_frame_view(mut self, view: Rect) -> VectorFrame {
         // Defensively close any clip regions the caller left open.
         while self.stack.len() > 1 {
             self.pop_clip();
         }
-        let w = self.logical_size.width as f32;
-        let h = self.logical_size.height as f32;
+        let (w, h) = (view.width() as f32, view.height() as f32);
         let root = Group {
             children: self.stack.pop().unwrap().nodes,
             ..Group::new()
         };
         VectorFrame::new(w, h)
             .with_view_box(ViewBox {
-                min_x: 0.0,
-                min_y: 0.0,
+                min_x: view.min_x() as f32,
+                min_y: view.min_y() as f32,
                 width: w,
                 height: h,
             })

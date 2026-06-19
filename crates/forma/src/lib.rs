@@ -40,10 +40,11 @@ pub use forma_widgets as widgets;
 
 use forma_core::{
     ActionId, Anchor, BoxStyle, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput,
-    LayoutNode, TextPosId, caret_index_at, collect_focusables, context_at, drag_at, find_text_pos,
-    focus_at, hit_test, layout, measure, paint, paint_focus, paint_hover, text_pos_at,
+    LayoutNode, TextPosId, caret_index_at, collect_focusables, context_at, drag_at, find_action,
+    find_focus, find_text_pos, focus_at, hit_test, layout, measure, paint, paint_focus,
+    paint_hover, text_pos_at,
 };
-use forma_geometry::{Point, Rect, ScaleFactor, Size};
+use forma_geometry::{PhysicalSize, Point, Rect, ScaleFactor, Size};
 use forma_platform::{
     ButtonState, ControlFlow, Event, KeyCode, Modifiers, PointerButton, WindowAttributes, WindowId,
     backend,
@@ -86,6 +87,31 @@ pub type FrameRenderer = Box<dyn FnMut(&Scene, Color, ScaleFactor) -> Pixmap>;
 /// handlers) to an [`Element`] tree. Boxed so each window can hold its own view.
 pub type ViewFn<S> = Box<dyn FnMut(&S, &mut Cx<'_, S>) -> Element>;
 
+/// Logical-pixel margin added around a focused element's bounds so the damage
+/// region covers the focus ring (a 2px stroke straddling the bounds).
+const FOCUS_RING_MARGIN: f64 = 2.0;
+
+/// Grow `r` by `m` logical pixels on every side.
+fn inflate(r: Rect, m: f64) -> Rect {
+    Rect::from_xywh(r.min_x() - m, r.min_y() - m, r.width() + 2.0 * m, r.height() + 2.0 * m)
+}
+
+/// Fold `extra` damage rects into `base`. [`Damage::Full`] absorbs everything;
+/// otherwise the rects extend (or become) the region list. An empty `extra`
+/// leaves `base` unchanged.
+fn merge_regions(base: Damage, extra: Vec<Rect>) -> Damage {
+    if matches!(base, Damage::Full) || extra.is_empty() {
+        return base;
+    }
+    let mut regions = match base {
+        Damage::Regions(rs) => rs,
+        Damage::None => Vec::new(),
+        Damage::Full => unreachable!("handled above"),
+    };
+    regions.extend(extra);
+    Damage::Regions(regions)
+}
+
 /// Everything specific to one OS window: its view onto the shared state, its
 /// window attributes, and all the retained per-window render/event state (the
 /// laid-out tree, handlers, focus/hover/drag/selection, scroll offsets, the
@@ -116,6 +142,10 @@ struct Pane<S> {
     // The tree + overlay state that is currently on screen, used as the diff
     // baseline so a present can be limited to the region that actually changed.
     presented: Option<LayoutNode>,
+    // The full-window pixmap currently on screen (software path only). Retained
+    // so a partial repaint can re-rasterize just the damaged rects into it and
+    // present those, instead of rebuilding the whole frame's pixels.
+    last_pixmap: Option<Pixmap>,
     painted_hovered: Option<ActionId>,
     painted_focused: Option<FocusId>,
     // Cross-frame memo cache for `Cx::memo` (static subtree reuse).
@@ -159,6 +189,7 @@ impl<S> Pane<S> {
             text_selecting: None,
             dirty: true,
             presented: None,
+            last_pixmap: None,
             painted_hovered: None,
             painted_focused: None,
             memo_cache: std::collections::HashMap::new(),
@@ -349,19 +380,27 @@ impl<S> Pane<S> {
     /// to what is currently on screen (`self.presented`), then adopt the new
     /// frame as the on-screen baseline.
     ///
-    /// Hover/focus overlays are painted outside the [`LayoutNode`] tree, so a
-    /// change to either can't be localized by the tree diff — those frames, plus
-    /// the first frame and any root-size (resize) change, report [`Damage::Full`].
+    /// The tree diff localizes content changes. The hover highlight and focus
+    /// ring paint *outside* the tree, so a change to either is localized
+    /// separately: the union of the affected element's old and new bounds is
+    /// merged into the damage (the focus rect is inflated to cover the ring
+    /// stroke). The first frame, a root-size (resize) change, a floating-overlay
+    /// frame, and any case where a referenced node can't be found all fall back
+    /// to [`Damage::Full`].
     fn take_damage(&mut self) -> Damage {
-        let overlay_changed = self.hovered != self.painted_hovered
-            || self.focused != self.painted_focused
-            // Floating overlays paint above the tree and can't be localized by
-            // the diff, so any frame with overlays (or that just had them) is full.
-            || self.overlay_active
-            || self.painted_overlay_active;
+        // Floating overlays paint above the tree and can't be localized by the
+        // diff, so any frame with overlays (or that just had them) is full.
+        let overlay_changed = self.overlay_active || self.painted_overlay_active;
+        let hover_changed = self.hovered != self.painted_hovered;
+        let focus_changed = self.focused != self.painted_focused;
+
         let damage = match (&self.presented, &self.tree) {
             (Some(old), Some(new)) if !overlay_changed && old.bounds == new.bounds => {
-                forma_core::diff_trees(old, new)
+                let base = forma_core::diff_trees(old, new);
+                match self.overlay_damage_rects(old, new, hover_changed, focus_changed) {
+                    Some(rects) => merge_regions(base, rects),
+                    None => Damage::Full, // a referenced node vanished; repaint all
+                }
             }
             _ => Damage::Full,
         };
@@ -370,6 +409,40 @@ impl<S> Pane<S> {
         self.painted_focused = self.focused;
         self.painted_overlay_active = self.overlay_active;
         damage
+    }
+
+    /// Logical rects whose hover-highlight or focus-ring overlay changed between
+    /// the on-screen frame (`old`, carrying the `painted_*` ids) and the new
+    /// frame (`new`, carrying the current ids). Returns the (possibly empty) set
+    /// of rects, or `None` if a referenced node is missing — which the caller
+    /// treats as [`Damage::Full`].
+    fn overlay_damage_rects(
+        &self,
+        old: &LayoutNode,
+        new: &LayoutNode,
+        hover_changed: bool,
+        focus_changed: bool,
+    ) -> Option<Vec<Rect>> {
+        let mut rects = Vec::new();
+        if hover_changed {
+            if let Some(id) = self.painted_hovered {
+                rects.push(find_action(old, id)?.bounds);
+            }
+            if let Some(id) = self.hovered {
+                rects.push(find_action(new, id)?.bounds);
+            }
+        }
+        if focus_changed {
+            // The focus ring is a 2px stroke centered on the bounds, so inflate
+            // to cover the half that sits outside (plus a safety margin).
+            if let Some(id) = self.painted_focused {
+                rects.push(inflate(find_focus(old, id)?.bounds, FOCUS_RING_MARGIN));
+            }
+            if let Some(id) = self.focused {
+                rects.push(inflate(find_focus(new, id)?.bounds, FOCUS_RING_MARGIN));
+            }
+        }
+        Some(rects)
     }
 
     /// Build, paint, and rasterize the next frame, returning the [`Pixmap`] and
@@ -877,27 +950,65 @@ impl<S> App<S> {
                 ..
             } = app;
             let pane = &mut panes[idx];
+            let scale = window.scale_factor();
             let scene = pane.build_frame(state, theme, font.as_ref());
-            let pixmap = pane.rasterize(scene, theme, window.scale_factor());
             let damage = pane.take_damage();
+
+            // Nothing changed since the last present: render nothing, upload
+            // nothing. (Skips the whole rasterize, not just the upload.)
             if !force && damage.is_empty() {
-                return; // Nothing changed since the last present.
+                return;
             }
+
+            let phys_size = window.inner_size();
             let surface = surfaces[idx].get_or_insert_with(|| window.create_surface());
-            surface.resize(window.inner_size());
-            // Limit the present to the changed region (empty slice = full frame).
-            let regions = if force {
-                Vec::new()
+            surface.resize(phys_size);
+            let bounds =
+                Rect::from_xywh(0.0, 0.0, phys_size.width as f64, phys_size.height as f64);
+
+            // Area repaint: re-rasterize only the damaged rects into the
+            // retained pixmap and upload those. Requires the software path, a
+            // localizable (non-forced, region) damage, and a retained pixmap
+            // matching the current surface size.
+            let can_partial = !force
+                && pane.frame_renderer.is_none()
+                && matches!(damage, Damage::Regions(_))
+                && pane.last_pixmap.as_ref().map(Pixmap::size) == Some(phys_size);
+
+            if can_partial {
+                let regions = damage.to_physical(scale, bounds);
+                if regions.is_empty() {
+                    return; // damage fell entirely outside the surface
+                }
+                let s = scale.get();
+                let renderer = SoftwareRenderer::new().with_background(theme.palette.background);
+                let pixmap = pane.last_pixmap.as_mut().expect("checked by can_partial");
+                for r in &regions {
+                    let (pw, ph) = (r.width() as u32, r.height() as u32);
+                    if pw == 0 || ph == 0 {
+                        continue;
+                    }
+                    // `regions` are integer device-pixel rects; the matching
+                    // logical view is exactly that rect divided by the scale, so
+                    // the sub-render lands 1:1 on the destination pixels.
+                    let view =
+                        Rect::from_xywh(r.min_x() / s, r.min_y() / s, r.width() / s, r.height() / s);
+                    let sub = renderer.render_region(scene.clone(), view, PhysicalSize::new(pw, ph));
+                    pixmap.blit(&sub, r.min_x() as u32, r.min_y() as u32);
+                }
+                surface.present(pixmap, &regions);
             } else {
-                let bounds = Rect::from_xywh(
-                    0.0,
-                    0.0,
-                    pixmap.size().width as f64,
-                    pixmap.size().height as f64,
-                );
-                damage.to_physical(window.scale_factor(), bounds)
-            };
-            surface.present(&pixmap, &regions);
+                // Full render: forced (expose/resize), GPU path, first frame, a
+                // size change, or unlocalizable (`Damage::Full`) damage.
+                let pixmap = pane.rasterize(scene, theme, scale);
+                let regions = if force {
+                    Vec::new()
+                } else {
+                    damage.to_physical(scale, bounds)
+                };
+                surface.present(&pixmap, &regions);
+                pane.last_pixmap = Some(pixmap);
+            }
         };
 
         backend::run(primary_attrs, |event, window| {
@@ -1231,6 +1342,34 @@ mod tests {
         assert!(bound.min_y() >= 40.0, "damage strayed above the bottom box");
         assert!(bound.height() <= 40.0, "damage taller than the bottom box");
         assert!(bound.width() <= 200.0);
+    }
+
+    #[test]
+    fn hover_change_damages_only_the_hovered_box() {
+        let mut app = damage_app();
+        let _ = app.render_frame(); // prime the baseline (Full)
+
+        // Hover the top (tappable) box: the highlight appears on it alone. The
+        // tree is unchanged, so the damage comes purely from hover localization.
+        assert!(app.hover_at(Point::new(100.0, 20.0)));
+        let (_p, d) = app.render_frame();
+        let bound = match &d {
+            Damage::Regions(_) => d.bounding().expect("some region"),
+            other => panic!("expected localized regions, got {other:?}"),
+        };
+        // Confined to the top box (y in 0..40), not the full 80px window.
+        assert!(bound.max_y() <= 40.0, "hover damage strayed into the bottom box");
+        assert!(bound.height() <= 40.0, "hover damage taller than the box");
+
+        // Moving the hover off any tappable clears the highlight, damaging the
+        // box it just left — again localized, not full.
+        assert!(app.hover_at(Point::new(100.0, 60.0)));
+        let (_p, d) = app.render_frame();
+        let bound = match &d {
+            Damage::Regions(_) => d.bounding().expect("some region"),
+            other => panic!("expected localized regions on unhover, got {other:?}"),
+        };
+        assert!(bound.max_y() <= 40.0, "unhover damage strayed past the old box");
     }
 
     #[derive(Default)]

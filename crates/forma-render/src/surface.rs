@@ -51,6 +51,30 @@ impl Pixmap {
         &mut self.data
     }
 
+    /// Copy `src` into this pixmap with its top-left at `(dst_x, dst_y)`,
+    /// clipped to this pixmap's bounds. A straight row-by-row replace (no alpha
+    /// blend) — used to composite an opaque area-repaint render (see
+    /// [`SoftwareRenderer::render_region`]) into the retained full-window buffer.
+    ///
+    /// [`SoftwareRenderer::render_region`]: crate::SoftwareRenderer::render_region
+    pub fn blit(&mut self, src: &Pixmap, dst_x: u32, dst_y: u32) {
+        let dst_w = self.size.width;
+        let dst_h = self.size.height;
+        // Rows/cols of `src` that land inside this pixmap.
+        let copy_w = src.size.width.min(dst_w.saturating_sub(dst_x));
+        let copy_h = src.size.height.min(dst_h.saturating_sub(dst_y));
+        if copy_w == 0 || copy_h == 0 {
+            return;
+        }
+        let (src_stride, dst_stride) = (src.stride(), self.stride());
+        let row_bytes = copy_w as usize * 4;
+        for row in 0..copy_h as usize {
+            let s = row * src_stride;
+            let d = (dst_y as usize + row) * dst_stride + dst_x as usize * 4;
+            self.data[d..d + row_bytes].copy_from_slice(&src.data[s..s + row_bytes]);
+        }
+    }
+
     /// The four bytes `[r, g, b, a]` at `(x, y)`, or `None` if out of bounds.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.size.width || y >= self.size.height {
@@ -96,5 +120,35 @@ mod tests {
         assert_eq!(pm.pixel(1, 0), Some([10, 20, 30, 40]));
         assert_eq!(pm.pixel(2, 0), None);
         assert_eq!(pm.stride(), 8);
+    }
+
+    #[test]
+    fn blit_composites_at_offset() {
+        let mut dst = Pixmap::new(PhysicalSize::new(4, 4));
+        let mut src = Pixmap::new(PhysicalSize::new(2, 2));
+        for px in src.as_bytes_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[1, 2, 3, 4]);
+        }
+        dst.blit(&src, 1, 1);
+        // The 2x2 block at (1,1) is filled; (0,0) stays transparent.
+        assert_eq!(dst.pixel(0, 0), Some([0, 0, 0, 0]));
+        assert_eq!(dst.pixel(1, 1), Some([1, 2, 3, 4]));
+        assert_eq!(dst.pixel(2, 2), Some([1, 2, 3, 4]));
+        assert_eq!(dst.pixel(3, 3), Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn blit_clips_to_destination_bounds() {
+        let mut dst = Pixmap::new(PhysicalSize::new(2, 2));
+        let mut src = Pixmap::new(PhysicalSize::new(2, 2));
+        for px in src.as_bytes_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[9, 9, 9, 9]);
+        }
+        // Origin near the far corner: only the (1,1) pixel lands inside.
+        dst.blit(&src, 1, 1);
+        assert_eq!(dst.pixel(1, 1), Some([9, 9, 9, 9]));
+        assert_eq!(dst.pixel(0, 0), Some([0, 0, 0, 0]));
+        // Fully out of bounds: no-op, no panic.
+        dst.blit(&src, 5, 5);
     }
 }
