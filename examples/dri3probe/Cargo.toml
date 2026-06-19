@@ -1,0 +1,16 @@
+[package]
+name = "dri3probe"
+description = "Forma spike: negotiate DRI3 over the raw X11 socket and receive the server's DRM device fd (toward zero-copy GPU present via DRI3 + Present)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma-platform.workspace = true
+
+[lints]
+workspace = true

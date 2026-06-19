@@ -27,6 +27,7 @@
 
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
+use std::os::fd::RawFd;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -363,6 +364,84 @@ fn query_extension(conn: &mut Conn, name: &[u8]) -> io::Result<Option<u8>> {
         return Ok(None);
     }
     Ok(Some(pkt[9]))
+}
+
+// ---- DRI3: GPU buffer sharing with the X server -----------------------------
+//
+// DRI3 + Present is how a GPU frame reaches the window with no readback (the
+// chosen Phase-B path): render to a dma-buf, wrap it as an X Pixmap via
+// DRI3 `PixmapFromBuffers` (the fd sent over this socket with SCM_RIGHTS), then
+// flip it to the window via the Present extension. `dri3_open` is the first step
+// — it returns the server's DRM device fd, so our GPU context can render on the
+// same device the server can import from. The fd arrives as ancillary data on
+// the reply, received via `crate::scm`.
+
+const DRI3_QUERY_VERSION: u8 = 0;
+const DRI3_OPEN: u8 = 1;
+
+/// Build a `DRI3Open` request (minor opcode 1): drawable + provider (0 = pick).
+fn dri3_open_request(major: u8, drawable: u32) -> Vec<u8> {
+    let mut req = vec![major, DRI3_OPEN, 0, 0];
+    req.extend_from_slice(&drawable.to_le_bytes());
+    req.extend_from_slice(&0u32.to_le_bytes()); // provider
+    finish(req)
+}
+
+/// Negotiate DRI3 and open the server's DRM device, returning its fd. Returns
+/// `Ok(None)` if the server has no DRI3 extension. The fd is owned by the caller.
+fn dri3_open(conn: &mut Conn, drawable: u32) -> io::Result<Option<RawFd>> {
+    let Some(major) = query_extension(conn, b"DRI3")? else {
+        return Ok(None);
+    };
+
+    // DRI3QueryVersion — negotiate (we want >= 1.2 for PixmapFromBuffers later).
+    let mut req = vec![major, DRI3_QUERY_VERSION, 0, 0];
+    req.extend_from_slice(&1u32.to_le_bytes()); // client major
+    req.extend_from_slice(&2u32.to_le_bytes()); // client minor
+    conn.send(&finish(req))?;
+    let mut reply = [0u8; 32];
+    conn.stream.read_exact(&mut reply)?;
+    if reply[0] != 1 {
+        return Ok(None); // error reply
+    }
+
+    // DRI3Open — reply carries the DRM fd as ancillary data (nfd in byte 1).
+    conn.send(&dri3_open_request(major, drawable))?;
+    let mut reply = [0u8; 32];
+    let mut fds = Vec::new();
+    let n = crate::scm::recv_with_fds(&conn.stream, &mut reply, &mut fds, 1)?;
+    // The 32-byte reply may arrive split from the ancillary chunk; read the rest.
+    if n < 32 {
+        conn.stream.read_exact(&mut reply[n..])?;
+    }
+    if reply[0] != 1 {
+        for fd in fds {
+            unsafe { libc_close_fd(fd) };
+        }
+        return Ok(None);
+    }
+    Ok(fds.first().copied())
+}
+
+/// Connect to `$DISPLAY`, negotiate DRI3, and open the server's DRM device —
+/// a probe for the GPU-present path. Returns a short human-readable result.
+/// Maps no window (DRI3Open targets the root drawable), so it's a benign query.
+pub fn dri3_open_probe() -> Result<String, PlatformError> {
+    let mut conn = Conn::connect()?;
+    let root = conn.setup.root;
+    match dri3_open(&mut conn, root).map_err(os)? {
+        Some(fd) => {
+            let msg = format!("DRI3Open ok: DRM device fd = {fd}");
+            unsafe { libc_close_fd(fd) };
+            Ok(msg)
+        }
+        None => Ok("DRI3 unavailable on this server".to_string()),
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "close"]
+    fn libc_close_fd(fd: RawFd) -> i32;
 }
 
 /// Set up MIT-SHM: create a shared segment of `capacity` bytes, attach it to the
@@ -1285,6 +1364,18 @@ fn serve_selection_request(conn: &mut Conn, ev: &[u8; 32]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dri3_open_request_is_well_formed() {
+        // DRI3Open: major opcode, minor 1, length 3 words, drawable, provider 0.
+        let req = dri3_open_request(0x90, 0x0012_3456);
+        assert_eq!(req[0], 0x90);
+        assert_eq!(req[1], DRI3_OPEN);
+        assert_eq!(u16::from_le_bytes([req[2], req[3]]), 3);
+        assert_eq!(rd_u32(&req, 4).unwrap(), 0x0012_3456);
+        assert_eq!(rd_u32(&req, 8).unwrap(), 0);
+        assert_eq!(req.len(), 12);
+    }
 
     #[test]
     fn selection_notify_send_event_is_well_formed() {
