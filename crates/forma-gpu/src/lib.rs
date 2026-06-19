@@ -291,6 +291,23 @@ pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
     }
 }
 
+/// Like [`dmabuf_export_import_self_test`] but bound to the GPU named by `drm_fd`
+/// (a DRM device fd — e.g. from X11 `DRI3Open`, or an opened render node) via a
+/// GBM device, so the rendered/exported buffers live on that exact GPU. This is
+/// the device-binding the DRI3 + Present compositor path needs. Errors if the
+/// `gl` feature is off or the device can't be used.
+pub fn dmabuf_self_test_on_device(drm_fd: i32) -> Result<Vec<u8>, String> {
+    #[cfg(all(target_os = "linux", feature = "gl"))]
+    {
+        gl::dmabuf_self_test_on_device(drm_fd)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "gl")))]
+    {
+        let _ = drm_fd;
+        Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
+    }
+}
+
 /// Draw solid-color `rects` **GPU-natively** (as tessellated geometry through a
 /// flat-color shader, not by compositing a CPU frame) on a `background`-cleared
 /// target of `size`, returning the rendered frame — the first step toward a

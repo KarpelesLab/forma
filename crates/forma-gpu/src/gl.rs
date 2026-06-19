@@ -24,11 +24,13 @@ type GLsizei = i32;
 type GLbitfield = u32;
 
 const EGL_PLATFORM_SURFACELESS_MESA: EGLenum = 0x31DD;
+const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
 const EGL_OPENGL_ES_API: EGLenum = 0x30A0;
 const EGL_CONTEXT_CLIENT_VERSION: EGLint = 0x3098;
 const EGL_NONE: EGLint = 0x3038;
 const EGL_SURFACE_TYPE: EGLint = 0x3033;
 const EGL_PBUFFER_BIT: EGLint = 0x0001;
+const EGL_WINDOW_BIT: EGLint = 0x0004;
 const EGL_RENDERABLE_TYPE: EGLint = 0x3040;
 const EGL_OPENGL_ES2_BIT: EGLint = 0x0004;
 const EGL_RED_SIZE: EGLint = 0x3024;
@@ -98,6 +100,14 @@ unsafe extern "C" {
     /// Resolve an EGL/GL extension entry point by name (extensions aren't
     /// guaranteed to be directly linkable symbols).
     fn eglGetProcAddress(procname: *const c_char) -> *const c_void;
+}
+
+// Mesa's Generic Buffer Manager — turns a DRM device fd into the `gbm_device`
+// EGL needs for a device-specific (`EGL_PLATFORM_GBM`) display, so rendered
+// buffers live on the GPU we name (the X server's, via DRI3Open).
+#[link(name = "gbm")]
+unsafe extern "C" {
+    fn gbm_create_device(fd: i32) -> *mut c_void;
 }
 
 #[link(name = "GLESv2")]
@@ -235,6 +245,7 @@ unsafe fn egl_make_current() -> Result<(), String> {
 
 /// Like [`egl_make_current`] but returns the [`EGLDisplay`], which the dma-buf
 /// import/export path needs for `eglCreateImageKHR` / `eglExportDMABUFImageMESA`.
+/// Surfaceless (no GPU device picked explicitly — Mesa chooses).
 unsafe fn egl_init() -> Result<EGLDisplay, String> {
     unsafe {
         let dpy = eglGetPlatformDisplay(
@@ -245,13 +256,44 @@ unsafe fn egl_init() -> Result<EGLDisplay, String> {
         if dpy.is_null() {
             return Err("eglGetPlatformDisplay failed (no surfaceless EGL?)".into());
         }
+        // Surfaceless Mesa configs advertise PBUFFER_BIT.
+        egl_finish(dpy, EGL_PBUFFER_BIT)
+    }
+}
+
+/// Bring up EGL on a specific GPU via a GBM device created from a DRM fd — so the
+/// buffers we render/export live on *that* device. The browser compositor uses
+/// the DRM fd from X11 `DRI3Open` (the server's GPU) here, so the server can
+/// import our dma-bufs. The `gbm_device` is intentionally leaked (process-lived).
+unsafe fn egl_init_gbm(drm_fd: i32) -> Result<EGLDisplay, String> {
+    unsafe {
+        let gbm = gbm_create_device(drm_fd);
+        if gbm.is_null() {
+            return Err("gbm_create_device failed (not a DRM render node?)".into());
+        }
+        let dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, core::ptr::null());
+        if dpy.is_null() {
+            return Err("eglGetPlatformDisplay(GBM) failed".into());
+        }
+        // GBM configs are scanout/window-capable, so match WINDOW_BIT.
+        egl_finish(dpy, EGL_WINDOW_BIT)
+    }
+}
+
+/// Initialize `dpy`, bind GLES2, choose a config (filtered by `surface_type` —
+/// the bit the platform's configs advertise; we still render surfaceless to
+/// FBOs), and make a surfaceless context current. Shared by both init paths.
+unsafe fn egl_finish(dpy: EGLDisplay, surface_type: EGLint) -> Result<EGLDisplay, String> {
+    unsafe {
         if eglInitialize(dpy, core::ptr::null_mut(), core::ptr::null_mut()) == 0 {
             return Err(format!("eglInitialize failed: {:#x}", eglGetError()));
         }
         eglBindAPI(EGL_OPENGL_ES_API);
+        // eglChooseConfig defaults EGL_SURFACE_TYPE to WINDOW_BIT, so we must set
+        // it explicitly to whatever the chosen platform's configs support.
         let cfg_attribs: [EGLint; 11] = [
             EGL_SURFACE_TYPE,
-            EGL_PBUFFER_BIT,
+            surface_type,
             EGL_RENDERABLE_TYPE,
             EGL_OPENGL_ES2_BIT,
             EGL_RED_SIZE,
@@ -895,8 +937,22 @@ pub fn dmabuf_extensions() -> Result<String, String> {
 /// `EGL_EXT_image_dma_buf_import` (real Mesa/GPU drivers; may be absent on
 /// software-only Mesa).
 pub fn dmabuf_export_import_self_test() -> Result<Vec<u8>, String> {
+    unsafe { dmabuf_roundtrip(egl_init()?) }
+}
+
+/// The same export → import → sample round-trip as
+/// [`dmabuf_export_import_self_test`], but on the specific GPU named by `drm_fd`
+/// (e.g. the X server's device from `DRI3Open`) via a GBM device. Confirms that
+/// device can export a dma-buf and re-import it — the prerequisite for handing
+/// rendered frames to the X server through DRI3 + Present.
+pub fn dmabuf_self_test_on_device(drm_fd: i32) -> Result<Vec<u8>, String> {
+    unsafe { dmabuf_roundtrip(egl_init_gbm(drm_fd)?) }
+}
+
+/// Export a GL texture as a dma-buf, re-import it, sample it, and verify the
+/// pixels — on whatever EGL context is current (`dpy`).
+unsafe fn dmabuf_roundtrip(dpy: EGLDisplay) -> Result<Vec<u8>, String> {
     unsafe {
-        let dpy = egl_init()?;
         let ctx = eglGetCurrentContext();
 
         let create_image: PfnCreateImage = load_proc(b"eglCreateImageKHR\0")?;

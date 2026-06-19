@@ -13,6 +13,16 @@
 
 use std::process::ExitCode;
 
+/// Open a DRM device read/write, returning its raw fd (leaked for the run).
+fn open_drm(path: &str) -> std::io::Result<i32> {
+    use std::os::fd::IntoRawFd;
+    Ok(std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?
+        .into_raw_fd())
+}
+
 fn main() -> ExitCode {
     // 1) What EGL extensions does this device advertise?
     let exts = match forma_gpu::dmabuf_extensions() {
@@ -30,6 +40,34 @@ fn main() -> ExitCode {
     if !(has_export && has_import) {
         println!("RESULT: UNSUPPORTED (dma-buf import/export extensions absent)");
         return ExitCode::from(2);
+    }
+
+    // Optional: bind to a specific GPU by DRM device path (e.g. a render node
+    // /dev/dri/renderD128), the way the compositor will bind to the X server's
+    // device from DRI3Open. Without it, EGL picks the device (surfaceless).
+    let device = std::env::args().nth(1);
+    if let Some(path) = device.as_deref() {
+        println!("binding GPU via GBM device: {path}");
+        let fd = match open_drm(path) {
+            Ok(fd) => fd,
+            Err(e) => {
+                println!("open {path}: {e}");
+                println!("RESULT: UNSUPPORTED (cannot open device)");
+                return ExitCode::from(2);
+            }
+        };
+        return match forma_gpu::dmabuf_self_test_on_device(fd) {
+            Ok(pixels) => {
+                println!("imported {} bytes on device; corners present", pixels.len());
+                println!("RESULT: PASS");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                println!("on-device self-test error: {e}");
+                println!("RESULT: FAIL");
+                ExitCode::from(1)
+            }
+        };
     }
 
     // 2) Export a GPU texture as a dma-buf and re-import it; verify the pixels.
