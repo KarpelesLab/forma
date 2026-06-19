@@ -99,9 +99,10 @@ const NS_WINDOW_STYLE_TITLED: u64 = 1;
 const NS_WINDOW_STYLE_CLOSABLE: u64 = 2;
 const NS_WINDOW_STYLE_RESIZABLE: u64 = 8;
 const NS_BACKING_BUFFERED: u64 = 2;
-// kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big — interprets the
-// buffer bytes as R,G,B,A in memory.
-const CG_BITMAP_RGBA8: u32 = 1 | (4 << 12);
+// kCGImageAlphaLast | kCGBitmapByteOrder32Big — interprets the buffer bytes as
+// R,G,B,A in memory with *straight* (non-premultiplied) alpha, matching the
+// forma-render Pixmap convention (see `forma_render::surface`).
+const CG_BITMAP_RGBA8: u32 = 3 | (4 << 12);
 const ACTIVATION_REGULAR: i64 = 0;
 
 fn class(name: &str) -> Class {
@@ -260,6 +261,9 @@ struct MacCtx {
     view: Id,
     /// Accessible label exposed to NSAccessibility (the window title for now).
     a11y_label: String,
+    /// Set by the window delegate's `windowWillClose:` so the event loop can
+    /// break instead of spinning on a closed window.
+    should_close: bool,
 }
 
 // Cocoa is single-threaded (main thread); the backend runs there.
@@ -335,6 +339,13 @@ extern "C" fn is_flipped(_this: Id, _cmd: Sel) -> bool {
     true
 }
 
+/// `windowWillClose:` — the view doubles as the window's delegate. Flag the
+/// close so `run`'s event loop exits instead of spinning forever on a window
+/// the user already dismissed.
+extern "C" fn window_will_close(_this: Id, _cmd: Sel, _notification: Id) {
+    CTX.with(|c| c.borrow_mut().should_close = true);
+}
+
 // ---- NSAccessibility ----------------------------------------------------
 //
 // Forma draws every control itself, so to AppKit the window is one opaque view.
@@ -398,6 +409,14 @@ fn register_view_class() -> Class {
             sel("isFlipped"),
             is_flipped as *const c_void,
             flip_types.as_ptr(),
+        );
+        // Window delegate method: void return, takes the notification id (v@:@).
+        let close_types = c"v@:@";
+        class_addMethod(
+            cls,
+            sel("windowWillClose:"),
+            window_will_close as *const c_void,
+            close_types.as_ptr(),
         );
         // NSAccessibility overrides: BOOL (c@:) and id (@@:) returns.
         let bool_types = c"c@:";
@@ -470,7 +489,9 @@ impl Surface for MacSurface {
         let size = pixmap.size();
         CTX.with(|c| {
             let mut c = c.borrow_mut();
-            c.fb = pixmap.as_bytes().to_vec();
+            // Reuse the buffer's capacity instead of reallocating every frame.
+            c.fb.clear();
+            c.fb.extend_from_slice(pixmap.as_bytes());
             c.w = size.width as usize;
             c.h = size.height as usize;
             if !c.view.is_null() {
@@ -481,8 +502,10 @@ impl Surface for MacSurface {
 }
 
 /// Create an NSWindow with our drawing view, render the initial frame, and run
-/// the Cocoa event loop. `[NSApp run]` does not return, so close/exit is via
-/// the process being terminated (input handling is a follow-up).
+/// a hand-rolled Cocoa event loop: each iteration dequeues one `NSEvent`,
+/// translates it to a Forma event for the handler, then forwards it to AppKit.
+/// The loop exits when the handler returns [`ControlFlow::Exit`] or the user
+/// closes the window (via the `windowWillClose:` delegate).
 pub fn run<H>(attrs: WindowAttributes, mut handler: H) -> Result<(), PlatformError>
 where
     H: FnMut(Event, &dyn Window) -> ControlFlow,
@@ -530,6 +553,12 @@ where
             init(alloc, sel("initWithFrame:"), content)
         };
         msg_void_id(window, sel("setContentView:"), view);
+        // The view doubles as the window delegate so `windowWillClose:` can flag
+        // the event loop to exit. Keep the window object alive on close (we hold
+        // the only reference) so the loop can tear down cleanly without a
+        // use-after-free on `view`/`window`.
+        msg_void_bool(window, sel("setReleasedWhenClosed:"), false);
+        msg_void_id(window, sel("setDelegate:"), view);
         CTX.with(|c| {
             let mut c = c.borrow_mut();
             c.view = view;
@@ -568,18 +597,43 @@ where
         let next_sel = sel("nextEventMatchingMask:untilDate:inMode:dequeue:");
         let next: unsafe extern "C" fn(Id, Sel, u64, Id, Id, bool) -> Id =
             std::mem::transmute(objc_msgSend as *const c_void);
+        let pool_cls = class("NSAutoreleasePool");
         let mut last = win.size;
         loop {
+            // Drain autoreleased objects (the dequeued NSEvent, NSStrings, etc.)
+            // each iteration. This hand-rolled loop stands in for
+            // `-[NSApplication run]`, which would otherwise manage the pool for
+            // us — without it autoreleased objects accumulate for the app's life.
+            let pool = msg_id(msg_id(pool_cls, sel("alloc")), sel("init"));
+
+            let mut exit = false;
             let ev = next(app, next_sel, u64::MAX, distant_future, mode, true);
             if !ev.is_null() {
                 let etype = msg_u64(ev, sel("type"));
-                if let Some(event) = translate_event(etype, ev, last.height as f64) {
-                    if handler(event, &win) == ControlFlow::Exit {
-                        break;
-                    }
+                if let Some(event) = translate_event(etype, ev, last.height as f64)
+                    && handler(event, &win) == ControlFlow::Exit
+                {
+                    exit = true;
                 }
-                msg_void_id(app, sel("sendEvent:"), ev);
+                // Forward to AppKit (drawing, window controls) unless we're
+                // exiting on this event.
+                if !exit {
+                    msg_void_id(app, sel("sendEvent:"), ev);
+                }
             }
+
+            // The window delegate's `windowWillClose:` sets this when the user
+            // closes the window. Check before touching `view` below: the window
+            // is ordered out and we must not keep polling it.
+            if CTX.with(|c| c.borrow().should_close) {
+                exit = true;
+            }
+
+            if exit {
+                msg_void(pool, sel("drain"));
+                break;
+            }
+
             // Detect live-resize by polling the view bounds.
             let b = msg_rect(view, sel("bounds"));
             let now =
@@ -589,6 +643,8 @@ where
                 win.size = now;
                 handler(Event::Resized(now), &win);
             }
+
+            msg_void(pool, sel("drain"));
         }
     }
     Ok(())
