@@ -716,7 +716,9 @@ jobs:
         run: cargo build --release -p contentproc
       - name: Run the cross-process content path
         run: |
-          ./target/release/contentproc | tee contentproc.log
+          # Capture both streams: the UI process logs to stdout, the content
+          # process to stderr.
+          ./target/release/contentproc 2>&1 | tee contentproc.log
           # The UI process mapped the content process's buffer, composited it into
           # a viewport, and the forwarded input crossed the process boundary.
           grep -q "RESULT: PASS" contentproc.log

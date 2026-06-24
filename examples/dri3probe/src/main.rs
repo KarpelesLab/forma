@@ -42,6 +42,11 @@ fn main() -> ExitCode {
         match forma_gpu::dmabuf_self_test_on_device(fd) {
             Ok(px) => {
                 println!("device dma-buf round-trip: PASS ({} bytes)", px.len());
+                // Compose the full zero-copy present on real hardware: export a
+                // frame as a dma-buf on the server's GPU, wrap it as an X pixmap
+                // (DRI3 PixmapFromBuffers, fd over the socket), and flip it to a
+                // window (Present PresentPixmap) — no readback.
+                present_exported_dmabuf(fd);
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -55,5 +60,38 @@ fn main() -> ExitCode {
     {
         println!("dri3probe: Linux/X11 only");
         ExitCode::SUCCESS
+    }
+}
+
+/// On real GPU hardware, compose the full zero-copy present: export a frame as a
+/// dma-buf on the server's GPU (`drm_fd` from `DRI3Open`), then wrap it as an X
+/// pixmap and flip it to a window (DRI3 `PixmapFromBuffers` + Present
+/// `PresentPixmap`, no readback). Best-effort: prints the outcome but never fails
+/// the probe — without the `gl` feature, or off real hardware, export reports
+/// unsupported.
+#[cfg(target_os = "linux")]
+fn present_exported_dmabuf(drm_fd: i32) {
+    use forma_platform::backend::x11::DmabufImage;
+
+    match forma_gpu::export_dmabuf_on_device(drm_fd, 256, 256) {
+        Ok(d) => {
+            println!(
+                "dmabuf export: {}x{} stride={} offset={} modifier={:#x} fourcc={:#x}",
+                d.width, d.height, d.stride, d.offset, d.modifier, d.fourcc
+            );
+            let img = DmabufImage {
+                width: d.width as u16,
+                height: d.height as u16,
+                depth: 24,
+                bpp: d.bpp,
+                modifier: d.modifier,
+                planes: vec![(d.stride, d.offset)],
+            };
+            match forma_platform::backend::x11::dri3_present_dmabuf_self_test(&img, &[d.fd]) {
+                Ok(s) => println!("on-window present: {s}"),
+                Err(e) => println!("on-window present error: {e}"),
+            }
+        }
+        Err(e) => println!("dmabuf export: unsupported ({e})"),
     }
 }

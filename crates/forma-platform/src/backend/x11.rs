@@ -582,6 +582,77 @@ pub fn present_probe() -> Result<String, PlatformError> {
     }
 }
 
+/// Present a rendered dma-buf to a freshly created window with **no readback**,
+/// composing the full zero-copy path end to end: connect, create + map a window
+/// the size of `img`, then DRI3 `PixmapFromBuffers` (the plane `fds` passed over
+/// the socket as `SCM_RIGHTS`) → Present `PresentPixmap` to flip it. A
+/// `GetInputFocus` round-trip then surfaces any protocol error from those
+/// requests. Returns a one-line status.
+///
+/// **Hardware-gated**: the server imports the dma-buf, so this needs a real GPU +
+/// a DRM-capable X server — under Xvfb DRI3 is absent and it reports unavailable
+/// (without touching `fds`). `fds.len()` must equal `img.planes.len()`; the fds
+/// come from `forma_gpu::export_dmabuf_on_device` bound to *this* server's DRM
+/// device (its fd from [`dri3_open_drm_fd`]), so the server can import them.
+pub fn dri3_present_dmabuf_self_test(
+    img: &DmabufImage,
+    fds: &[RawFd],
+) -> Result<String, PlatformError> {
+    let mut conn = Conn::connect()?;
+    let Some(dri3_major) = query_extension(&mut conn, b"DRI3").map_err(os)? else {
+        return Ok("DRI3 unavailable on this server (no GPU/DRM; e.g. Xvfb)".to_string());
+    };
+    let Some(present_major) = query_extension(&mut conn, b"Present").map_err(os)? else {
+        return Ok("Present unavailable on this server".to_string());
+    };
+
+    // Create + map a window the size of the image (minimal: no GC/SHM needed —
+    // the dma-buf pixmap is presented directly).
+    let window = conn.new_id();
+    let setup = conn.setup;
+    let (w, h) = (img.width.max(1), img.height.max(1));
+    let mut req = vec![OP_CREATE_WINDOW, setup.root_depth, 0, 0];
+    req.extend_from_slice(&window.to_le_bytes());
+    req.extend_from_slice(&setup.root.to_le_bytes());
+    req.extend_from_slice(&0i16.to_le_bytes()); // x
+    req.extend_from_slice(&0i16.to_le_bytes()); // y
+    req.extend_from_slice(&w.to_le_bytes());
+    req.extend_from_slice(&h.to_le_bytes());
+    req.extend_from_slice(&0u16.to_le_bytes()); // border width
+    req.extend_from_slice(&1u16.to_le_bytes()); // class: InputOutput
+    req.extend_from_slice(&setup.root_visual.to_le_bytes());
+    req.extend_from_slice(&CW_BACK_PIXEL.to_le_bytes()); // value-mask
+    req.extend_from_slice(&0u32.to_le_bytes()); // back-pixel: black
+    conn.send(&finish(req)).map_err(os)?;
+    let mut req = vec![OP_MAP_WINDOW, 0, 0, 0];
+    req.extend_from_slice(&window.to_le_bytes());
+    conn.send(&finish(req)).map_err(os)?;
+
+    // Wrap the dma-buf as an X pixmap (its plane fds ride as ancillary data) and
+    // flip that pixmap to the window — the zero-copy present.
+    let pixmap = conn.new_id();
+    let req = pixmap_from_buffers_request(dri3_major, pixmap, window, img);
+    crate::scm::send_with_fds(&conn.stream, &req, fds).map_err(os)?;
+    conn.send(&present_pixmap_request(present_major, window, pixmap, 0, 0))
+        .map_err(os)?;
+
+    // Round-trip on GetInputFocus: if any request above errored, the error packet
+    // arrives in place of the reply (first byte 0).
+    conn.send(&finish(vec![OP_GET_INPUT_FOCUS, 0, 0, 0]))
+        .map_err(os)?;
+    let mut pkt = [0u8; 32];
+    conn.stream.read_exact(&mut pkt).map_err(os)?;
+    if pkt[0] == 0 {
+        return Err(PlatformError::Os(format!(
+            "X11 error during DRI3/Present (code {})",
+            pkt[1]
+        )));
+    }
+    Ok(format!(
+        "presented {w}x{h} dma-buf pixmap to window {window:#x} (DRI3 {dri3_major} + Present {present_major})"
+    ))
+}
+
 /// Set up MIT-SHM: create a shared segment of `capacity` bytes, attach it to the
 /// server, and confirm the attach succeeded. Returns `None` (with everything
 /// cleaned up) if the extension is absent or any step fails — the caller then
