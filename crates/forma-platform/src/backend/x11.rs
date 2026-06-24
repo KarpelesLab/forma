@@ -462,6 +462,7 @@ unsafe extern "C" {
 // unit-tested regardless.
 
 const DRI3_PIXMAP_FROM_BUFFERS: u8 = 7;
+const DRI3_FENCE_FROM_FD: u8 = 4;
 const PRESENT_QUERY_VERSION: u8 = 0;
 const PRESENT_PIXMAP: u8 = 1;
 
@@ -514,13 +515,17 @@ pub fn pixmap_from_buffers_request(
 }
 
 /// Build a Present `PresentPixmap` request (minor 1): present `pixmap` to
-/// `window`. Regions, target CRTC, and sync fences are left as None (0) and the
-/// target MSC/divisor/remainder as 0 — a plain immediate present; `serial` and
-/// `options` pass through. No notify list.
+/// `window`. `wait_fence` is an `XSyncFence` the server waits on before reading
+/// the pixmap (`0` = none) — pass a fence the producer triggers when its GPU
+/// render finishes (see [`dri3_fence_from_fd_request`]) for **frame sync**, so
+/// the compositor never samples a half-rendered buffer. Regions, target CRTC,
+/// the idle fence, and target MSC/divisor/remainder are left as 0 — a plain
+/// immediate present; `serial` and `options` pass through. No notify list.
 pub fn present_pixmap_request(
     major: u8,
     window: u32,
     pixmap: u32,
+    wait_fence: u32,
     serial: u32,
     options: u32,
 ) -> Vec<u8> {
@@ -533,13 +538,34 @@ pub fn present_pixmap_request(
     req.extend_from_slice(&0i16.to_le_bytes()); // x-off
     req.extend_from_slice(&0i16.to_le_bytes()); // y-off
     req.extend_from_slice(&0u32.to_le_bytes()); // target CRTC (None)
-    req.extend_from_slice(&0u32.to_le_bytes()); // wait fence (None)
+    req.extend_from_slice(&wait_fence.to_le_bytes()); // wait fence (frame sync)
     req.extend_from_slice(&0u32.to_le_bytes()); // idle fence (None)
     req.extend_from_slice(&options.to_le_bytes());
     req.extend_from_slice(&0u32.to_le_bytes()); // unused
     req.extend_from_slice(&0u64.to_le_bytes()); // target MSC
     req.extend_from_slice(&0u64.to_le_bytes()); // divisor
     req.extend_from_slice(&0u64.to_le_bytes()); // remainder
+    finish(req)
+}
+
+/// Build a DRI3 `FenceFromFD` request (minor 4): wrap a kernel sync-file `fd`
+/// (passed alongside as `SCM_RIGHTS` ancillary data) as the `XSyncFence`
+/// resource `fence` on `drawable`'s screen. `initially_triggered` seeds the
+/// fence state. The producer exports its render-completion fence as a sync-file
+/// and the server waits on the resulting `XSyncFence` in
+/// [`present_pixmap_request`] before sampling the pixmap — that is GPU frame
+/// sync, no CPU stall.
+pub fn dri3_fence_from_fd_request(
+    major: u8,
+    drawable: u32,
+    fence: u32,
+    initially_triggered: bool,
+) -> Vec<u8> {
+    let mut req = vec![major, DRI3_FENCE_FROM_FD, 0, 0];
+    req.extend_from_slice(&drawable.to_le_bytes());
+    req.extend_from_slice(&fence.to_le_bytes());
+    req.push(initially_triggered as u8);
+    req.extend_from_slice(&[0u8; 3]); // pad
     finish(req)
 }
 
@@ -633,8 +659,17 @@ pub fn dri3_present_dmabuf_self_test(
     let pixmap = conn.new_id();
     let req = pixmap_from_buffers_request(dri3_major, pixmap, window, img);
     crate::scm::send_with_fds(&conn.stream, &req, fds).map_err(os)?;
-    conn.send(&present_pixmap_request(present_major, window, pixmap, 0, 0))
-        .map_err(os)?;
+    // wait_fence 0: an immediate present. A real producer passes a fence wrapped
+    // from its render-completion sync-file via `dri3_fence_from_fd_request`.
+    conn.send(&present_pixmap_request(
+        present_major,
+        window,
+        pixmap,
+        0,
+        0,
+        0,
+    ))
+    .map_err(os)?;
 
     // Round-trip on GetInputFocus: if any request above errored, the error packet
     // arrives in place of the reply (first byte 0).
@@ -1623,7 +1658,8 @@ mod tests {
 
     #[test]
     fn present_pixmap_request_is_well_formed() {
-        let req = present_pixmap_request(0x91, 0x0020_0001, 0x0040_0000, 7, 0);
+        // wait_fence 0x0060_0002 exercises the frame-sync slot.
+        let req = present_pixmap_request(0x91, 0x0020_0001, 0x0040_0000, 0x0060_0002, 7, 0);
         assert_eq!(req[0], 0x91);
         assert_eq!(req[1], PRESENT_PIXMAP);
         // 4-byte header + window+pixmap+serial+valid+update (5 words) + off word
@@ -1636,9 +1672,26 @@ mod tests {
         assert_eq!(rd_u32(&req, 12).unwrap(), 7); // serial
         assert_eq!(rd_u32(&req, 16).unwrap(), 0); // valid region (None)
         assert_eq!(rd_u32(&req, 20).unwrap(), 0); // update region (None)
+        // crtc@28, wait-fence@32 (the frame-sync fence), idle-fence@36.
+        assert_eq!(rd_u32(&req, 28).unwrap(), 0); // target CRTC (None)
+        assert_eq!(rd_u32(&req, 32).unwrap(), 0x0060_0002); // wait fence
+        assert_eq!(rd_u32(&req, 36).unwrap(), 0); // idle fence (None)
         // target-msc/divisor/remainder are the final three zero u64s.
         assert_eq!(u64::from_le_bytes(req[48..56].try_into().unwrap()), 0);
         assert_eq!(u64::from_le_bytes(req[64..72].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn dri3_fence_from_fd_request_is_well_formed() {
+        let req = dri3_fence_from_fd_request(0x90, 0x0020_0001, 0x0060_0002, true);
+        assert_eq!(req[0], 0x90);
+        assert_eq!(req[1], DRI3_FENCE_FROM_FD);
+        // header(4) + drawable(4) + fence(4) + triggered/pad(4) = 16 bytes / 4 words.
+        assert_eq!(u16::from_le_bytes([req[2], req[3]]), 4);
+        assert_eq!(req.len(), 16);
+        assert_eq!(rd_u32(&req, 4).unwrap(), 0x0020_0001); // drawable
+        assert_eq!(rd_u32(&req, 8).unwrap(), 0x0060_0002); // fence
+        assert_eq!(req[12], 1); // initially_triggered
     }
 
     #[test]
