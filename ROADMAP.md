@@ -427,11 +427,17 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   sees. **CI-verified** (the `content-process` job asserts `RESULT: PASS`). So
   process separation, fd-over-socket transport, cross-process compositing, and
   input forwarding are all proven; the GPU `dma-buf` variant swaps the shared
-  buffer for a GPU texture. **Next (GPU-hardware-gated):** wire export → `fd` over
-  the window's socket via `PixmapFromBuffers` → `PresentPixmap` (no readback) on a
-  live window, frame sync (Present fences/MSC), sandbox hardening
-  (seccomp/namespaces on the content process); then macOS (`IOSurface`) / Windows
-  (shared D3D handle) parity.
+  buffer for a GPU texture. The content process is also **sandboxed**:
+  `forma_platform::sandbox::restrict()` installs a seccomp-BPF filter
+  (`NO_NEW_PRIVS` + a hand-written BPF program) that makes
+  `socket`/`connect`/`execve`/`execveat`/`ptrace` fail with `EPERM` while leaving
+  the existing IPC fd + shared memory usable — so a compromised content process
+  can't open the network or exec; `contentproc` applies it and **CI asserts** a
+  new `socket()` is blocked while the loop still completes. **Next
+  (GPU-hardware-gated):** wire export → `fd` over the window's socket via
+  `PixmapFromBuffers` → `PresentPixmap` (no readback) on a live window, and frame
+  sync (Present fences/MSC); then macOS (`IOSurface`) / Windows (shared D3D
+  handle) parity.
 
 ---
 
