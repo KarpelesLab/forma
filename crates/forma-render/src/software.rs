@@ -113,8 +113,14 @@ mod tests {
         // A scene with two distinct colored squares far apart.
         let make = || {
             let mut s = Scene::new(Size::new(100.0, 100.0));
-            s.fill_rect(Rect::from_xywh(10.0, 10.0, 20.0, 20.0), Color::rgb(255, 0, 0));
-            s.fill_rect(Rect::from_xywh(70.0, 70.0, 20.0, 20.0), Color::rgb(0, 0, 255));
+            s.fill_rect(
+                Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+                Color::rgb(255, 0, 0),
+            );
+            s.fill_rect(
+                Rect::from_xywh(70.0, 70.0, 20.0, 20.0),
+                Color::rgb(0, 0, 255),
+            );
             s
         };
         let r = SoftwareRenderer::new().with_background(Color::rgb(0, 0, 0));

@@ -5,7 +5,9 @@
 //! between widgets and rendering is what lets the (future) reactive runtime
 //! diff one tree against the next.
 
-use crate::runtime::{ActionId, ContextId, Cx, DragId, FocusId, KeyInput, ScrollId, TextPosId};
+use crate::runtime::{
+    ActionId, ContextId, Cx, DragId, FocusId, KeyInput, ScrollId, TextPosId, ViewportId,
+};
 use forma_geometry::Insets;
 use forma_layout::Axis;
 use forma_render::Color;
@@ -67,6 +69,11 @@ pub enum ElementKind {
         cross_align: Align,
         children: Vec<Element>,
     },
+    /// An embedded-content viewport: a leaf reserving a rectangle the compositor
+    /// fills with externally-rendered pixels for `id`. Sizes to its
+    /// [`width`](Element::width)/[`height`](Element::height) overrides (or grow),
+    /// not to content.
+    Viewport { id: ViewportId },
 }
 
 /// A node in the element tree: layout properties, decoration, an optional
@@ -157,6 +164,31 @@ impl Element {
                 size,
                 color,
             },
+        }
+    }
+
+    /// An embedded-content viewport leaf for `id`: a reserved rectangle the app
+    /// composites externally-rendered content into. Give it a size via
+    /// [`width`](Element::width)/[`height`](Element::height) (or
+    /// [`grow`](Element::grow) inside a flex parent); add a
+    /// [`border`](Element::border) to frame it. The app locates it by `id` with
+    /// [`collect_viewports`](crate::collect_viewports) to blit content over the
+    /// placeholder, and routes pointer/keys landing inside it to that content.
+    pub fn viewport(id: ViewportId) -> Self {
+        Self {
+            layout: LayoutStyle::default(),
+            decoration: BoxStyle::default(),
+            action: None,
+            focus: None,
+            drag: None,
+            context: None,
+            caret: None,
+            selection: None,
+            text_pos: None,
+            wrap: false,
+            scroll: None,
+            clip: false,
+            kind: ElementKind::Viewport { id },
         }
     }
 

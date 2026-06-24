@@ -15,7 +15,7 @@
 
 #![forbid(unsafe_code)]
 
-use forma_core::{Align, Anchor, Axis, BoxStyle, Cx, Element, KeyInput, OverlaySpec};
+use forma_core::{Align, Anchor, Axis, BoxStyle, Cx, Element, KeyInput, OverlaySpec, ViewportId};
 use forma_geometry::{Insets, Point};
 use forma_render::Color;
 use forma_style::Theme;
@@ -45,6 +45,20 @@ pub fn scroll<S>(cx: &mut Cx<S>, height: f64, content: Element) -> Element {
         .height(height)
         .scrollable(id)
         .align(Align::Start, Align::Stretch)
+}
+
+/// An embedded-content viewport of `width`×`height` logical pixels for the
+/// given [`ViewportId`], framed with a hairline themed border. The app fills the
+/// reserved rect with externally-rendered pixels (a browser page, video, or a
+/// sandboxed content process's GPU surface) by locating it via
+/// [`collect_viewports`](forma_core::collect_viewports); until then a neutral
+/// placeholder shows. The `id` is caller-chosen so it stays stable across frames
+/// and correlates with the content source.
+pub fn viewport(theme: &Theme, id: ViewportId, width: f64, height: f64) -> Element {
+    Element::viewport(id)
+        .width(width)
+        .height(height)
+        .border(theme.palette.border, 1.0)
 }
 
 /// A raised surface card: themed fill, hairline border, rounded corners, and

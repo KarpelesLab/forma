@@ -45,6 +45,13 @@ pub enum DrawCmd {
     PushClip(Rect),
     /// End the innermost clip region opened by [`PushClip`](DrawCmd::PushClip).
     PopClip,
+    /// A reserved area for **embedded content** (a browser page, video, or any
+    /// externally-rendered surface), identified by `id`. The compositor draws
+    /// the content here: the CPU path blits the registered content [`Pixmap`]
+    /// over the placeholder fill after rasterizing; a GPU backend samples the
+    /// imported (dma-buf / `IOSurface` / shared-handle) texture into this rect.
+    /// See [`Scene::fill_viewport`].
+    Viewport { rect: Rect, id: u64 },
 }
 
 /// A clip region under construction: the primitives emitted while it is open,
@@ -176,6 +183,19 @@ impl Scene {
             radius: 0.0,
             border: width,
         });
+    }
+
+    /// Reserve an embedded-content area `rect` for the viewport `id`, painting a
+    /// solid `placeholder` so the region is visible before any content is
+    /// composited in. Records a [`DrawCmd::Viewport`] so a GPU backend can
+    /// texture the rect from an imported content surface instead, and so the app
+    /// can locate the rect to blit registered CPU content over the placeholder.
+    pub fn fill_viewport(&mut self, rect: Rect, id: u64, placeholder: Color) {
+        let path = rect_path(rect);
+        self.emit(Node::Path(
+            PathNode::new(path).with_fill(Paint::Solid(placeholder.into())),
+        ));
+        self.commands.push(DrawCmd::Viewport { rect, id });
     }
 
     /// Record a text draw command (the glyph nodes are pushed separately by
@@ -354,6 +374,19 @@ mod tests {
         };
         assert!(clipped.clip.is_some(), "nested group carries the clip path");
         assert_eq!(clipped.children.len(), 2, "two clipped rects");
+    }
+
+    #[test]
+    fn fill_viewport_paints_placeholder_and_records_command() {
+        let mut scene = Scene::new(Size::new(200.0, 100.0));
+        let r = Rect::from_xywh(10.0, 10.0, 80.0, 60.0);
+        scene.fill_viewport(r, 7, Color::rgb(0x20, 0x24, 0x2c));
+        // A placeholder fill node is emitted so the CPU raster shows the area.
+        assert_eq!(scene.len(), 1);
+        // The structured command carries the rect + id for the compositor.
+        let cmds = scene.commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], DrawCmd::Viewport { id, rect } if id == 7 && rect == r));
     }
 
     #[test]

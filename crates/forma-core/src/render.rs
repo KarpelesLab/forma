@@ -19,13 +19,20 @@ use forma_geometry::{Point, Rect, Size, Vec2};
 use forma_layout::{Axis, FlexItem, solve_main_axis};
 use forma_render::{Color, Font, Scene};
 
+/// Neutral fill painted into an embedded-content viewport before its content is
+/// composited in, so the reserved area reads as a defined surface (a dark slate
+/// matching the GPU path's placeholder in `forma-gpu`).
+const VIEWPORT_PLACEHOLDER: Color = Color::rgb(0x20, 0x24, 0x2c);
+
 /// Natural (desired) size of `el` given the `avail` space and active `font`.
 pub fn measure(el: &Element, avail: Size, font: Option<&Font>) -> Size {
     let pad = el.layout.padding;
     let inner = avail.deflate(pad);
 
     let content = match &el.kind {
-        ElementKind::Leaf => Size::ZERO,
+        // A viewport sizes purely to its width/height overrides (or grow); it
+        // has no intrinsic content size.
+        ElementKind::Leaf | ElementKind::Viewport { .. } => Size::ZERO,
         ElementKind::Text { text, size, .. } => match font {
             // Wrapping text takes the available width and grows in height.
             Some(f) if el.wrap && inner.width.is_finite() => {
@@ -81,6 +88,7 @@ pub fn layout(el: &Element, bounds: Rect, font: Option<&Font>) -> LayoutNode {
             size: *size,
             color: *color,
         },
+        ElementKind::Viewport { id } => NodeContent::Viewport(*id),
         _ => NodeContent::None,
     };
     let mut node = LayoutNode {
@@ -318,16 +326,24 @@ pub fn paint_hover(tree: &LayoutNode, hovered: ActionId, scene: &mut Scene, high
 /// Paint a laid-out tree into `scene`, parents before children.
 pub fn paint(node: &LayoutNode, scene: &mut Scene, font: Option<&Font>) {
     paint_decoration(&node.decoration, node.bounds, scene);
-    if let NodeContent::Text { text, size, color } = &node.content
-        && let Some(f) = font
-    {
-        if node.wrap {
-            // Wrap to the laid-out width; fill_text renders the \n-joined lines.
-            let wrapped = f.wrap(text, *size, node.bounds.width()).join("\n");
-            scene.fill_text(f, &wrapped, node.bounds.origin, *size, *color);
-        } else {
-            scene.fill_text(f, text, node.bounds.origin, *size, *color);
+    match &node.content {
+        NodeContent::Text { text, size, color } => {
+            if let Some(f) = font {
+                if node.wrap {
+                    // Wrap to the laid-out width; fill_text renders the joined lines.
+                    let wrapped = f.wrap(text, *size, node.bounds.width()).join("\n");
+                    scene.fill_text(f, &wrapped, node.bounds.origin, *size, *color);
+                } else {
+                    scene.fill_text(f, text, node.bounds.origin, *size, *color);
+                }
+            }
         }
+        // Reserve the embedded-content area: paint a placeholder and record the
+        // viewport command so the app/GPU composites real content into the rect.
+        NodeContent::Viewport(id) => {
+            scene.fill_viewport(node.bounds, id.0 as u64, VIEWPORT_PLACEHOLDER);
+        }
+        NodeContent::None => {}
     }
     // Clip children to this node's bounds (scroll containers, overlay panels)
     // so overflowing content is masked to the viewport.
@@ -465,6 +481,45 @@ mod tests {
         assert!((1..=4).contains(&i), "mid index {i} out of range");
         // Without a font, no resolution is possible.
         assert_eq!(caret_index_at(&node, Point::new(mid, y), None), None);
+    }
+
+    #[test]
+    fn viewport_reserves_its_rect_and_paints_a_viewport_command() {
+        use crate::runtime::{ViewportId, collect_viewports, viewport_at};
+        use forma_render::DrawCmd;
+
+        let el = Element::viewport(ViewportId(3)).width(120.0).height(80.0);
+        // Sizes to its overrides, not to content.
+        assert_eq!(
+            measure(&el, Size::new(1000.0, 1000.0), None),
+            Size::new(120.0, 80.0)
+        );
+
+        let tree = layout(&el, Rect::from_xywh(20.0, 10.0, 120.0, 80.0), None);
+        assert!(matches!(tree.content, NodeContent::Viewport(ViewportId(3))));
+
+        // collect_viewports / viewport_at locate it by id + bounds for the compositor.
+        let mut found = Vec::new();
+        collect_viewports(&tree, &mut found);
+        assert_eq!(
+            found,
+            vec![(ViewportId(3), Rect::from_xywh(20.0, 10.0, 120.0, 80.0))]
+        );
+        assert_eq!(
+            viewport_at(&tree, Point::new(30.0, 20.0)).map(|(id, _)| id),
+            Some(ViewportId(3))
+        );
+        assert_eq!(viewport_at(&tree, Point::new(0.0, 0.0)), None);
+
+        // Painting records a Viewport draw command carrying the id.
+        let mut scene = Scene::new(Size::new(200.0, 120.0));
+        paint(&tree, &mut scene, None);
+        assert!(
+            scene
+                .commands()
+                .iter()
+                .any(|c| matches!(c, DrawCmd::Viewport { id: 3, .. }))
+        );
     }
 
     #[test]

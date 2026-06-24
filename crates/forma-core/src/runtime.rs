@@ -63,6 +63,15 @@ pub struct ContextId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ScrollId(pub(crate) u32);
 
+/// A **caller-chosen** handle to an embedded-content viewport — a rectangle the
+/// app fills with externally-rendered pixels (a browser page, video frame, or a
+/// sandboxed content process's GPU surface). Unlike the auto-registered handler
+/// ids, the value is chosen by the app so it stays stable across frames and can
+/// be correlated with the content source that feeds it (see
+/// [`Element::viewport`](crate::Element::viewport)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ViewportId(pub u32);
+
 /// Where an [`OverlaySpec`] is positioned within the window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Anchor {
@@ -415,6 +424,11 @@ pub enum NodeContent {
         size: f64,
         color: Color,
     },
+    /// An embedded-content viewport: the node's bounds reserve an area the
+    /// compositor fills with externally-rendered pixels for this
+    /// [`ViewportId`]. Painted via
+    /// [`Scene::fill_viewport`](forma_render::Scene::fill_viewport).
+    Viewport(ViewportId),
 }
 
 /// A laid-out, retained node: absolute bounds, paint decoration, optional text
@@ -605,6 +619,34 @@ pub fn first_text(node: &LayoutNode) -> Option<&LayoutNode> {
         return Some(node);
     }
     node.children.iter().find_map(first_text)
+}
+
+/// Collect every embedded-content viewport in the tree as `(id, bounds)`, in
+/// paint order, so the app can composite each one's registered content into its
+/// laid-out rect (and route input landing inside it to that content). Bounds are
+/// in absolute logical pixels.
+pub fn collect_viewports(node: &LayoutNode, out: &mut Vec<(ViewportId, Rect)>) {
+    if let NodeContent::Viewport(id) = node.content {
+        out.push((id, node.bounds));
+    }
+    for child in &node.children {
+        collect_viewports(child, out);
+    }
+}
+
+/// Find the top-most embedded-content viewport containing `point`, returning its
+/// [`ViewportId`] and bounds (so the app can forward the event with
+/// viewport-local coordinates). Children are tested first, mirroring paint order.
+pub fn viewport_at(node: &LayoutNode, point: Point) -> Option<(ViewportId, Rect)> {
+    for child in node.children.iter().rev() {
+        if let Some(hit) = viewport_at(child, point) {
+            return Some(hit);
+        }
+    }
+    match node.content {
+        NodeContent::Viewport(id) if node.bounds.contains(point) => Some((id, node.bounds)),
+        _ => None,
+    }
 }
 
 /// Collect every focusable [`FocusId`] in paint/tree order, for Tab traversal.

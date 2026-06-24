@@ -93,7 +93,12 @@ const FOCUS_RING_MARGIN: f64 = 2.0;
 
 /// Grow `r` by `m` logical pixels on every side.
 fn inflate(r: Rect, m: f64) -> Rect {
-    Rect::from_xywh(r.min_x() - m, r.min_y() - m, r.width() + 2.0 * m, r.height() + 2.0 * m)
+    Rect::from_xywh(
+        r.min_x() - m,
+        r.min_y() - m,
+        r.width() + 2.0 * m,
+        r.height() + 2.0 * m,
+    )
 }
 
 /// Fold `extra` damage rects into `base`. [`Damage::Full`] absorbs everything;
@@ -963,8 +968,7 @@ impl<S> App<S> {
             let phys_size = window.inner_size();
             let surface = surfaces[idx].get_or_insert_with(|| window.create_surface());
             surface.resize(phys_size);
-            let bounds =
-                Rect::from_xywh(0.0, 0.0, phys_size.width as f64, phys_size.height as f64);
+            let bounds = Rect::from_xywh(0.0, 0.0, phys_size.width as f64, phys_size.height as f64);
 
             // Area repaint: re-rasterize only the damaged rects into the
             // retained pixmap and upload those. Requires the software path, a
@@ -991,9 +995,14 @@ impl<S> App<S> {
                     // `regions` are integer device-pixel rects; the matching
                     // logical view is exactly that rect divided by the scale, so
                     // the sub-render lands 1:1 on the destination pixels.
-                    let view =
-                        Rect::from_xywh(r.min_x() / s, r.min_y() / s, r.width() / s, r.height() / s);
-                    let sub = renderer.render_region(scene.clone(), view, PhysicalSize::new(pw, ph));
+                    let view = Rect::from_xywh(
+                        r.min_x() / s,
+                        r.min_y() / s,
+                        r.width() / s,
+                        r.height() / s,
+                    );
+                    let sub =
+                        renderer.render_region(scene.clone(), view, PhysicalSize::new(pw, ph));
                     pixmap.blit(&sub, r.min_x() as u32, r.min_y() as u32);
                 }
                 surface.present(pixmap, &regions);
@@ -1358,7 +1367,10 @@ mod tests {
             other => panic!("expected localized regions, got {other:?}"),
         };
         // Confined to the top box (y in 0..40), not the full 80px window.
-        assert!(bound.max_y() <= 40.0, "hover damage strayed into the bottom box");
+        assert!(
+            bound.max_y() <= 40.0,
+            "hover damage strayed into the bottom box"
+        );
         assert!(bound.height() <= 40.0, "hover damage taller than the box");
 
         // Moving the hover off any tappable clears the highlight, damaging the
@@ -1369,7 +1381,10 @@ mod tests {
             Damage::Regions(_) => d.bounding().expect("some region"),
             other => panic!("expected localized regions on unhover, got {other:?}"),
         };
-        assert!(bound.max_y() <= 40.0, "unhover damage strayed past the old box");
+        assert!(
+            bound.max_y() <= 40.0,
+            "unhover damage strayed past the old box"
+        );
     }
 
     #[derive(Default)]

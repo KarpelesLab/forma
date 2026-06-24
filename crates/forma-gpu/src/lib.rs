@@ -475,6 +475,12 @@ pub fn render_scene(scene: &Scene, background: Color, font: &Font) -> Result<Pix
                     }
                 }
             }
+            // An embedded-content viewport: draw a neutral placeholder rect so
+            // the reserved area is visible. Sampling the imported content
+            // texture (dma-buf) into this rect is the hardware-gated follow-up.
+            DrawCmd::Viewport { rect, .. } => {
+                rects.push((*rect, Color::rgb(0x20, 0x24, 0x2c), 0.0, 0.0))
+            }
             // Clip regions are honored by the CPU rasterizer (nested clipped
             // groups); the GPU path's scissor support is a follow-up.
             DrawCmd::PushClip(_) | DrawCmd::PopClip => {}

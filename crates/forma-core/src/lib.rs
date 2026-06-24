@@ -39,8 +39,9 @@ pub use render::caret_index_at;
 pub use render::{apply_scroll, layout, measure, paint, paint_focus, paint_hover};
 pub use runtime::{
     ActionId, Anchor, ContextId, Cx, DragId, FocusId, Handlers, KeyInput, LayoutNode, NodeContent,
-    OverlaySpec, ScrollId, TextPosId, collect_focusables, context_at, drag_at, find_action,
-    find_focus, find_scroll, find_text_pos, first_text, focus_at, hit_test, scroll_at, text_pos_at,
+    OverlaySpec, ScrollId, TextPosId, ViewportId, collect_focusables, collect_viewports,
+    context_at, drag_at, find_action, find_focus, find_scroll, find_text_pos, first_text, focus_at,
+    hit_test, scroll_at, text_pos_at, viewport_at,
 };
 
 // The font type lives in forma-render; re-export so callers of the layout/paint
