@@ -50,4 +50,11 @@ fn main() {
         }
         Err(e) => println!("D3D11 triangle unavailable: {e}"),
     }
+    // Export a shareable texture's cross-process handle — the Windows analog of a
+    // dma-buf for the compositor's content path. WARP (software) may decline
+    // shared resources, so this is best-effort: print the outcome either way.
+    match forma_gpu::d3d11_export_shared_handle(W, H) {
+        Ok(summary) => println!("D3D11 shared handle: {summary}"),
+        Err(e) => println!("D3D11 shared handle unavailable: {e}"),
+    }
 }

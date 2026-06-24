@@ -49,6 +49,30 @@ const VT_CTX_CLEAR_RTV: usize = 50;
 const VT_BLOB_GET_BUFFER_POINTER: usize = 3;
 const VT_BLOB_GET_BUFFER_SIZE: usize = 4;
 
+// Texture MiscFlag: make the resource shareable across processes/devices (the
+// Windows analog of exporting a dma-buf).
+const D3D11_RESOURCE_MISC_SHARED: u32 = 0x2;
+// IDXGIResource::GetSharedHandle vtable index: IUnknown(0-2) + IDXGIObject(3-6)
+// + IDXGIDeviceSubObject::GetDevice(7) + IDXGIResource::GetSharedHandle(8).
+const VT_DXGIRESOURCE_GET_SHARED_HANDLE: usize = 8;
+
+/// A COM interface id (`GUID`).
+#[repr(C)]
+struct Guid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+// IID_IDXGIResource = {035f3ab4-482e-4e50-b41f-8a7f8bd8960b}.
+const IID_IDXGIRESOURCE: Guid = Guid {
+    data1: 0x035f_3ab4,
+    data2: 0x482e,
+    data3: 0x4e50,
+    data4: [0xb4, 0x1f, 0x8a, 0x7f, 0x8b, 0xd8, 0x96, 0x0b],
+};
+
 #[repr(C)]
 struct DxgiSampleDesc {
     Count: u32,
@@ -317,6 +341,77 @@ pub fn device() -> Result<String, String> {
         release(context);
         release(device);
         Ok(format!("WARP device, feature level 0x{feature_level:04x}"))
+    }
+}
+
+/// Create a **shareable** RGBA8 texture on WARP and return its cross-process
+/// shared `HANDLE` — the Windows analog of exporting a `dma-buf` fd for the
+/// compositor's content path: the content process creates the shared texture and
+/// hands the UI process this handle (which `OpenSharedResource` re-opens). Built
+/// with `D3D11_RESOURCE_MISC_SHARED`, then `QueryInterface(IDXGIResource)` →
+/// `GetSharedHandle`. Errors if the device, the shared texture, or the handle
+/// can't be created (software WARP may decline shared resources, in which case
+/// this reports the failing call — a real GPU is the intended target).
+pub fn export_shared_handle(width: u32, height: u32) -> Result<String, String> {
+    unsafe {
+        let (device, ctx) = create_warp()?;
+
+        let create_tex2d: unsafe extern "system" fn(
+            *mut c_void,
+            *const D3d11Texture2dDesc,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> Hresult = core::mem::transmute(vmethod(device, VT_DEVICE_CREATE_TEXTURE2D));
+        let desc = D3d11Texture2dDesc {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DxgiSampleDesc {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET,
+            CPUAccessFlags: 0,
+            MiscFlags: D3D11_RESOURCE_MISC_SHARED,
+        };
+        let mut tex: *mut c_void = core::ptr::null_mut();
+        if create_tex2d(device, &desc, core::ptr::null(), &mut tex) != S_OK {
+            release(ctx);
+            release(device);
+            return Err("CreateTexture2D (shared) failed".into());
+        }
+
+        // QueryInterface for IDXGIResource, then GetSharedHandle.
+        let query: unsafe extern "system" fn(
+            *mut c_void,
+            *const Guid,
+            *mut *mut c_void,
+        ) -> Hresult = core::mem::transmute(vmethod(tex, 0));
+        let mut res: *mut c_void = core::ptr::null_mut();
+        if query(tex, &IID_IDXGIRESOURCE, &mut res) != S_OK {
+            release(tex);
+            release(ctx);
+            release(device);
+            return Err("QueryInterface(IDXGIResource) failed".into());
+        }
+        let get_handle: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> Hresult =
+            core::mem::transmute(vmethod(res, VT_DXGIRESOURCE_GET_SHARED_HANDLE));
+        let mut handle: *mut c_void = core::ptr::null_mut();
+        let hr = get_handle(res, &mut handle);
+        release(res);
+        release(tex);
+        release(ctx);
+        release(device);
+        if hr != S_OK {
+            return Err(format!("GetSharedHandle failed (0x{:08x})", hr as u32));
+        }
+        Ok(format!(
+            "shared D3D11 texture {width}x{height}, handle {:#x}",
+            handle as usize
+        ))
     }
 }
 

@@ -159,6 +159,23 @@ pub fn d3d11_device() -> Result<String, String> {
     }
 }
 
+/// Create a shareable Direct3D 11 texture on WARP and return its cross-process
+/// **shared handle** — the Windows analog of exporting a `dma-buf` for the
+/// compositor's content path (the content process shares the texture; the UI
+/// process re-opens the handle with `OpenSharedResource`). Errors if the `d3d`
+/// feature is off or the shared texture/handle can't be created.
+pub fn d3d11_export_shared_handle(width: u32, height: u32) -> Result<String, String> {
+    #[cfg(all(target_os = "windows", feature = "d3d"))]
+    {
+        d3d::export_shared_handle(width, height)
+    }
+    #[cfg(not(all(target_os = "windows", feature = "d3d")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `d3d` feature (Windows-only Direct3D FFI)".to_string())
+    }
+}
+
 /// Render a `width`×`height` frame through Direct3D 11 on WARP (raw FFI) and read
 /// it back: clear a render-target texture to forma blue, copy it into a staging
 /// texture, map it, and return the RGBA pixels — an actual GPU-rendered frame,
