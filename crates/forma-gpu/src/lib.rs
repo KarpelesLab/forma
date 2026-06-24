@@ -308,6 +308,54 @@ pub fn dmabuf_self_test_on_device(drm_fd: i32) -> Result<Vec<u8>, String> {
     }
 }
 
+/// A descriptor of an exported dma-buf: the GPU buffer handle plus the geometry
+/// and format an importer needs to interpret it. The fields map directly onto
+/// what the X server's DRI3 `PixmapFromBuffers` needs to wrap the buffer as a
+/// Pixmap (and what a browser content process would hand the UI process over a
+/// socket): `(stride, offset)` is the single plane, and `modifier` must be
+/// echoed on import or a tiled buffer decodes as garbage. The caller owns `fd`
+/// and must close it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DmabufExport {
+    /// The dma-buf file descriptor (owned by the caller).
+    pub fd: i32,
+    pub width: u32,
+    pub height: u32,
+    /// Row stride in bytes.
+    pub stride: u32,
+    /// Byte offset of the plane within the buffer.
+    pub offset: u32,
+    /// DRM format modifier (tiling/layout) — echo it on import.
+    pub modifier: u64,
+    /// DRM fourcc of the pixel format (e.g. `AB24` = ABGR8888).
+    pub fourcc: u32,
+    /// Bits per pixel.
+    pub bpp: u8,
+}
+
+/// Render a `width`×`height` frame on the GPU named by `drm_fd` (via GBM) and
+/// **export it as a single-plane dma-buf**, returning its [`DmabufExport`]
+/// descriptor — exactly the data needed to hand the buffer to the X server (DRI3
+/// `PixmapFromBuffers` → Present `PresentPixmap`, no readback) or to a content
+/// process. The fd is owned by the caller. Bind `drm_fd` to the server's GPU
+/// (from X11 `DRI3Open`) so the server can import the result. Errors if the `gl`
+/// feature is off, the device can't be used, or export is unsupported there.
+pub fn export_dmabuf_on_device(
+    drm_fd: i32,
+    width: u32,
+    height: u32,
+) -> Result<DmabufExport, String> {
+    #[cfg(all(target_os = "linux", feature = "gl"))]
+    {
+        gl::export_dmabuf_on_device(drm_fd, width, height)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "gl")))]
+    {
+        let _ = (drm_fd, width, height);
+        Err("forma-gpu: built without the `gl` feature (Linux-only GLES backend)".to_string())
+    }
+}
+
 /// Draw solid-color `rects` **GPU-natively** (as tessellated geometry through a
 /// flat-color shader, not by compositing a CPU frame) on a `background`-cleared
 /// target of `size`, returning the rendered frame — the first step toward a

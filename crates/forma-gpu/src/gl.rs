@@ -949,6 +949,102 @@ pub fn dmabuf_self_test_on_device(drm_fd: i32) -> Result<Vec<u8>, String> {
     unsafe { dmabuf_roundtrip(egl_init_gbm(drm_fd)?) }
 }
 
+/// Render a `w`×`h` solid frame on the GPU named by `drm_fd` (via GBM) and export
+/// it as a single-plane dma-buf, returning the [`crate::DmabufExport`] descriptor
+/// the X server needs to wrap it as a Pixmap. The fd is owned by the caller.
+pub fn export_dmabuf_on_device(drm_fd: i32, w: u32, h: u32) -> Result<crate::DmabufExport, String> {
+    unsafe { export_dmabuf_current(egl_init_gbm(drm_fd)?, w as i32, h as i32) }
+}
+
+/// Export the current context's freshly-rendered texture as a dma-buf and return
+/// its descriptor. Mirrors the producer half of [`dmabuf_roundtrip`] (texture →
+/// EGLImage → `eglExportDMABUFImageMESA`) but stops at export and hands back the
+/// fd + layout instead of re-importing. Single-plane formats only.
+unsafe fn export_dmabuf_current(
+    dpy: EGLDisplay,
+    w: i32,
+    h: i32,
+) -> Result<crate::DmabufExport, String> {
+    unsafe {
+        let ctx = eglGetCurrentContext();
+        let create_image: PfnCreateImage = load_proc(b"eglCreateImageKHR\0")?;
+        let destroy_image: PfnDestroyImage = load_proc(b"eglDestroyImageKHR\0")?;
+        let export_query: PfnExportQuery = load_proc(b"eglExportDMABUFImageQueryMESA\0")?;
+        let export: PfnExport = load_proc(b"eglExportDMABUFImageMESA\0")?;
+
+        // A solid forma-blue source texture of the requested size.
+        let mut pixels = vec![0u8; (w as usize) * (h as usize) * 4];
+        for px in pixels.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0x60, 0x9c, 0xff, 0xff]);
+        }
+        let mut tex: GLuint = 0;
+        glGenTextures(1, &mut tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA as GLint,
+            w,
+            h,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels.as_ptr() as *const c_void,
+        );
+        glFinish(); // ensure the upload lands before the image is exported
+
+        let preserve = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
+        let img = create_image(
+            dpy,
+            ctx,
+            EGL_GL_TEXTURE_2D,
+            tex as usize as EglClientBuffer,
+            preserve.as_ptr(),
+        );
+        if img.is_null() {
+            return Err(format!(
+                "eglCreateImageKHR(GL_TEXTURE_2D) failed: {:#x}",
+                eglGetError()
+            ));
+        }
+        let (mut fourcc, mut planes, mut modifier) = (0i32, 0i32, 0u64);
+        if export_query(dpy, img, &mut fourcc, &mut planes, &mut modifier) == 0 {
+            destroy_image(dpy, img);
+            return Err(format!(
+                "eglExportDMABUFImageQueryMESA failed: {:#x}",
+                eglGetError()
+            ));
+        }
+        if planes != 1 {
+            destroy_image(dpy, img);
+            return Err(format!(
+                "unsupported multi-plane dma-buf (planes={planes}); single-plane only"
+            ));
+        }
+        let (mut fd, mut stride, mut offset) = (-1i32, 0i32, 0i32);
+        if export(dpy, img, &mut fd, &mut stride, &mut offset) == 0 || fd < 0 {
+            destroy_image(dpy, img);
+            return Err(format!(
+                "eglExportDMABUFImageMESA failed: {:#x}",
+                eglGetError()
+            ));
+        }
+        destroy_image(dpy, img);
+        Ok(crate::DmabufExport {
+            fd,
+            width: w as u32,
+            height: h as u32,
+            stride: stride as u32,
+            offset: offset as u32,
+            modifier,
+            fourcc: fourcc as u32,
+            bpp: 32,
+        })
+    }
+}
+
 /// Export a GL texture as a dma-buf, re-import it, sample it, and verify the
 /// pixels — on whatever EGL context is current (`dpy`).
 unsafe fn dmabuf_roundtrip(dpy: EGLDisplay) -> Result<Vec<u8>, String> {

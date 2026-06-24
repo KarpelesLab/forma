@@ -70,6 +70,17 @@ fn main() -> ExitCode {
         return match forma_gpu::dmabuf_self_test_on_device(fd) {
             Ok(pixels) => {
                 println!("imported {} bytes on device; corners present", pixels.len());
+                // Also exercise the export-only descriptor path — the exact data
+                // fed to DRI3 PixmapFromBuffers for a zero-copy present. Best
+                // effort: a failure here doesn't fail the round-trip probe.
+                match forma_gpu::export_dmabuf_on_device(fd, 256, 256) {
+                    Ok(d) => println!(
+                        "dmabuf export: fd={} {}x{} stride={} offset={} \
+                         modifier={:#x} fourcc={:#x} bpp={}",
+                        d.fd, d.width, d.height, d.stride, d.offset, d.modifier, d.fourcc, d.bpp
+                    ),
+                    Err(e) => println!("dmabuf export: unsupported ({e})"),
+                }
                 println!("RESULT: PASS");
                 ExitCode::SUCCESS
             }
