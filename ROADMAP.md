@@ -393,9 +393,22 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   — what a real build hands the content process; pressing the content grabs
   keyboard focus. CI-verified by the `viewportdemo` (a cyan/magenta checkerboard
   composited into a 320×240 viewport; a click is screenshot-confirmed to forward
-  a local-coord press). **Next:** the actual `PixmapFromBuffers` + Present
-  present (no Pixmap readback), frame sync, and the content-process sandbox; then
-  macOS (`IOSurface`) / Windows (shared D3D handle) parity.
+  a local-coord press).
+  **Phase D (zero-copy present — wire layer):** the X11 protocol for flipping a
+  GPU frame to the window with no readback is in place and tested. DRI3
+  `PixmapFromBuffers` (minor 7) wraps a rendered dma-buf — geometry + format +
+  up to 4 planes' stride/offset + the DRM format modifier the import must echo,
+  the plane fds passed as SCM_RIGHTS ancillary data — and Present `PresentPixmap`
+  (minor 1) flips it; both request encoders are unit-tested for exact wire layout
+  (`forma_platform::backend::x11::{pixmap_from_buffers_request,
+  present_pixmap_request}`, over a public `DmabufImage`). The **Present extension
+  negotiation** (`present_probe`) needs no GPU, so it's **CI-verified under
+  Xvfb** (the `dri3-present` job asserts `Present X.Y available`); the dma-buf
+  Pixmap it flips still needs real GPU hardware. **Next:** the runtime
+  composition (`forma-gpu` exports a scene's dma-buf descriptor — fds + per-plane
+  stride/offset + modifier — which feeds `PixmapFromBuffers` → `PresentPixmap` on
+  the window), frame sync (Present fences/MSC), and the content-process sandbox;
+  then macOS (`IOSurface`) / Windows (shared D3D handle) parity.
 
 ---
 
