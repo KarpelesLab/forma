@@ -40,9 +40,9 @@ pub use forma_widgets as widgets;
 
 use forma_core::{
     ActionId, Anchor, BoxStyle, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput,
-    LayoutNode, TextPosId, caret_index_at, collect_focusables, context_at, drag_at, find_action,
-    find_focus, find_text_pos, focus_at, hit_test, layout, measure, paint, paint_focus,
-    paint_hover, text_pos_at,
+    LayoutNode, TextPosId, ViewportId, caret_index_at, collect_focusables, collect_viewports,
+    context_at, drag_at, find_action, find_focus, find_text_pos, focus_at, hit_test, layout,
+    measure, paint, paint_focus, paint_hover, text_pos_at,
 };
 use forma_geometry::{PhysicalSize, Point, Rect, ScaleFactor, Size};
 use forma_platform::{
@@ -51,6 +51,7 @@ use forma_platform::{
 };
 use forma_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
 use forma_style::Theme;
+use std::collections::HashMap;
 
 /// A Forma application.
 ///
@@ -76,6 +77,12 @@ pub struct App<S> {
     // One [`Pane`] per OS window. There is always at least one (the primary,
     // index 0); additional windows are added via [`App::open_window`].
     panes: Vec<Pane<S>>,
+    // Externally-rendered content for embedded viewports, keyed by the
+    // caller-chosen [`ViewportId`]. After a frame is rasterized, each viewport's
+    // content (sized to the viewport's physical extent) is blitted over its
+    // placeholder — the CPU analog of a GPU backend sampling an imported
+    // (dma-buf / IOSurface / shared-handle) content texture into the rect.
+    viewport_content: HashMap<ViewportId, Pixmap>,
 }
 
 /// A pluggable rasterizer: turns a built [`Scene`] (with a background color, at a
@@ -214,6 +221,7 @@ impl<S> App<S> {
             theme: Theme::light(),
             font: None,
             panes: vec![Pane::new(Box::new(build))],
+            viewport_content: HashMap::new(),
         }
     }
 
@@ -286,6 +294,36 @@ impl<S> App<S> {
     pub fn state(&self) -> &S {
         &self.state
     }
+
+    /// Seed the content for an embedded [`viewport`](Element::viewport) at build
+    /// time (builder form of [`set_viewport_content`](App::set_viewport_content)).
+    pub fn with_viewport_content(mut self, id: ViewportId, content: Pixmap) -> Self {
+        self.viewport_content.insert(id, content);
+        self
+    }
+
+    /// Register (or replace) the externally-rendered `content` for the viewport
+    /// `id`. After each frame is rasterized, this content — which should be sized
+    /// to the viewport's physical extent — is composited over the viewport's
+    /// placeholder. This is the CPU content path; a GPU backend imports a shared
+    /// texture (dma-buf / `IOSurface` / shared handle) into the same rect
+    /// instead. Marks every window dirty so the change is presented next frame.
+    pub fn set_viewport_content(&mut self, id: ViewportId, content: Pixmap) {
+        self.viewport_content.insert(id, content);
+        for pane in &mut self.panes {
+            pane.dirty = true;
+        }
+    }
+
+    /// Remove any registered content for the viewport `id` (reverting it to the
+    /// placeholder). Marks every window dirty.
+    pub fn clear_viewport_content(&mut self, id: ViewportId) {
+        if self.viewport_content.remove(&id).is_some() {
+            for pane in &mut self.panes {
+                pane.dirty = true;
+            }
+        }
+    }
 }
 
 impl<S> Pane<S> {
@@ -299,6 +337,49 @@ impl<S> Pane<S> {
                 .with_background(bg)
                 .render(scene, scale),
         }
+    }
+
+    /// Composite registered embedded content over each viewport's placeholder in
+    /// `pixmap`. For every viewport in the laid-out tree with content registered
+    /// for its id, blit that content — assumed sized to the viewport's physical
+    /// extent — at the viewport's physical top-left. A straight replace over the
+    /// placeholder the scene painted; the CPU analog of a GPU backend sampling an
+    /// imported content texture into the rect.
+    fn composite_viewports(
+        &self,
+        pixmap: &mut Pixmap,
+        content: &HashMap<ViewportId, Pixmap>,
+        scale: ScaleFactor,
+    ) {
+        if content.is_empty() {
+            return;
+        }
+        let Some(tree) = self.tree.as_ref() else {
+            return;
+        };
+        let mut views = Vec::new();
+        collect_viewports(tree, &mut views);
+        let s = scale.get();
+        for (id, bounds) in views {
+            if let Some(src) = content.get(&id) {
+                let x = (bounds.min_x() * s).round() as u32;
+                let y = (bounds.min_y() * s).round() as u32;
+                pixmap.blit(src, x, y);
+            }
+        }
+    }
+
+    /// Whether the laid-out tree contains any embedded-content viewport. Content
+    /// is composited post-rasterize (not via the area-repaint sub-renderer), so a
+    /// frame with a viewport opts out of partial repaint to avoid a damaged rect
+    /// over the viewport erasing its content back to the placeholder.
+    fn has_viewports(&self) -> bool {
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        let mut views = Vec::new();
+        collect_viewports(tree, &mut views);
+        !views.is_empty()
     }
 
     /// Build the element tree for the current state, lay it out to fill the
@@ -453,10 +534,17 @@ impl<S> Pane<S> {
     /// Build, paint, and rasterize the next frame, returning the [`Pixmap`] and
     /// the [`Damage`] (changed region, in logical pixels) relative to the
     /// previously returned frame. The first call always reports [`Damage::Full`].
-    fn render_frame(&mut self, state: &S, theme: &Theme, font: Option<&Font>) -> (Pixmap, Damage) {
+    fn render_frame(
+        &mut self,
+        state: &S,
+        theme: &Theme,
+        font: Option<&Font>,
+        content: &HashMap<ViewportId, Pixmap>,
+    ) -> (Pixmap, Damage) {
         let scene = self.build_frame(state, theme, font);
         let scale = self.scale;
-        let pixmap = self.rasterize(scene, theme, scale);
+        let mut pixmap = self.rasterize(scene, theme, scale);
+        self.composite_viewports(&mut pixmap, content, scale);
         let damage = self.take_damage();
         (pixmap, damage)
     }
@@ -724,9 +812,10 @@ impl<S> App<S> {
             theme,
             font,
             panes,
+            viewport_content,
             ..
         } = self;
-        panes[0].render_frame(state, theme, font.as_ref())
+        panes[0].render_frame(state, theme, font.as_ref(), viewport_content)
     }
 
     /// Render a single frame off-screen and return it as a [`Pixmap`]. Needs no
@@ -952,6 +1041,7 @@ impl<S> App<S> {
                 theme,
                 font,
                 panes,
+                viewport_content,
                 ..
             } = app;
             let pane = &mut panes[idx];
@@ -976,6 +1066,7 @@ impl<S> App<S> {
             // matching the current surface size.
             let can_partial = !force
                 && pane.frame_renderer.is_none()
+                && !pane.has_viewports()
                 && matches!(damage, Damage::Regions(_))
                 && pane.last_pixmap.as_ref().map(Pixmap::size) == Some(phys_size);
 
@@ -1009,7 +1100,8 @@ impl<S> App<S> {
             } else {
                 // Full render: forced (expose/resize), GPU path, first frame, a
                 // size change, or unlocalizable (`Damage::Full`) damage.
-                let pixmap = pane.rasterize(scene, theme, scale);
+                let mut pixmap = pane.rasterize(scene, theme, scale);
+                pane.composite_viewports(&mut pixmap, viewport_content, scale);
                 let regions = if force {
                     Vec::new()
                 } else {
@@ -1222,16 +1314,17 @@ fn map_key(code: KeyCode, modifiers: Modifiers) -> Option<KeyInput> {
 pub mod prelude {
     pub use crate::App;
     pub use forma_anim::{Easing, Spring, Tween};
+    pub use forma_core::ViewportId;
     pub use forma_core::{Align, Anchor, Axis, BoxStyle, Cx, Element, KeyInput, OverlaySpec, View};
-    pub use forma_geometry::{Insets, Point, Rect, ScaleFactor, Size};
-    pub use forma_render::{Color, Font};
+    pub use forma_geometry::{Insets, PhysicalSize, Point, Rect, ScaleFactor, Size};
+    pub use forma_render::{Color, Font, Pixmap};
     pub use forma_style::Theme;
     pub use forma_style::{Palette, Spacing, Typography};
     pub use forma_widgets::{
         EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
         edit_string, heading, label, menu, menu_item, open_dialog, open_menu, panel, paragraph,
         progress_bar, radio, row, scroll, setting_row, slider, spacer, spinner, swatch, switch,
-        tabs, text_area, text_editor, text_field, tooltip,
+        tabs, text_area, text_editor, text_field, tooltip, viewport,
     };
 }
 
@@ -1288,6 +1381,53 @@ mod tests {
             app.render_once().size(),
             forma_geometry::PhysicalSize::new(200, 80)
         );
+    }
+
+    #[test]
+    fn viewport_content_is_composited_over_the_placeholder() {
+        use forma_core::ViewportId;
+        use forma_geometry::PhysicalSize;
+        use forma_render::Color;
+        use forma_widgets::viewport;
+
+        let vid = ViewportId(1);
+        // A 100×60 window holding a 40×30 viewport inset at (10,10) by a 10px pad.
+        let mut app = App::new((), move |_s: &(), _cx: &mut Cx<()>| {
+            column(vec![viewport(&Theme::light(), vid, 40.0, 30.0)])
+                .padding(forma_geometry::Insets::uniform(10.0))
+        })
+        .logical_size(Size::new(100.0, 60.0));
+
+        // No content yet: the viewport shows the dark-slate placeholder.
+        let before = app.render_once();
+        assert_eq!(before.pixel(20, 20), Some([0x20, 0x24, 0x2c, 0xff]));
+
+        // Register solid-magenta content sized to the viewport's physical extent.
+        let mut content = Pixmap::new(PhysicalSize::new(40, 30));
+        for px in content.as_bytes_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 255, 255]);
+        }
+        app.set_viewport_content(vid, content);
+
+        // Now the viewport interior is the content color, and pixels outside the
+        // viewport (e.g. the padding at (2,2)) are untouched.
+        let after = app.render_once();
+        assert_eq!(
+            after.pixel(20, 20),
+            Some([255, 0, 255, 255]),
+            "content blitted"
+        );
+        assert_eq!(
+            after.pixel(30, 25),
+            Some([255, 0, 255, 255]),
+            "interior filled"
+        );
+        assert_ne!(
+            after.pixel(2, 2),
+            Some([255, 0, 255, 255]),
+            "padding outside the viewport is not painted with content"
+        );
+        let _ = Color::WHITE;
     }
 
     /// Two stacked 200×40 boxes; tapping the top one flips a flag that only

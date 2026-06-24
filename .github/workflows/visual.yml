@@ -83,6 +83,74 @@ jobs:
           path: visual_output/*
           if-no-files-found: warn
 
+  # Embedded-content viewport (browser-compositor seam): the viewportdemo
+  # reserves a viewport rect and the app composites CPU-rendered content (a
+  # cyan/magenta checkerboard standing in for a content process's GPU surface)
+  # into it. Screenshot the window and assert the viewport region shows that
+  # content (blue-dominant, multi-color) rather than the dark placeholder.
+  visual-viewport:
+    name: Visual test (Viewport / X11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Xvfb, ImageMagick, x11-utils, a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick x11-utils fonts-dejavu-core
+
+      - name: Build the viewport demo
+        run: cargo build --release -p viewportdemo
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "XVFB_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+
+      - name: Launch the viewport demo and check the composited content
+        env:
+          DISPLAY: ":99"
+        run: |
+          mkdir -p visual_output
+          ./target/release/viewportdemo > visual_output/viewport.log 2>&1 &
+          echo "APP_PID=$!" >> "$GITHUB_ENV"
+          sleep 4
+          import -window root visual_output/forma-viewport.png
+          echo "=== capture ==="; identify visual_output/forma-viewport.png
+          echo "=== viewport.log ==="; cat visual_output/viewport.log || true
+          # The window is 480x360 at the root top-left; the 320x240 viewport is
+          # centered under the heading, so a region around the window center
+          # (240,180) lands well inside it. Crop 200x150 there.
+          convert visual_output/forma-viewport.png -crop 200x150+140+105 +repage \
+            visual_output/viewport-region.png
+          # The checkerboard is cyan (0,255,255) + magenta (255,0,255): both have
+          # full blue, so the region's mean blue is ~1.0 — unreachable by the dark
+          # theme background (~0.1) or the slate placeholder (~0.17).
+          mb=$(convert visual_output/viewport-region.png -format "%[fx:mean.b]" info:)
+          echo "viewport region mean.b=$mb"
+          awk "BEGIN{exit !($mb > 0.7)}"
+          # ...and it must be actual content (a checker), not a single flat color.
+          colors=$(convert visual_output/viewport-region.png -format '%k' info:)
+          echo "distinct colors in region: $colors"
+          [ "$colors" -gt 1 ]
+
+      - name: Stop the app and Xvfb
+        if: always()
+        run: |
+          [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
+          [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Upload screenshot + log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-viewport-screenshot
+          path: visual_output/*
+          if-no-files-found: warn
+
   # Scroll containers: a tall list clipped to a fixed-height viewport, wheel-
   # scrolled with xdotool. Screenshot before/after and assert the visible frame
   # changed (content moved) — proving offset + clip work end to end.
