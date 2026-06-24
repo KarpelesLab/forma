@@ -1251,6 +1251,9 @@ jobs:
           # ...and a triangle drawn by a compiled .metal shader must put forma
           # green (52,211,153) at the center pixel.
           grep -q "Metal triangle: .* center pixel 52,211,153,255" metaldemo.log
+          # ...and a shareable IOSurface (dma-buf analog) must be created with a
+          # global id — the macOS runner has real IOSurface support.
+          grep -q "Metal IOSurface: IOSurface .* id [0-9]" metaldemo.log
 
       - name: Launch the Forma window and screenshot the screen
         env:

@@ -9,7 +9,7 @@
 //! render target, a render pipeline from a `.metal` source string, a command
 //! buffer that draws, and `getBytes` readback) builds on this.
 
-#![allow(unsafe_code, non_snake_case)]
+#![allow(unsafe_code, non_snake_case, non_upper_case_globals)]
 
 use core::ffi::{c_char, c_void};
 use std::ffi::{CStr, CString};
@@ -30,6 +30,112 @@ unsafe extern "C" {
 #[link(name = "Metal", kind = "framework")]
 unsafe extern "C" {
     fn MTLCreateSystemDefaultDevice() -> Id;
+}
+
+// ---- IOSurface export: macOS shared GPU surface (dma-buf analog) -------------
+//
+// IOSurface is the macOS cross-process shared-image primitive — the analog of a
+// Linux dma-buf for the compositor's content path. A content process creates an
+// IOSurface (CPU+GPU accessible, bindable as an `MTLTexture`) and hands the UI
+// process its global `IOSurfaceID`, which the UI re-opens with `IOSurfaceLookup`.
+// Built via the CoreFoundation C API (no `core-foundation` crate).
+
+type CFTypeRef = *const c_void;
+type CFStringRef = *const c_void;
+type CFNumberRef = *const c_void;
+type CFDictionaryRef = *const c_void;
+type IOSurfaceRef = *const c_void;
+
+const KCF_NUMBER_SINT32: isize = 3; // kCFNumberSInt32Type
+const IOSURFACE_PIXEL_FORMAT_BGRA: i32 = 0x4247_5241; // 'BGRA'
+
+/// Opaque stand-in for the `CFDictionary{Key,Value}CallBacks` structs — we only
+/// take the address of the real CoreFoundation globals, never their layout.
+#[repr(C)]
+struct CFCallbacks {
+    _opaque: [u8; 0],
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFNumberCreate(allocator: CFTypeRef, the_type: isize, value: *const c_void) -> CFNumberRef;
+    fn CFDictionaryCreate(
+        allocator: CFTypeRef,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        num_values: isize,
+        key_callbacks: *const CFCallbacks,
+        value_callbacks: *const CFCallbacks,
+    ) -> CFDictionaryRef;
+    fn CFRelease(cf: CFTypeRef);
+    static kCFTypeDictionaryKeyCallBacks: CFCallbacks;
+    static kCFTypeDictionaryValueCallBacks: CFCallbacks;
+}
+
+#[link(name = "IOSurface", kind = "framework")]
+unsafe extern "C" {
+    fn IOSurfaceCreate(properties: CFDictionaryRef) -> IOSurfaceRef;
+    fn IOSurfaceGetID(buffer: IOSurfaceRef) -> u32;
+    static kIOSurfaceWidth: CFStringRef;
+    static kIOSurfaceHeight: CFStringRef;
+    static kIOSurfaceBytesPerElement: CFStringRef;
+    static kIOSurfacePixelFormat: CFStringRef;
+}
+
+/// Create a shareable `width`×`height` BGRA8 **IOSurface** and return its global
+/// `IOSurfaceID` — the macOS analog of exporting a `dma-buf` for the compositor's
+/// content path (the content process creates the surface; the UI process re-opens
+/// the id with `IOSurfaceLookup` and binds it as an `MTLTexture`). Errors if the
+/// CoreFoundation property dictionary or the surface can't be created.
+pub fn export_iosurface(width: u32, height: u32) -> Result<String, String> {
+    unsafe {
+        let (w, h, bpe, fmt) = (
+            width as i32,
+            height as i32,
+            4i32,
+            IOSURFACE_PIXEL_FORMAT_BGRA,
+        );
+        let num = |v: &i32| {
+            CFNumberCreate(
+                core::ptr::null(),
+                KCF_NUMBER_SINT32,
+                v as *const i32 as *const c_void,
+            )
+        };
+        let (n_w, n_h, n_bpe, n_fmt) = (num(&w), num(&h), num(&bpe), num(&fmt));
+
+        let keys: [*const c_void; 4] = [
+            kIOSurfaceWidth,
+            kIOSurfaceHeight,
+            kIOSurfaceBytesPerElement,
+            kIOSurfacePixelFormat,
+        ];
+        let values: [*const c_void; 4] = [n_w, n_h, n_bpe, n_fmt];
+        let dict = CFDictionaryCreate(
+            core::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            4,
+            core::ptr::addr_of!(kCFTypeDictionaryKeyCallBacks),
+            core::ptr::addr_of!(kCFTypeDictionaryValueCallBacks),
+        );
+        CFRelease(n_w);
+        CFRelease(n_h);
+        CFRelease(n_bpe);
+        CFRelease(n_fmt);
+        if dict.is_null() {
+            return Err("CFDictionaryCreate failed".into());
+        }
+
+        let surface = IOSurfaceCreate(dict);
+        CFRelease(dict);
+        if surface.is_null() {
+            return Err("IOSurfaceCreate failed".into());
+        }
+        let id = IOSurfaceGetID(surface);
+        CFRelease(surface);
+        Ok(format!("IOSurface {width}x{height} BGRA, id {id}"))
+    }
 }
 
 // Metal enum values we use.

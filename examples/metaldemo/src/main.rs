@@ -50,4 +50,10 @@ fn main() {
         }
         Err(e) => println!("Metal triangle unavailable: {e}"),
     }
+    // Export a shareable IOSurface — the macOS analog of a dma-buf for the
+    // compositor's content path. Print its global id (or the failing call).
+    match forma_gpu::metal_export_iosurface(W, H) {
+        Ok(summary) => println!("Metal IOSurface: {summary}"),
+        Err(e) => println!("Metal IOSurface unavailable: {e}"),
+    }
 }

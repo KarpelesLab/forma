@@ -226,6 +226,23 @@ pub fn metal_device() -> Result<String, String> {
     }
 }
 
+/// Create a shareable BGRA8 **IOSurface** and return its global `IOSurfaceID` —
+/// the macOS analog of exporting a `dma-buf` for the compositor's content path
+/// (the content process creates the surface; the UI process re-opens the id with
+/// `IOSurfaceLookup` and binds it as an `MTLTexture`). Errors if the `mtl`
+/// feature is off or the surface can't be created.
+pub fn metal_export_iosurface(width: u32, height: u32) -> Result<String, String> {
+    #[cfg(all(target_os = "macos", feature = "mtl"))]
+    {
+        metal::export_iosurface(width, height)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "mtl")))]
+    {
+        let _ = (width, height);
+        Err("forma-gpu: built without the `mtl` feature (macOS-only Metal FFI)".to_string())
+    }
+}
+
 /// Render a `width`×`height` frame through Metal (raw FFI) and read it back: a
 /// `MTLTexture` cleared to forma blue by a render command encoder, then read to
 /// the CPU with `getBytes` — an actual GPU-rendered frame, the Metal analog of
