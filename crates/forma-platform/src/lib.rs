@@ -29,6 +29,10 @@ mod event;
 /// DRI3/Present GPU buffers and the browser content-process IPC.
 #[cfg(target_os = "linux")]
 pub mod scm;
+/// `memfd`-backed shared-memory buffers — the CPU side of the content path (a
+/// content process's pixels shared with the UI process, the dual of GPU dma-buf).
+#[cfg(target_os = "linux")]
+pub mod shm;
 /// Hand-written UI Automation provider (Windows accessibility bridge).
 #[cfg(target_os = "windows")]
 pub mod uia;

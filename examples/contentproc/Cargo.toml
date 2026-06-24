@@ -1,0 +1,16 @@
+[package]
+name = "contentproc"
+description = "Forma example: a separate content process renders into shared memory, passed to the UI process and composited into a viewport (CPU dual of the GPU dma-buf path)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+forma.workspace = true
+
+[lints]
+workspace = true

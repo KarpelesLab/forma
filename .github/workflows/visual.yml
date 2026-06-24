@@ -699,6 +699,28 @@ jobs:
           # The Present extension must negotiate (Xvfb supports Present, no GPU).
           grep -qE "Present probe: Present [0-9]+\.[0-9]+ available" dri3.log
 
+  # Content-process compositing over the CPU shm path (the dual of the GPU
+  # dma-buf path): the UI process spawns a separate content process that renders
+  # into a memfd and passes the fd over a Unix socket (SCM_RIGHTS); the UI process
+  # maps the same memory, composites it into a viewport, and forwards input back,
+  # which the content process applies by redrawing into the shared buffer. The
+  # demo self-checks the whole loop — headless and GPU-free, so it runs anywhere.
+  content-process:
+    name: Content process (shm IPC + compositing)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the content-process demo
+        run: cargo build --release -p contentproc
+      - name: Run the cross-process content path
+        run: |
+          ./target/release/contentproc | tee contentproc.log
+          # The UI process mapped the content process's buffer, composited it into
+          # a viewport, and the forwarded input crossed the process boundary.
+          grep -q "RESULT: PASS" contentproc.log
+
   # Render the window example under a headless wlroots compositor (sway) and
   # screenshot it with grim, proving the hand-authored Wayland backend connects,
   # binds the globals, creates an xdg-shell window, and presents via wl_shm.
