@@ -14,6 +14,7 @@
 use std::process::ExitCode;
 
 /// Open a DRM device read/write, returning its raw fd (leaked for the run).
+#[cfg(target_os = "linux")]
 fn open_drm(path: &str) -> std::io::Result<i32> {
     use std::os::fd::IntoRawFd;
     Ok(std::fs::OpenOptions::new()
@@ -23,6 +24,16 @@ fn open_drm(path: &str) -> std::io::Result<i32> {
         .into_raw_fd())
 }
 
+/// The dma-buf spike depends on Linux-only EGL/GBM + `std::os::fd`; on other
+/// targets it can't run, so report unsupported (exit 2) and keep the workspace
+/// building everywhere (the Windows/macOS `--all-targets` build compiles it).
+#[cfg(not(target_os = "linux"))]
+fn main() -> ExitCode {
+    println!("RESULT: UNSUPPORTED (dma-buf spike is Linux-only)");
+    ExitCode::from(2)
+}
+
+#[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     // 1) What EGL extensions does this device advertise?
     let exts = match forma_gpu::dmabuf_extensions() {

@@ -574,7 +574,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick x11-utils fonts-dejavu-core \
-            libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1
+            libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm-dev
 
       - name: Build the GPU window example (GLES backend)
         run: cargo build --release -p gpuwindow --features forma-gpu/gl
@@ -637,7 +637,7 @@ jobs:
       - name: Install Mesa GL/EGL
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1
+          sudo apt-get install -y libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm-dev
 
       - name: Build the dma-buf spike (GLES backend)
         run: cargo build --release -p dmabuftest --features forma-gpu/gl
@@ -1063,7 +1063,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm1 \
+            libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm-dev \
             libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools \
             imagemagick fonts-dejavu-core
 
