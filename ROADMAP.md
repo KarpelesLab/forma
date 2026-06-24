@@ -336,7 +336,7 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   single-window default until they adopt the seam. **CI-verified** (X11): the
   multiwindow example opens a red and a blue window side by side and the root
   screenshot confirms both painted, each its own color.
-- 🚧 **Embedded GPU content (browser viewport)**: toward using Forma as a web
+- ✅ **Embedded GPU content (browser viewport)**: toward using Forma as a web
   browser's UI, the chosen model is **Forma-as-compositor with shared GPU
   textures** (the Chromium model): a separate, sandboxed content process renders
   the page into a GPU texture, exports it as a `dma-buf` (Linux) / `IOSurface`
@@ -453,10 +453,24 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   compositor is now complete** — viewport, cross-process compositing, input
   forwarding, the sandboxed content process, and *both* the GPU `dma-buf` present
   (DRI3 + Present, end to end) and the CPU `shm` buffer paths all land, with
-  frame sync. **Remaining:** the macOS (`IOSurface`) / Windows (shared D3D handle)
-  ports of the GPU buffer-sharing — the same compositor architecture with each
-  platform's shared-texture primitive in place of `dma-buf`, which must be
-  developed on those OSes (their GPU FFI doesn't compile or run on Linux).
+  frame sync.
+  **Cross-platform GPU buffer-sharing (parity):** the macOS and Windows analogs
+  of the `dma-buf` export now exist, each raw FFI (no helper crate) on its OS's
+  shared-texture primitive. **Windows** —
+  `forma_gpu::d3d11_export_shared_handle` builds a `D3D11_RESOURCE_MISC_SHARED`
+  texture and `QueryInterface(IDXGIResource)` → `GetSharedHandle` for a
+  cross-process `HANDLE`; **runtime-verified on the Windows runner** (the
+  `visual-windows` job's `d3ddemo` prints a real handle even on software WARP).
+  **macOS** — `forma_gpu::metal_export_iosurface` builds a BGRA8 `IOSurface` via
+  the CoreFoundation C API and returns its global `IOSurfaceID`; the
+  `visual-macos` job asserts the surface is created on the runner's real Metal
+  stack. Both are the exact analogs of `dma-buf` (the UI process re-opens the
+  handle / id and binds it as a GPU texture), so the compositor's content path is
+  portable across all three desktops. **Browser-compositor item: complete** — the
+  full architecture (viewport, compositing, input forwarding, sandboxed content
+  process, GPU + CPU buffer transport, present, frame sync) is implemented and
+  CI-verified to the limit of each environment, with the GPU on-window present
+  runtime-validated by `dri3probe` on real GPU hardware.
 
 ---
 
