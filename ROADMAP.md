@@ -433,11 +433,22 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `socket`/`connect`/`execve`/`execveat`/`ptrace` fail with `EPERM` while leaving
   the existing IPC fd + shared memory usable — so a compromised content process
   can't open the network or exec; `contentproc` applies it and **CI asserts** a
-  new `socket()` is blocked while the loop still completes. **Next
-  (GPU-hardware-gated):** wire export → `fd` over the window's socket via
-  `PixmapFromBuffers` → `PresentPixmap` (no readback) on a live window, and frame
-  sync (Present fences/MSC); then macOS (`IOSurface`) / Windows (shared D3D
-  handle) parity.
+  new `socket()` is blocked while the loop still completes.
+  **GPU present, end to end (implemented):** the on-window zero-copy present is
+  now wired —
+  `forma_platform::backend::x11::dri3_present_dmabuf_self_test` connects, creates
+  + maps a window, then DRI3 `PixmapFromBuffers` (plane fds over the socket) →
+  Present `PresentPixmap` to flip it (a `GetInputFocus` round-trip surfaces any
+  protocol error), and `dri3probe` composes the whole chain on real hardware:
+  `DRI3Open` → `forma_gpu::export_dmabuf_on_device` (render + export on the
+  server's GPU) → that present. **Build-verified in CI** (with and without the
+  `gl` feature); the DRI3 import + flip need a real GPU + DRM-capable X server
+  (Xvfb reports DRI3 unavailable), so runtime is hardware-gated — run `dri3probe`
+  on a GPU box to validate the pixels on screen. **Next:** frame sync (Present
+  fences/MSC) so the importer doesn't read a half-rendered buffer; then macOS
+  (`IOSurface`) / Windows (shared D3D handle) parity. (The Linux compositor is
+  otherwise complete: viewport, compositing, input forwarding, content process,
+  sandbox, and the GPU + CPU buffer paths all land.)
 
 ---
 
