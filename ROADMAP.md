@@ -128,6 +128,25 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   damaged region via the `Surface` damage seam — a state change repaints only
   what moved (expose/resize still force a full present). Unit-tested in
   `forma-core` (localized/full/none cases) and `forma` (incremental App frames).
+- ✅ **Area-based partial rasterization**: damage diffing chose *what* to
+  present, but the renderer could still only paint the whole canvas and any
+  hover/focus change forced `Damage::Full` — so a pointer move crossing a
+  tappable re-ran a full tree rebuild, full-window CPU rasterize, and full
+  upload (multi-second pointer lag). Two new seams close the gap.
+  `forma-render`: `SoftwareRenderer::render_region` rasterizes only a logical
+  sub-rect (via the frame's view box) into a caller-sized buffer, and
+  `Pixmap::blit` composites it into a retained full-window pixmap — a region
+  render is pixel-identical to the full render within that rect. `forma`:
+  `Pane::take_damage` localizes hover/focus changes to the affected element
+  rects (focus inflated to cover the ring) instead of `Damage::Full`, falling
+  back to Full only for overlays, resize, first frame, or a missing node; the
+  run loop computes damage *before* rasterizing — skipping the rasterize
+  entirely when nothing changed — and, on localized damage, re-rasterizes just
+  those rects into the retained pixmap and uploads only them. A hover move now
+  repaints two small button rects and no-op events do zero raster/upload work.
+  (The GPU `frame_renderer` path keeps the full-frame route.) Unit-tested
+  (`render_region` vs full, blit offset, hover-change localized damage) and
+  exercised by the `visual-calculator` CI job.
 - ✅ **Subtree memoization** (`Cx::memo`): `cx.memo(key, build)` returns the
   previous frame's `Element` for an unchanged `key`, skipping the build closure
   so unchanged static branches aren't rebuilt. The closure gets no `Cx` (so a
@@ -333,10 +352,34 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   are tiled, so the importer must echo the export's **DRM format modifier**
   (`EGL_DMA_BUF_PLANE0_MODIFIER_LO/HI_EXT`) or the image is incomplete; and an
   imported dma-buf texture is **sample-only** (not color-renderable), which is
-  exactly how the compositor uses it. Next:
-  productionize the on-GPU windowed compositor (no Pixmap readback), a viewport
-  element, the IPC + fd-passing + sync, input forwarding, and the content-process
-  sandbox; then macOS/Windows parity.
+  exactly how the compositor uses it.
+  **Phase B (transport — done):** the buffer-handoff plumbing for the chosen
+  **DRI3 + Present over raw X11** path is built and hardware-verified.
+  **B.1** `forma_platform::scm` (Linux) — `send_with_fds`/`recv_with_fds` built
+  directly on `sendmsg`/`recvmsg` with a hand-assembled `SCM_RIGHTS` control
+  message (no `nix`/`libc`, matching the rest of the platform layer); the same
+  primitive carries a frame's dma-buf fd to the X server and the page-buffer fd
+  from the sandboxed content process. Socketpair round-trip unit-tested (a real
+  open description is transferred, not a byte copy); runs locally, no GPU
+  needed. **B.2** X11 `dri3_open` — negotiates the DRI3 extension over the raw
+  socket and performs `DRI3Open`, whose reply carries the **server's DRM device
+  fd** as ancillary data (received via `scm`, handling the fd-bearing reply
+  arriving split from its data); binding our GPU/EGL context to that exact
+  device is what lets the server import the dma-bufs we render. Request encoding
+  unit-tested; hardware-gated (Xvfb has no DRM). **B.3** `forma-gpu` EGL-via-GBM
+  — `gbm_create_device(drm_fd)` → `eglGetPlatformDisplay(EGL_PLATFORM_GBM)` →
+  shared context, so we render on the **same GPU the X server uses**;
+  `dmabuf_self_test_on_device(drm_fd)` runs the export/import/sample round-trip
+  on that exact device (also fixes `EGL_SURFACE_TYPE` config selection per
+  platform). **Confirmed PASS on real GPU** against a render node
+  (`/dev/dri/renderD129`). The `dri3probe` example chains it end to end:
+  `dri3_open_drm_fd()` → GBM-bind EGL to that fd → dma-buf round-trip, proving
+  on real GPU + X hardware that the server's GPU can export and re-import the
+  buffers the compositor will hand it (`cargo run -p dri3probe
+  --features forma-gpu/gl`). **Next:** the actual `PixmapFromBuffers` + Present
+  present (no Pixmap readback), a viewport element, frame sync, input
+  forwarding, and the content-process sandbox; then macOS (`IOSurface`) /
+  Windows (shared D3D handle) parity.
 
 ---
 
