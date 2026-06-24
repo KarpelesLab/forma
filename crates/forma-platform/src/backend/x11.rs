@@ -450,6 +450,138 @@ unsafe extern "C" {
     fn libc_close_fd(fd: RawFd) -> i32;
 }
 
+// ---- DRI3 PixmapFromBuffers + Present: flip a GPU frame with no readback -----
+//
+// The last hop of the zero-copy path: wrap a rendered dma-buf as an X Pixmap via
+// DRI3 `PixmapFromBuffers` (the plane fds sent over this socket with SCM_RIGHTS,
+// echoing the format modifier so tiled buffers import correctly), then flip that
+// Pixmap to the window with the Present extension's `PresentPixmap`. The
+// `PixmapFromBuffers` step needs a real GPU (the server imports the dma-buf), so
+// it's hardware-gated; the Present extension itself needs no GPU (it works under
+// Xvfb), so its negotiation is CI-verifiable. The wire encoders below are
+// unit-tested regardless.
+
+const DRI3_PIXMAP_FROM_BUFFERS: u8 = 7;
+const PRESENT_QUERY_VERSION: u8 = 0;
+const PRESENT_PIXMAP: u8 = 1;
+
+/// A rendered dma-buf to wrap as an X Pixmap via DRI3 `PixmapFromBuffers`. Holds
+/// the geometry + format the server needs to interpret the (1..=4) planes; the
+/// plane fds are passed separately as SCM_RIGHTS ancillary data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DmabufImage {
+    pub width: u16,
+    pub height: u16,
+    /// Pixmap depth (e.g. 24 for XRGB8888, 32 for ARGB8888).
+    pub depth: u8,
+    /// Bits per pixel (e.g. 32).
+    pub bpp: u8,
+    /// DRM format modifier — must echo the export's modifier (e.g. from
+    /// `EGL_DMA_BUF_PLANE0_MODIFIER_*`) or a tiled buffer imports as garbage.
+    pub modifier: u64,
+    /// Per-plane `(stride, offset)` in bytes; 1..=4 planes, parallel to the fds.
+    pub planes: Vec<(u32, u32)>,
+}
+
+/// Build a DRI3 `PixmapFromBuffers` request (minor 7): wrap the dma-buf planes
+/// of `img` (whose fds are sent alongside as ancillary data via
+/// [`crate::scm::send_with_fds`]) as the X resource `pixmap`, in `window`'s
+/// screen. Absent planes (of the 4 wire slots) are zero-filled.
+pub fn pixmap_from_buffers_request(
+    major: u8,
+    pixmap: u32,
+    window: u32,
+    img: &DmabufImage,
+) -> Vec<u8> {
+    let mut req = vec![major, DRI3_PIXMAP_FROM_BUFFERS, 0, 0];
+    req.extend_from_slice(&pixmap.to_le_bytes());
+    req.extend_from_slice(&window.to_le_bytes());
+    req.push(img.planes.len() as u8);
+    req.extend_from_slice(&[0u8; 3]); // pad
+    req.extend_from_slice(&img.width.to_le_bytes());
+    req.extend_from_slice(&img.height.to_le_bytes());
+    // stride0,offset0 .. stride3,offset3 (zero-filled for absent planes).
+    for i in 0..4 {
+        let (stride, offset) = img.planes.get(i).copied().unwrap_or((0, 0));
+        req.extend_from_slice(&stride.to_le_bytes());
+        req.extend_from_slice(&offset.to_le_bytes());
+    }
+    req.push(img.depth);
+    req.push(img.bpp);
+    req.extend_from_slice(&[0u8; 2]); // pad
+    req.extend_from_slice(&img.modifier.to_le_bytes());
+    finish(req)
+}
+
+/// Build a Present `PresentPixmap` request (minor 1): present `pixmap` to
+/// `window`. Regions, target CRTC, and sync fences are left as None (0) and the
+/// target MSC/divisor/remainder as 0 — a plain immediate present; `serial` and
+/// `options` pass through. No notify list.
+pub fn present_pixmap_request(
+    major: u8,
+    window: u32,
+    pixmap: u32,
+    serial: u32,
+    options: u32,
+) -> Vec<u8> {
+    let mut req = vec![major, PRESENT_PIXMAP, 0, 0];
+    req.extend_from_slice(&window.to_le_bytes());
+    req.extend_from_slice(&pixmap.to_le_bytes());
+    req.extend_from_slice(&serial.to_le_bytes());
+    req.extend_from_slice(&0u32.to_le_bytes()); // valid region (None)
+    req.extend_from_slice(&0u32.to_le_bytes()); // update region (None)
+    req.extend_from_slice(&0i16.to_le_bytes()); // x-off
+    req.extend_from_slice(&0i16.to_le_bytes()); // y-off
+    req.extend_from_slice(&0u32.to_le_bytes()); // target CRTC (None)
+    req.extend_from_slice(&0u32.to_le_bytes()); // wait fence (None)
+    req.extend_from_slice(&0u32.to_le_bytes()); // idle fence (None)
+    req.extend_from_slice(&options.to_le_bytes());
+    req.extend_from_slice(&0u32.to_le_bytes()); // unused
+    req.extend_from_slice(&0u64.to_le_bytes()); // target MSC
+    req.extend_from_slice(&0u64.to_le_bytes()); // divisor
+    req.extend_from_slice(&0u64.to_le_bytes()); // remainder
+    finish(req)
+}
+
+/// Negotiate the Present extension, returning the server's `(major, minor)`
+/// version. `None` if the server lacks Present. Works without a GPU.
+fn present_query_version(conn: &mut Conn) -> io::Result<Option<(u32, u32)>> {
+    let Some(major) = query_extension(conn, b"Present")? else {
+        return Ok(None);
+    };
+    let mut req = vec![major, PRESENT_QUERY_VERSION, 0, 0];
+    req.extend_from_slice(&1u32.to_le_bytes()); // client major
+    req.extend_from_slice(&2u32.to_le_bytes()); // client minor
+    conn.send(&finish(req))?;
+    let mut reply = [0u8; 32];
+    conn.stream.read_exact(&mut reply)?;
+    if reply[0] != 1 {
+        return Ok(None);
+    }
+    let smajor = u32::from_le_bytes([reply[8], reply[9], reply[10], reply[11]]);
+    let sminor = u32::from_le_bytes([reply[12], reply[13], reply[14], reply[15]]);
+    Ok(Some((smajor, sminor)))
+}
+
+// The runtime composition that flips a GPU frame to a window with no readback —
+// query DRI3 + Present, `conn.new_id()` for the pixmap,
+// `scm::send_with_fds(pixmap_from_buffers_request(..), plane_fds)`, then
+// `present_pixmap_request(..)` — lives in the windowed compositor once
+// `forma-gpu` exports a scene's dma-buf descriptor (fds + per-plane
+// stride/offset + modifier). The wire encoders above are that path's tested
+// building blocks; both DRI3 import and Present flip need real GPU hardware.
+
+/// Connect and negotiate the Present extension, returning a one-line status.
+/// Present needs no GPU (Xvfb supports it), so this is CI-verifiable — it proves
+/// the half of the zero-copy present path that doesn't require DRM hardware.
+pub fn present_probe() -> Result<String, PlatformError> {
+    let mut conn = Conn::connect()?;
+    match present_query_version(&mut conn).map_err(os)? {
+        Some((maj, min)) => Ok(format!("Present {maj}.{min} available")),
+        None => Ok("Present unavailable on this server".to_string()),
+    }
+}
+
 /// Set up MIT-SHM: create a shared segment of `capacity` bytes, attach it to the
 /// server, and confirm the attach succeeded. Returns `None` (with everything
 /// cleaned up) if the extension is absent or any step fails — the caller then
@@ -1381,6 +1513,61 @@ mod tests {
         assert_eq!(rd_u32(&req, 4).unwrap(), 0x0012_3456);
         assert_eq!(rd_u32(&req, 8).unwrap(), 0);
         assert_eq!(req.len(), 12);
+    }
+
+    #[test]
+    fn pixmap_from_buffers_request_is_well_formed() {
+        // A single-plane ARGB8888 4096×2160 buffer with a tiled modifier.
+        let img = DmabufImage {
+            width: 4096,
+            height: 2160,
+            depth: 24,
+            bpp: 32,
+            modifier: 0x0100_0000_0000_0001, // an arbitrary 64-bit DRM modifier
+            planes: vec![(16384, 0)],
+        };
+        let req = pixmap_from_buffers_request(0x90, 0x0040_0000, 0x0020_0001, &img);
+        assert_eq!(req[0], 0x90);
+        assert_eq!(req[1], DRI3_PIXMAP_FROM_BUFFERS);
+        // Fixed wire size: header(4) + pixmap(4) + window(4) + num/pad/w/h(8)
+        // + 8 plane words(32) + depth/bpp/pad(4) + modifier(8) = 64 bytes / 16 words.
+        assert_eq!(u16::from_le_bytes([req[2], req[3]]), 16);
+        assert_eq!(req.len(), 64);
+        assert_eq!(rd_u32(&req, 4).unwrap(), 0x0040_0000); // pixmap
+        assert_eq!(rd_u32(&req, 8).unwrap(), 0x0020_0001); // window
+        assert_eq!(req[12], 1); // num_buffers
+        assert_eq!(u16::from_le_bytes([req[16], req[17]]), 4096); // width
+        assert_eq!(u16::from_le_bytes([req[18], req[19]]), 2160); // height
+        assert_eq!(rd_u32(&req, 20).unwrap(), 16384); // stride0
+        assert_eq!(rd_u32(&req, 24).unwrap(), 0); // offset0
+        // Planes 1..3 are zero-filled (stride1@28 .. offset3@48).
+        assert_eq!(rd_u32(&req, 28).unwrap(), 0);
+        assert_eq!(rd_u32(&req, 48).unwrap(), 0);
+        assert_eq!(req[52], 24); // depth
+        assert_eq!(req[53], 32); // bpp
+        // Modifier is the last 8 bytes (little-endian u64).
+        let modifier = u64::from_le_bytes(req[56..64].try_into().unwrap());
+        assert_eq!(modifier, 0x0100_0000_0000_0001);
+    }
+
+    #[test]
+    fn present_pixmap_request_is_well_formed() {
+        let req = present_pixmap_request(0x91, 0x0020_0001, 0x0040_0000, 7, 0);
+        assert_eq!(req[0], 0x91);
+        assert_eq!(req[1], PRESENT_PIXMAP);
+        // 4-byte header + window+pixmap+serial+valid+update (5 words) + off word
+        // + crtc+wait+idle+options+unused (5 words) + msc/divisor/remainder
+        // (6 words) = 18 words.
+        assert_eq!(u16::from_le_bytes([req[2], req[3]]), 18);
+        assert_eq!(req.len(), 72);
+        assert_eq!(rd_u32(&req, 4).unwrap(), 0x0020_0001); // window
+        assert_eq!(rd_u32(&req, 8).unwrap(), 0x0040_0000); // pixmap
+        assert_eq!(rd_u32(&req, 12).unwrap(), 7); // serial
+        assert_eq!(rd_u32(&req, 16).unwrap(), 0); // valid region (None)
+        assert_eq!(rd_u32(&req, 20).unwrap(), 0); // update region (None)
+        // target-msc/divisor/remainder are the final three zero u64s.
+        assert_eq!(u64::from_le_bytes(req[48..56].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(req[64..72].try_into().unwrap()), 0);
     }
 
     #[test]

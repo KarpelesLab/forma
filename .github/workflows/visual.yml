@@ -671,6 +671,34 @@ jobs:
             exit 1
           fi
 
+  # Present extension negotiation over the raw X11 socket. The Present extension
+  # (which flips the DRI3 pixmap to the window) needs no GPU, so dri3probe can
+  # negotiate it under Xvfb — the CI-verifiable half of the zero-copy GPU-present
+  # path (the dma-buf Pixmap it flips still needs real GPU hardware). DRI3 itself
+  # is absent under Xvfb (no DRM), so the probe exits non-zero; we assert Present.
+  dri3-present:
+    name: DRI3 Present (X11 negotiation / Xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Build dri3probe
+        run: cargo build --release -p dri3probe
+      - name: Negotiate the Present extension under Xvfb
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          XVFB_PID=$!
+          sleep 2
+          set +e
+          DISPLAY=:99 ./target/release/dri3probe | tee dri3.log
+          set -e
+          kill "$XVFB_PID" 2>/dev/null || true
+          # The Present extension must negotiate (Xvfb supports Present, no GPU).
+          grep -qE "Present probe: Present [0-9]+\.[0-9]+ available" dri3.log
+
   # Render the window example under a headless wlroots compositor (sway) and
   # screenshot it with grim, proving the hand-authored Wayland backend connects,
   # binds the globals, creates an xdg-shell window, and presents via wl_shm.

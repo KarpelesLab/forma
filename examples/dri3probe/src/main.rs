@@ -15,6 +15,14 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     #[cfg(target_os = "linux")]
     {
+        // The Present extension (which flips the DRI3 pixmap to the window) needs
+        // no GPU, so this negotiation succeeds even under Xvfb — the CI-verifiable
+        // half of the zero-copy present path.
+        match forma_platform::backend::x11::present_probe() {
+            Ok(s) => println!("Present probe: {s}"),
+            Err(e) => println!("Present probe error: {e}"),
+        }
+
         let fd = match forma_platform::backend::x11::dri3_open_drm_fd() {
             Ok(Some(fd)) => {
                 println!("DRI3Open ok: DRM device fd = {fd}");
