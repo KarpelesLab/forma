@@ -404,11 +404,16 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   present_pixmap_request}`, over a public `DmabufImage`). The **Present extension
   negotiation** (`present_probe`) needs no GPU, so it's **CI-verified under
   Xvfb** (the `dri3-present` job asserts `Present X.Y available`); the dma-buf
-  Pixmap it flips still needs real GPU hardware. **Next:** the runtime
-  composition (`forma-gpu` exports a scene's dma-buf descriptor — fds + per-plane
-  stride/offset + modifier — which feeds `PixmapFromBuffers` → `PresentPixmap` on
-  the window), frame sync (Present fences/MSC), and the content-process sandbox;
-  then macOS (`IOSurface`) / Windows (shared D3D handle) parity.
+  Pixmap it flips still needs real GPU hardware. The **GPU side of the producer**
+  is also in place: `forma_gpu::export_dmabuf_on_device` renders a frame on the X
+  server's device (bound via GBM from the `DRI3Open` fd) and exports it as a
+  single-plane dma-buf, returning a `DmabufExport` descriptor (fd + stride/offset
+  + modifier + fourcc) whose fields map 1:1 onto the `DmabufImage` the
+  `PixmapFromBuffers` encoder consumes — so producer (export) and transport
+  (encoders) now meet. **Next:** wire them on a live window (export → fd over the
+  window's socket via `PixmapFromBuffers` → `PresentPixmap`, no readback), frame
+  sync (Present fences/MSC), and the content-process sandbox; then macOS
+  (`IOSurface`) / Windows (shared D3D handle) parity.
 
 ---
 
