@@ -376,10 +376,26 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `dri3_open_drm_fd()` → GBM-bind EGL to that fd → dma-buf round-trip, proving
   on real GPU + X hardware that the server's GPU can export and re-import the
   buffers the compositor will hand it (`cargo run -p dri3probe
-  --features forma-gpu/gl`). **Next:** the actual `PixmapFromBuffers` + Present
-  present (no Pixmap readback), a viewport element, frame sync, input
-  forwarding, and the content-process sandbox; then macOS (`IOSurface`) /
-  Windows (shared D3D handle) parity.
+  --features forma-gpu/gl`).
+  **Phase C (UI integration — done):** the toolkit-side compositor surface is
+  wired and CI-verified on the software path (no GPU needed, so it runs under
+  Xvfb). A **viewport element** (`Element::viewport(ViewportId)` /
+  `widgets::viewport`) reserves a rect carried through measure/layout/paint as
+  `NodeContent::Viewport`, painting a placeholder and recording a
+  `DrawCmd::Viewport`. The `App` holds a content registry
+  (`with_viewport_content` / `set_viewport_content`) and **composites** each
+  viewport's externally-rendered pixels over its placeholder after rasterize
+  (`Pane::composite_viewports`; `collect_viewports` locates the rects) — the CPU
+  analog of a GPU backend sampling the imported texture into the rect.
+  **Input forwarding**: `App::on_viewport_input` routes pointer
+  press/release/move, wheel, and (while a viewport holds input focus) keys that
+  land in a viewport to a sink as `ViewportEvent`s in viewport-local coordinates
+  — what a real build hands the content process; pressing the content grabs
+  keyboard focus. CI-verified by the `viewportdemo` (a cyan/magenta checkerboard
+  composited into a 320×240 viewport; a click is screenshot-confirmed to forward
+  a local-coord press). **Next:** the actual `PixmapFromBuffers` + Present
+  present (no Pixmap readback), frame sync, and the content-process sandbox; then
+  macOS (`IOSurface`) / Windows (shared D3D handle) parity.
 
 ---
 
