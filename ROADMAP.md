@@ -444,11 +444,19 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   server's GPU) → that present. **Build-verified in CI** (with and without the
   `gl` feature); the DRI3 import + flip need a real GPU + DRM-capable X server
   (Xvfb reports DRI3 unavailable), so runtime is hardware-gated — run `dri3probe`
-  on a GPU box to validate the pixels on screen. **Next:** frame sync (Present
-  fences/MSC) so the importer doesn't read a half-rendered buffer; then macOS
-  (`IOSurface`) / Windows (shared D3D handle) parity. (The Linux compositor is
-  otherwise complete: viewport, compositing, input forwarding, content process,
-  sandbox, and the GPU + CPU buffer paths all land.)
+  on a GPU box to validate the pixels on screen. **Frame sync** closes the last
+  protocol gap: `present_pixmap_request` takes a `wait_fence` (an `XSyncFence` the
+  server waits on before sampling the pixmap), and `dri3_fence_from_fd_request`
+  (DRI3 minor 4) wraps the producer's render-completion sync-file fd as that
+  fence — so the compositor never reads a half-rendered buffer, GPU-synced with
+  no CPU stall (both encoders unit-tested; runtime hardware-gated). **The Linux
+  compositor is now complete** — viewport, cross-process compositing, input
+  forwarding, the sandboxed content process, and *both* the GPU `dma-buf` present
+  (DRI3 + Present, end to end) and the CPU `shm` buffer paths all land, with
+  frame sync. **Remaining:** the macOS (`IOSurface`) / Windows (shared D3D handle)
+  ports of the GPU buffer-sharing — the same compositor architecture with each
+  platform's shared-texture primitive in place of `dma-buf`, which must be
+  developed on those OSes (their GPU FFI doesn't compile or run on Linux).
 
 ---
 
