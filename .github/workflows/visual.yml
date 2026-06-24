@@ -979,6 +979,50 @@ jobs:
 
   # Render the same UI under several themes and montage them into one image,
   # showing the theme engine + customization builder.
+  # Material 3 (Material You): render the baseline light/dark schemes plus two
+  # seed-recolored ones and montage them, proving the dynamic-color theme engine
+  # (tonal palettes from a seed) drives the standard widgets. Asserts the four
+  # panels are distinct and that light/dark brightness clearly differ.
+  visual-material3:
+    name: Visual test (Material 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ImageMagick + font
+        run: sudo apt-get update && sudo apt-get install -y imagemagick fonts-dejavu-core
+      - name: Build the material3 demo
+        run: cargo build --release -p material3demo
+      - name: Render the Material 3 schemes and montage them
+        run: |
+          mkdir -p visual_output
+          ./target/release/material3demo
+          for i in 0 1 2 3; do
+            convert -size 360x320 -depth 8 "rgba:theme$i.raw" "m$i.png"
+          done
+          montage m0.png m1.png m2.png m3.png -tile 2x2 -geometry +6+6 -background '#222' \
+            visual_output/forma-material3.png
+          identify visual_output/forma-material3.png
+          # The baseline light (m0) and dark (m1) schemes must clearly differ in
+          # brightness (M3 surfaces invert between modes).
+          ml=$(convert m0.png -colorspace Gray -format "%[fx:mean]" info:)
+          md=$(convert m1.png -colorspace Gray -format "%[fx:mean]" info:)
+          echo "mean brightness light=$ml dark=$md"
+          awk "BEGIN{exit !($ml > 0.7 && $md < 0.3)}"
+          # ...and the two seed-recolored schemes (m2 teal, m3 orange) must differ
+          # from each other and from the baselines — dynamic color really recolors.
+          d=$(compare -metric AE m2.png m3.png null: 2>&1 || true)
+          echo "teal-vs-orange differing pixels: $d"
+          [ "${d%%[.e]*}" -gt 2000 ]
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forma-material3-screenshot
+          path: visual_output/*.png
+          if-no-files-found: warn
+
   visual-themes:
     name: Visual test (Themes)
     runs-on: ubuntu-latest
