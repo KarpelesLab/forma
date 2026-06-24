@@ -410,10 +410,28 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   single-plane dma-buf, returning a `DmabufExport` descriptor (fd + stride/offset
   + modifier + fourcc) whose fields map 1:1 onto the `DmabufImage` the
   `PixmapFromBuffers` encoder consumes — so producer (export) and transport
-  (encoders) now meet. **Next:** wire them on a live window (export → fd over the
-  window's socket via `PixmapFromBuffers` → `PresentPixmap`, no readback), frame
-  sync (Present fences/MSC), and the content-process sandbox; then macOS
-  (`IOSurface`) / Windows (shared D3D handle) parity.
+  (encoders) now meet.
+  **Phase E (content process — CPU shm dual, done):** the full compositor
+  architecture — a *separate* content process whose pixels are shared with the
+  UI process and composited into a viewport, with input forwarded back — is
+  implemented end to end over the CPU shared-memory path, the dual of GPU
+  dma-buf (the path used when GPU sharing is unavailable), so it runs with **no
+  GPU and is CI-verified headlessly**. `forma_platform::shm::SharedBuffer` is a
+  `memfd` mapped `MAP_SHARED`, shareable across processes by passing its fd over
+  a socket (`scm`) and re-mapping in the peer. The `contentproc` example spawns a
+  real content process (the socket inherited on fd 3 via `pre_exec`/`dup2`); the
+  content process renders into a `SharedBuffer` and hands the UI its fd
+  (`SCM_RIGHTS`); the UI maps the same memory, composites it into a viewport
+  (checked via `App::render_once`), forwards a pointer press over the socket, and
+  the content process redraws a marker into the shared buffer — which the UI then
+  sees. **CI-verified** (the `content-process` job asserts `RESULT: PASS`). So
+  process separation, fd-over-socket transport, cross-process compositing, and
+  input forwarding are all proven; the GPU `dma-buf` variant swaps the shared
+  buffer for a GPU texture. **Next (GPU-hardware-gated):** wire export → `fd` over
+  the window's socket via `PixmapFromBuffers` → `PresentPixmap` (no readback) on a
+  live window, frame sync (Present fences/MSC), sandbox hardening
+  (seccomp/namespaces on the content process); then macOS (`IOSurface`) / Windows
+  (shared D3D handle) parity.
 
 ---
 
