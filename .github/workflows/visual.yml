@@ -87,7 +87,9 @@ jobs:
   # reserves a viewport rect and the app composites CPU-rendered content (a
   # cyan/magenta checkerboard standing in for a content process's GPU surface)
   # into it. Screenshot the window and assert the viewport region shows that
-  # content (blue-dominant, multi-color) rather than the dark placeholder.
+  # content (blue-dominant, multi-color) rather than the dark placeholder, then
+  # click inside it and confirm the press was forwarded to the content sink with
+  # viewport-local coordinates (input forwarding).
   visual-viewport:
     name: Visual test (Viewport / X11)
     runs-on: ubuntu-latest
@@ -96,10 +98,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Xvfb, ImageMagick, x11-utils, a font
+      - name: Install Xvfb, ImageMagick, xdotool, x11-utils, a font
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb imagemagick x11-utils fonts-dejavu-core
+          sudo apt-get install -y xvfb imagemagick xdotool x11-utils fonts-dejavu-core
 
       - name: Build the viewport demo
         run: cargo build --release -p viewportdemo
@@ -136,6 +138,13 @@ jobs:
           colors=$(convert visual_output/viewport-region.png -format '%k' info:)
           echo "distinct colors in region: $colors"
           [ "$colors" -gt 1 ]
+          # Input forwarding: click inside the viewport (window center 240,180)
+          # and confirm the app forwarded a viewport-local pointer press to the
+          # content sink (the demo logs each forwarded ViewportEvent).
+          xdotool mousemove 240 180 click 1
+          sleep 1
+          echo "=== viewport.log after click ==="; cat visual_output/viewport.log || true
+          grep -q "viewport input:.*PointerDown" visual_output/viewport.log
 
       - name: Stop the app and Xvfb
         if: always()

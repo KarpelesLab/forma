@@ -66,6 +66,10 @@ fn demo_app() -> App<()> {
         .theme(Theme::dark())
         .logical_size(Size::new(480.0, 360.0))
         .with_viewport_content(PAGE, content())
+        // Input landing in the viewport forwards here with viewport-local
+        // coordinates — what a real build hands to the content process. We log
+        // it (the CI job clicks the viewport and greps for the forwarded press).
+        .on_viewport_input(|id, ev| println!("viewport input: {id:?} {ev:?}"))
 }
 
 fn main() {

@@ -132,6 +132,29 @@ pub enum KeyInput {
     Escape,
 }
 
+/// A platform-neutral input event forwarded to an embedded
+/// [`viewport`](crate::Element::viewport)'s content — a sandboxed browser/content
+/// process that renders into the viewport. Pointer positions are in
+/// **viewport-local** logical pixels (origin at the viewport's top-left), so the
+/// content can route them without knowing where the viewport sits in the window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViewportEvent {
+    /// Pointer pressed at `local`. `button`: 0 = primary/left, 1 = secondary/
+    /// right, 2 = middle.
+    PointerDown { local: Point, button: u8 },
+    /// Pointer released at `local` (same `button` encoding as [`PointerDown`]).
+    ///
+    /// [`PointerDown`]: ViewportEvent::PointerDown
+    PointerUp { local: Point, button: u8 },
+    /// Pointer moved to `local` while over the viewport.
+    PointerMove { local: Point },
+    /// Wheel scrolled by `delta_y` logical pixels with the pointer at `local`.
+    Wheel { local: Point, delta_y: f64 },
+    /// Keyboard input delivered while this viewport held input focus (acquired
+    /// when the content was last pressed).
+    Key(KeyInput),
+}
+
 /// Build context threaded through a view closure.
 ///
 /// Carries the active [`Theme`] and accumulates event handlers. Registering a

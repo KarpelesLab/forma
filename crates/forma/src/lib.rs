@@ -40,9 +40,9 @@ pub use forma_widgets as widgets;
 
 use forma_core::{
     ActionId, Anchor, BoxStyle, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput,
-    LayoutNode, TextPosId, ViewportId, caret_index_at, collect_focusables, collect_viewports,
-    context_at, drag_at, find_action, find_focus, find_text_pos, focus_at, hit_test, layout,
-    measure, paint, paint_focus, paint_hover, text_pos_at,
+    LayoutNode, TextPosId, ViewportEvent, ViewportId, caret_index_at, collect_focusables,
+    collect_viewports, context_at, drag_at, find_action, find_focus, find_text_pos, focus_at,
+    hit_test, layout, measure, paint, paint_focus, paint_hover, text_pos_at, viewport_at,
 };
 use forma_geometry::{PhysicalSize, Point, Rect, ScaleFactor, Size};
 use forma_platform::{
@@ -83,6 +83,27 @@ pub struct App<S> {
     // placeholder — the CPU analog of a GPU backend sampling an imported
     // (dma-buf / IOSurface / shared-handle) content texture into the rect.
     viewport_content: HashMap<ViewportId, Pixmap>,
+    // Sink for input that lands in an embedded viewport (pointer/keys/wheel),
+    // forwarded with viewport-local coordinates to the content process. `None`
+    // = viewports are display-only and input routes to the Forma chrome.
+    viewport_input: Option<ViewportInputFn>,
+}
+
+/// A sink for input forwarded to an embedded viewport's content: receives the
+/// target [`ViewportId`] and a [`ViewportEvent`] (pointer/keys/wheel) in
+/// viewport-local coordinates. Set via [`App::on_viewport_input`].
+pub type ViewportInputFn = Box<dyn FnMut(ViewportId, ViewportEvent)>;
+
+/// A pointer transition forwarded to a viewport (internal helper for
+/// [`App::try_forward_pointer`]).
+#[derive(Clone, Copy)]
+enum PointerKind {
+    /// Pressed with the given button code (0 = left, 1 = right, 2 = middle).
+    Down(u8),
+    /// Released with the given button code.
+    Up(u8),
+    /// Moved over the viewport.
+    Move,
 }
 
 /// A pluggable rasterizer: turns a built [`Scene`] (with a background color, at a
@@ -172,6 +193,10 @@ struct Pane<S> {
     // can't be localized by the tree diff, so their presence forces full damage.
     overlay_active: bool,
     painted_overlay_active: bool,
+    // The embedded viewport that currently holds input focus (set when its
+    // content was last pressed), so keyboard input forwards to it until focus
+    // moves elsewhere. `None` = the Forma chrome owns keyboard focus.
+    input_viewport: Option<ViewportId>,
 }
 
 impl<S> std::fmt::Debug for App<S> {
@@ -209,6 +234,7 @@ impl<S> Pane<S> {
             last_pointer: Point::new(0.0, 0.0),
             overlay_active: false,
             painted_overlay_active: false,
+            input_viewport: None,
         }
     }
 }
@@ -222,6 +248,7 @@ impl<S> App<S> {
             font: None,
             panes: vec![Pane::new(Box::new(build))],
             viewport_content: HashMap::new(),
+            viewport_input: None,
         }
     }
 
@@ -322,6 +349,87 @@ impl<S> App<S> {
             for pane in &mut self.panes {
                 pane.dirty = true;
             }
+        }
+    }
+
+    /// Forward input that lands in an embedded [`viewport`](Element::viewport) to
+    /// `sink` instead of routing it to the Forma chrome. The sink receives the
+    /// target [`ViewportId`] and a [`ViewportEvent`] (pointer press/release/move,
+    /// wheel, or — while the viewport holds input focus — keys) in viewport-local
+    /// coordinates, so a sandboxed content process can handle it. Pressing a
+    /// viewport's content gives it keyboard focus (dropping any Forma focus)
+    /// until a press lands elsewhere. Typically the sink feeds the content
+    /// process, which renders a new frame and calls
+    /// [`set_viewport_content`](App::set_viewport_content).
+    pub fn on_viewport_input(
+        mut self,
+        sink: impl FnMut(ViewportId, ViewportEvent) + 'static,
+    ) -> Self {
+        self.viewport_input = Some(Box::new(sink));
+        self
+    }
+
+    /// If `pos` lands in a viewport and an input sink is registered, forward the
+    /// pointer transition `kind` to it (in viewport-local coordinates) and return
+    /// `true` — the event is consumed by the embedded content. A `Down` also
+    /// gives the viewport keyboard focus (dropping any Forma focus).
+    fn try_forward_pointer(&mut self, idx: usize, pos: Point, kind: PointerKind) -> bool {
+        if self.viewport_input.is_none() {
+            return false;
+        }
+        let Some(tree) = self.panes[idx].tree.as_ref() else {
+            return false;
+        };
+        let Some((id, bounds)) = viewport_at(tree, pos) else {
+            return false;
+        };
+        let local = Point::new(pos.x - bounds.min_x(), pos.y - bounds.min_y());
+        let event = match kind {
+            PointerKind::Down(button) => {
+                self.panes[idx].input_viewport = Some(id);
+                self.panes[idx].focused = None;
+                ViewportEvent::PointerDown { local, button }
+            }
+            PointerKind::Up(button) => ViewportEvent::PointerUp { local, button },
+            PointerKind::Move => ViewportEvent::PointerMove { local },
+        };
+        if let Some(sink) = self.viewport_input.as_mut() {
+            sink(id, event);
+        }
+        true
+    }
+
+    /// If `pos` lands in a viewport with an input sink, forward a wheel scroll of
+    /// `dy` logical pixels (viewport-local) and return `true` (consumed).
+    fn try_forward_wheel(&mut self, idx: usize, pos: Point, dy: f64) -> bool {
+        if self.viewport_input.is_none() {
+            return false;
+        }
+        let Some(tree) = self.panes[idx].tree.as_ref() else {
+            return false;
+        };
+        let Some((id, bounds)) = viewport_at(tree, pos) else {
+            return false;
+        };
+        let local = Point::new(pos.x - bounds.min_x(), pos.y - bounds.min_y());
+        if let Some(sink) = self.viewport_input.as_mut() {
+            sink(id, ViewportEvent::Wheel { local, delta_y: dy });
+        }
+        true
+    }
+
+    /// If a viewport currently holds input focus (its content was last pressed),
+    /// forward keyboard `input` to it and return `true` (consumed). The Forma
+    /// chrome doesn't see the key.
+    fn try_forward_key(&mut self, idx: usize, input: KeyInput) -> bool {
+        let Some(id) = self.panes[idx].input_viewport else {
+            return false;
+        };
+        if let Some(sink) = self.viewport_input.as_mut() {
+            sink(id, ViewportEvent::Key(input));
+            true
+        } else {
+            false
         }
     }
 }
@@ -1147,7 +1255,11 @@ impl<S> App<S> {
                     state: ButtonState::Pressed,
                     position,
                 } => {
-                    if self.pane_context_at(idx, position) {
+                    // A right-press inside a viewport forwards to its content
+                    // (button 1) instead of opening a Forma context menu.
+                    if self.try_forward_pointer(idx, position, PointerKind::Down(1))
+                        || self.pane_context_at(idx, position)
+                    {
                         present(&mut self, &mut surfaces, idx, window, false);
                     }
                     ControlFlow::Wait
@@ -1157,6 +1269,13 @@ impl<S> App<S> {
                     state: ButtonState::Pressed,
                     position,
                 } => {
+                    // A press inside a viewport forwards to its content (button 0)
+                    // and grabs key focus; a press elsewhere drops that focus.
+                    if self.try_forward_pointer(idx, position, PointerKind::Down(0)) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
+                    self.panes[idx].input_viewport = None;
                     self.panes[idx].pressed = self.panes[idx]
                         .tree
                         .as_ref()
@@ -1172,6 +1291,15 @@ impl<S> App<S> {
                 }
                 Event::PointerMoved { position } => {
                     self.panes[idx].last_pointer = position;
+                    // Forward moves over a viewport to its content, unless a Forma
+                    // drag/selection latched on a press outside it is in progress.
+                    if self.panes[idx].text_selecting.is_none()
+                        && self.panes[idx].dragging.is_none()
+                        && self.try_forward_pointer(idx, position, PointerKind::Move)
+                    {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
                     if self.panes[idx].text_selecting.is_some() {
                         if self.pane_text_drag_at(idx, position) {
                             present(&mut self, &mut surfaces, idx, window, false);
@@ -1190,6 +1318,11 @@ impl<S> App<S> {
                     state: ButtonState::Released,
                     position,
                 } => {
+                    // Release inside a viewport forwards to its content (button 0).
+                    if self.try_forward_pointer(idx, position, PointerKind::Up(0)) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
                     if self.panes[idx].text_selecting.is_some() {
                         self.panes[idx].end_text_select();
                     } else if self.panes[idx].dragging.is_some() {
@@ -1207,6 +1340,11 @@ impl<S> App<S> {
                     ControlFlow::Wait
                 }
                 Event::Text(text) => {
+                    // A viewport with input focus consumes typed text.
+                    if self.try_forward_key(idx, KeyInput::Text(text.clone())) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
                     if self.pane_type_text(idx, &text) {
                         present(&mut self, &mut surfaces, idx, window, false);
                     }
@@ -1228,6 +1366,12 @@ impl<S> App<S> {
                     modifiers,
                 } => {
                     if let Some(input) = map_key(code, modifiers) {
+                        // A viewport with input focus consumes editing/navigation
+                        // keys too (no clipboard sync — that's the content's job).
+                        if self.try_forward_key(idx, input.clone()) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                            return ControlFlow::Wait;
+                        }
                         // Pull the OS clipboard into the mirror before a paste,
                         // and push the mirror to the OS after a copy/cut, so
                         // editing interoperates with other apps (the mirror alone
@@ -1248,7 +1392,11 @@ impl<S> App<S> {
                     ControlFlow::Wait
                 }
                 Event::Scroll { delta } => {
-                    if self.pane_scroll_by(idx, delta.dy) {
+                    // A wheel over a viewport scrolls its content, not the chrome.
+                    let at = self.panes[idx].last_pointer;
+                    if self.try_forward_wheel(idx, at, delta.dy)
+                        || self.pane_scroll_by(idx, delta.dy)
+                    {
                         present(&mut self, &mut surfaces, idx, window, false);
                     }
                     ControlFlow::Wait
@@ -1381,6 +1529,54 @@ mod tests {
             app.render_once().size(),
             forma_geometry::PhysicalSize::new(200, 80)
         );
+    }
+
+    #[test]
+    fn input_forwards_to_a_viewport_sink_in_local_coords() {
+        use forma_core::{ViewportEvent, ViewportId, collect_viewports};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let vid = ViewportId(7);
+        let log: Rc<RefCell<Vec<(ViewportId, ViewportEvent)>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        let mut app = App::new((), move |_s: &(), _cx: &mut Cx<()>| {
+            column(vec![Element::viewport(vid).width(100.0).height(80.0)])
+        })
+        .logical_size(Size::new(200.0, 150.0))
+        .on_viewport_input(move |id, ev| sink_log.borrow_mut().push((id, ev)));
+
+        // Build the tree, then find the viewport's on-screen rect.
+        app.render_once();
+        let mut vps = Vec::new();
+        collect_viewports(app.panes[0].tree.as_ref().unwrap(), &mut vps);
+        let (_, bounds) = vps[0];
+        let inside = Point::new(bounds.min_x() + 10.0, bounds.min_y() + 5.0);
+
+        // Press inside: forwarded as local (10,5) and grabs keyboard focus.
+        assert!(app.try_forward_pointer(0, inside, PointerKind::Down(0)));
+        assert_eq!(app.panes[0].input_viewport, Some(vid));
+        // Typed text now routes to the viewport (it holds input focus)...
+        assert!(app.try_forward_key(0, KeyInput::Text("x".into())));
+        // ...and release forwards too.
+        assert!(app.try_forward_pointer(0, inside, PointerKind::Up(0)));
+        // A point outside the viewport is never forwarded.
+        let outside = Point::new(bounds.max_x() + 50.0, bounds.max_y() + 50.0);
+        assert!(!app.try_forward_pointer(0, outside, PointerKind::Move));
+
+        let got = log.borrow();
+        assert_eq!(got.len(), 3, "down + key + up");
+        assert!(
+            matches!(&got[0], (v, ViewportEvent::PointerDown { local, button: 0 })
+                if *v == vid && *local == Point::new(10.0, 5.0)),
+            "press forwarded with local coords, got {:?}",
+            got[0]
+        );
+        assert!(matches!(&got[1].1, ViewportEvent::Key(KeyInput::Text(t)) if t == "x"));
+        assert!(matches!(
+            got[2].1,
+            ViewportEvent::PointerUp { button: 0, .. }
+        ));
     }
 
     #[test]
