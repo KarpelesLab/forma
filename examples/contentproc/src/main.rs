@@ -41,8 +41,8 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use forma::platform::scm;
     use forma::platform::shm::SharedBuffer;
+    use forma::platform::{sandbox, scm};
     use forma::prelude::*;
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -62,6 +62,7 @@ mod imp {
 
     unsafe extern "C" {
         fn dup2(oldfd: i32, newfd: i32) -> i32;
+        fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
     }
 
     fn sample(buf: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -123,6 +124,25 @@ mod imp {
             return ExitCode::from(1);
         }
         eprintln!("content: sent {w}x{h} buffer to the UI process");
+
+        // 3b. Now that we have our socket + buffer, drop privilege: a seccomp
+        //     sandbox so a compromised content process can't open the network or
+        //     exec. The existing IPC fd keeps working (read/write aren't blocked);
+        //     creating a NEW socket must now fail — self-check it.
+        match sandbox::restrict() {
+            Ok(()) => {
+                let s = unsafe {
+                    socket(2 /*AF_INET*/, 1 /*SOCK_STREAM*/, 0)
+                };
+                if s < 0 {
+                    eprintln!("content: sandbox active (new sockets blocked)");
+                } else {
+                    eprintln!("content: SANDBOX FAILED (socket() succeeded fd={s})");
+                    return ExitCode::from(1);
+                }
+            }
+            Err(e) => eprintln!("content: sandbox unavailable ({e})"),
+        }
 
         // 4. Apply a forwarded pointer press: redraw a marker into the SAME shared
         //    memory the UI process is mapped to, then acknowledge.

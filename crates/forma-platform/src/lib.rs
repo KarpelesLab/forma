@@ -25,6 +25,10 @@ pub mod backend;
 pub mod dialog;
 mod error;
 mod event;
+/// seccomp-BPF syscall sandbox for the content process (the hardening layer of
+/// the Forma-as-compositor content path).
+#[cfg(target_os = "linux")]
+pub mod sandbox;
 /// File-descriptor passing over a Unix socket (`SCM_RIGHTS`) — the transport for
 /// DRI3/Present GPU buffers and the browser content-process IPC.
 #[cfg(target_os = "linux")]

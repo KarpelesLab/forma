@@ -720,6 +720,9 @@ jobs:
           # The UI process mapped the content process's buffer, composited it into
           # a viewport, and the forwarded input crossed the process boundary.
           grep -q "RESULT: PASS" contentproc.log
+          # ...and the content process dropped privilege: its seccomp sandbox
+          # blocks opening new sockets while its existing IPC fd keeps working.
+          grep -q "content: sandbox active (new sockets blocked)" contentproc.log
 
   # Render the window example under a headless wlroots compositor (sway) and
   # screenshot it with grim, proving the hand-authored Wayland backend connects,
