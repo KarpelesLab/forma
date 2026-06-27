@@ -74,6 +74,13 @@ pub trait Window {
     /// Update the window title.
     fn set_title(&self, title: &str);
 
+    /// Push the current accessibility tree so the OS assistive-technology API can
+    /// read the full element hierarchy (not just the window root). Default: a
+    /// no-op — backends without an AT bridge ignore it. The macOS (`NSAccessibility`)
+    /// and Windows (UI Automation) backends override this to vend `root`'s
+    /// descendants as native accessibility elements.
+    fn set_accessibility_tree(&self, _root: &crate::access::A11yNode) {}
+
     /// Create a [`Surface`] that presents into this window's drawable.
     fn create_surface(&self) -> Box<dyn Surface>;
 

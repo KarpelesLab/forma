@@ -147,6 +147,11 @@ unsafe fn msg_u64(obj: Id, s: Sel) -> u64 {
         unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
     unsafe { f(obj, s) }
 }
+unsafe fn msg_id_u64(obj: Id, s: Sel, a: u64) -> Id {
+    let f: unsafe extern "C" fn(Id, Sel, u64) -> Id =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    unsafe { f(obj, s, a) }
+}
 unsafe fn msg_u16(obj: Id, s: Sel) -> u16 {
     let f: unsafe extern "C" fn(Id, Sel) -> u16 =
         unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
@@ -259,8 +264,11 @@ struct MacCtx {
     w: usize,
     h: usize,
     view: Id,
-    /// Accessible label exposed to NSAccessibility (the window title for now).
+    /// Accessible label exposed to NSAccessibility (the window title).
     a11y_label: String,
+    /// The current accessibility tree (pushed each frame by the App). The view's
+    /// `accessibilityChildren` builds native elements from this on demand.
+    a11y_tree: Option<crate::access::A11yNode>,
     /// Set by the window delegate's `windowWillClose:` so the event loop can
     /// break instead of spinning on a closed window.
     should_close: bool,
@@ -370,6 +378,97 @@ extern "C" fn acc_label(_this: Id, _cmd: Sel) -> Id {
     CTX.with(|c| nsstring(&c.borrow().a11y_label))
 }
 
+/// Map a neutral [`A11yRole`](crate::access::A11yRole) to its `NSAccessibility`
+/// role constant. The window root stays the view's own `AXGroup` (see
+/// [`acc_role`]); its descendants get specific control roles here.
+fn ax_role(role: crate::access::A11yRole) -> &'static str {
+    use crate::access::A11yRole::*;
+    match role {
+        Window | Group => "AXGroup",
+        Button => "AXButton",
+        TextField => "AXTextField",
+        Text => "AXStaticText",
+    }
+}
+
+/// Build a native `NSAccessibilityElement` for `node` (parented to `parent`),
+/// recursing so the whole subtree is exposed. Uses the built-in convenience
+/// constructor `+accessibilityElementWithRole:frame:label:parent:`, so no custom
+/// element class or ivars are needed.
+///
+/// `frame` is reported in the node's logical bounds for now; mapping it to screen
+/// coordinates (which VoiceOver's cursor needs) is follow-up depth.
+unsafe fn build_ax_element(node: &crate::access::A11yNode, parent: Id) -> Id {
+    let (x, y, w, h) = node.bounds;
+    let frame = CgRect {
+        origin: CgPoint { x, y },
+        size: CgSize {
+            width: w,
+            height: h,
+        },
+    };
+    let make: unsafe extern "C" fn(Id, Sel, Id, CgRect, Id, Id) -> Id =
+        unsafe { std::mem::transmute(objc_msgSend as *const c_void) };
+    let el = unsafe {
+        make(
+            class("NSAccessibilityElement"),
+            sel("accessibilityElementWithRole:frame:label:parent:"),
+            nsstring(ax_role(node.role)),
+            frame,
+            nsstring(&node.name),
+            parent,
+        )
+    };
+    if !node.children.is_empty() {
+        let arr = unsafe { msg_id(class("NSMutableArray"), sel("array")) };
+        for child in &node.children {
+            let ce = unsafe { build_ax_element(child, el) };
+            unsafe { msg_void_id(arr, sel("addObject:"), ce) };
+        }
+        unsafe { msg_void_id(el, sel("setAccessibilityChildren:"), arr) };
+    }
+    el
+}
+
+/// Recursively walk the *native* AppKit accessibility element tree (the same
+/// `-accessibilityChildren` / `-accessibilityRole` / `-accessibilityLabel`
+/// messages an assistive client sends), printing each element. Used by the CI
+/// self-check to prove the whole hierarchy — not just the root — is vended.
+unsafe fn dump_ax(el: Id, depth: usize) {
+    let role = nsstring_to_string(unsafe { msg_id(el, sel("accessibilityRole")) });
+    let label = nsstring_to_string(unsafe { msg_id(el, sel("accessibilityLabel")) });
+    let indent = "  ".repeat(depth);
+    println!("Cocoa a11y:{indent} role={role} label={label}");
+    let children = unsafe { msg_id(el, sel("accessibilityChildren")) };
+    if !children.is_null() {
+        let n = unsafe { msg_u64(children, sel("count")) };
+        for i in 0..n {
+            let child = unsafe { msg_id_u64(children, sel("objectAtIndex:"), i) };
+            unsafe { dump_ax(child, depth + 1) };
+        }
+    }
+}
+
+/// `accessibilityChildren` => the window root's children as native elements, so
+/// AppKit exposes the full Stipple element tree to assistive technologies. The
+/// root node maps to the view itself (an `AXGroup`), so we vend *its* children.
+extern "C" fn acc_children(this: Id, _cmd: Sel) -> Id {
+    CTX.with(|c| {
+        let c = c.borrow();
+        let Some(root) = c.a11y_tree.as_ref() else {
+            return std::ptr::null_mut();
+        };
+        unsafe {
+            let arr = msg_id(class("NSMutableArray"), sel("array"));
+            for child in &root.children {
+                let el = build_ax_element(child, this);
+                msg_void_id(arr, sel("addObject:"), el);
+            }
+            arr
+        }
+    })
+}
+
 /// Copy an `NSString` out to a Rust `String` (via `-UTF8String`).
 fn nsstring_to_string(s: Id) -> String {
     if s.is_null() {
@@ -439,6 +538,12 @@ fn register_view_class() -> Class {
             acc_label as *const c_void,
             id_types.as_ptr(),
         );
+        class_addMethod(
+            cls,
+            sel("accessibilityChildren"),
+            acc_children as *const c_void,
+            id_types.as_ptr(),
+        );
         objc_registerClassPair(cls);
         cls
     }
@@ -470,6 +575,17 @@ impl Window for MacWindow {
     fn set_title(&self, _title: &str) {}
     fn create_surface(&self) -> Box<dyn Surface> {
         Box::new(MacSurface { size: self.size })
+    }
+    fn set_accessibility_tree(&self, root: &crate::access::A11yNode) {
+        // Stash the tree; AppKit pulls `accessibilityChildren` lazily, so we just
+        // keep the latest one. Adopt the root's name as the view's label too.
+        CTX.with(|c| {
+            let mut c = c.borrow_mut();
+            if !root.name.is_empty() {
+                c.a11y_label = root.name.clone();
+            }
+            c.a11y_tree = Some(root.clone());
+        });
     }
 }
 
@@ -566,9 +682,13 @@ where
             c.a11y_label = attrs.title.clone();
         });
 
+        let mut win = MacWindow { size };
+        handler(Event::RedrawRequested, &win); // populate the framebuffer + a11y tree
+
         // Self-check the NSAccessibility wiring (real objc dispatch) for CI:
         // cross-process AX reads need TCC approval the runner won't grant, so we
-        // query our own view's accessibility attributes and print them.
+        // query our own view's accessibility attributes and print them. Runs after
+        // the first frame so the App has pushed the accessibility tree.
         if std::env::var("STIPPLE_COCOA_A11Y").is_ok() {
             let role = nsstring_to_string(msg_id(view, sel("accessibilityRole")));
             let label = nsstring_to_string(msg_id(view, sel("accessibilityLabel")));
@@ -578,10 +698,22 @@ where
                 f(view, sel("isAccessibilityElement"))
             };
             println!("Cocoa a11y: element={is_el} role={role} label={label}");
+            // Walk the vended element tree the same way an assistive client would
+            // — `-accessibilityChildren` recursively, reading each element's role +
+            // label through real objc dispatch. Proves the *full* tree is exposed,
+            // not just the root.
+            let children = msg_id(view, sel("accessibilityChildren"));
+            let n = if children.is_null() {
+                0
+            } else {
+                msg_u64(children, sel("count"))
+            };
+            println!("Cocoa a11y: children={n}");
+            for i in 0..n {
+                let child = msg_id_u64(children, sel("objectAtIndex:"), i);
+                dump_ax(child, 1);
+            }
         }
-
-        let mut win = MacWindow { size };
-        handler(Event::RedrawRequested, &win); // populate the framebuffer
 
         msg_void_id(window, sel("center"), std::ptr::null_mut());
         msg_void_id(window, sel("makeKeyAndOrderFront:"), std::ptr::null_mut());

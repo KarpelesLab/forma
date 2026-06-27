@@ -20,6 +20,8 @@
 /// Hand-written D-Bus / AT-SPI accessibility bridge (Linux).
 #[cfg(target_os = "linux")]
 pub mod a11y;
+/// Platform-neutral accessibility tree handed to each backend's OS bridge.
+pub mod access;
 pub mod backend;
 /// Native file dialogs (open/save/folder) backed by each OS's picker.
 pub mod dialog;
@@ -42,6 +44,7 @@ pub mod shm;
 pub mod uia;
 mod window;
 
+pub use access::{A11yNode, A11yRole};
 pub use error::PlatformError;
 pub use event::{ButtonState, Event, KeyCode, Modifiers, PointerButton, ScrollDelta, WindowId};
 pub use window::{Window, WindowAttributes};

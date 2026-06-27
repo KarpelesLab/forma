@@ -236,9 +236,18 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   **UI Automation** `IRawElementProviderSimple` COM object (vtable + `IUnknown`
   refcounting; `GetPropertyValue` answers control-type and a `VT_BSTR` name).
   Both are **CI-verified** through their real OS dispatch (objc / COM vtable) on
-  the macOS and Windows runners. (Exposing the full element *tree* — not just the
-  root — on macOS/Windows, and the `WM_GETOBJECT` window wiring, are follow-up
-  depth on top of the wired bridges.)
+  the macOS and Windows runners.
+  **macOS full element tree:** the bridge now vends the *whole* hierarchy, not
+  just the root. The App maps each frame's `AccessNode` tree into a
+  platform-neutral `stipple_platform::A11yNode` and pushes it through
+  `Window::set_accessibility_tree`; the `StippleView`'s `accessibilityChildren`
+  builds native `NSAccessibilityElement`s (role/label/frame/parent) recursively
+  from it — Stipple roles mapped to `AXButton`/`AXTextField`/`AXStaticText`/
+  `AXGroup`. **CI-verified**: the `visual-macos` job recursively walks
+  `-accessibilityChildren` through real objc dispatch and reads nested
+  `AXStaticText` descendants (e.g. "Welcome to Stipple") under the window root.
+  (The Windows UIA fragment tree — `IRawElementProviderFragment` navigation +
+  `WM_GETOBJECT` window wiring — is the remaining a11y follow-up.)
 - ✅ **GPU-native drawing**: a live stipple `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `stipple-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a

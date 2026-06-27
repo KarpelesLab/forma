@@ -1126,6 +1126,32 @@ impl<S> App<S> {
     /// they arrived on. Backends without multi-window show only the primary
     /// window. The loop ends when the last window closes.
     pub fn run(mut self) {
+        // Map the semantic accessibility tree into the platform-neutral mirror the
+        // backend's OS bridge consumes (NSAccessibility / UIA / AT-SPI).
+        fn to_platform_a11y(node: &stipple_core::AccessNode) -> stipple_platform::A11yNode {
+            use stipple_core::Role;
+            use stipple_platform::A11yRole;
+            let role = match node.role {
+                Role::Window => A11yRole::Window,
+                Role::Group => A11yRole::Group,
+                Role::Button => A11yRole::Button,
+                Role::TextField => A11yRole::TextField,
+                Role::Text => A11yRole::Text,
+            };
+            stipple_platform::A11yNode {
+                role,
+                name: node.name.clone(),
+                bounds: (
+                    node.bounds.min_x(),
+                    node.bounds.min_y(),
+                    node.bounds.width(),
+                    node.bounds.height(),
+                ),
+                focused: node.focused,
+                children: node.children.iter().map(to_platform_a11y).collect(),
+            }
+        }
+
         let primary_attrs = self.panes[0].attrs.clone();
         // Per-pane surfaces, created lazily on first present, parallel to panes.
         let mut surfaces: Vec<Option<Box<dyn Surface>>> =
@@ -1155,6 +1181,13 @@ impl<S> App<S> {
             let pane = &mut panes[idx];
             let scale = window.scale_factor();
             let scene = pane.build_frame(state, theme, font.as_ref());
+
+            // Push the freshly-built accessibility tree to the OS bridge so a
+            // screen reader sees the current element hierarchy and focus.
+            if let Some(tree) = pane.accessibility_tree() {
+                window.set_accessibility_tree(&to_platform_a11y(&tree));
+            }
+
             let damage = pane.take_damage();
 
             // Nothing changed since the last present: render nothing, upload

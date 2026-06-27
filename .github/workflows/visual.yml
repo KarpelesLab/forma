@@ -1313,6 +1313,11 @@ jobs:
           # The custom NSView vends NSAccessibility info via real objc dispatch:
           # an accessible AXGroup labelled with the window title ("Stipple").
           grep -q "Cocoa a11y: element=true role=AXGroup label=Stipple" visual_output/macos.log
+          # ...and the *full* element tree (not just the root) is vended: the view
+          # has children, and a recursive walk over -accessibilityChildren reaches
+          # nested AXStaticText descendants — proving the whole hierarchy is exposed.
+          grep -q "Cocoa a11y: children=1" visual_output/macos.log
+          grep -q "role=AXStaticText label=Welcome to Stipple" visual_output/macos.log
 
       - name: Stop the app
         if: always()
