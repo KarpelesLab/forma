@@ -1,6 +1,6 @@
 [package]
 name = "metaldemo"
-description = "Forma example: exercise the raw Metal backend in forma-gpu and print what it created."
+description = "Stipple example: exercise the raw Metal backend in stipple-gpu and print what it created."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma-gpu.workspace = true
+stipple-gpu.workspace = true
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "clickdemo"
-description = "Forma example: the whole window is a button that counts clicks — used by CI to verify real native input."
+description = "Stipple example: the whole window is a button that counts clicks — used by CI to verify real native input."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

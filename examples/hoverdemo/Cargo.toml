@@ -1,6 +1,6 @@
 [package]
 name = "hoverdemo"
-description = "Forma example: two buttons that highlight on hover — used by CI to verify pointer hover."
+description = "Stipple example: two buttons that highlight on hover — used by CI to verify pointer hover."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

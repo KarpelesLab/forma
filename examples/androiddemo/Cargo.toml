@@ -1,6 +1,6 @@
 [package]
 name = "androiddemo"
-description = "Forma example: a NativeActivity entry point that renders a Forma frame to the Android ANativeWindow surface (built as a cdylib for the APK)."
+description = "Stipple example: a NativeActivity entry point that renders a Stipple frame to the Android ANativeWindow surface (built as a cdylib for the APK)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,13 +11,13 @@ publish = false
 
 [lib]
 # Android loads the app as a shared library named lib<name>.so; the APK's
-# NativeActivity references it via android.app.lib_name = "forma_android".
-name = "forma_android"
+# NativeActivity references it via android.app.lib_name = "stipple_android".
+name = "stipple_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-forma.workspace = true
-forma-platform.workspace = true
+stipple.workspace = true
+stipple-platform.workspace = true
 
 [lints]
 workspace = true

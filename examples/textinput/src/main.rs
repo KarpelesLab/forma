@@ -6,7 +6,7 @@
 //! keysym → text → [`EditBuffer`] → re-present path on a real X server. The
 //! buffer is caret-aware, so arrow keys move the caret and insert mid-string.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 #[derive(Default)]
 struct Form {
@@ -28,7 +28,7 @@ fn view(state: &Form, cx: &mut Cx<Form>) -> Element {
 
 fn main() {
     let mut app = App::new(Form::default(), view)
-        .title("Forma Text Input")
+        .title("Stipple Text Input")
         .theme(Theme::dark())
         .logical_size(Size::new(640.0, 240.0));
     if let Some(font) = Font::system_default() {

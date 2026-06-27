@@ -1,6 +1,6 @@
 [package]
 name = "gpudemo"
-description = "Forma example: render a frame on the CPU, then route it through the GPU (forma-gpu) and dump the read-back RGBA."
+description = "Stipple example: render a frame on the CPU, then route it through the GPU (stipple-gpu) and dump the read-back RGBA."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
-forma-gpu.workspace = true
+stipple.workspace = true
+stipple-gpu.workspace = true
 
 [lints]
 workspace = true

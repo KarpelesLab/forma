@@ -1,6 +1,6 @@
 [package]
 name = "window"
-description = "Forma example: open a real native window (X11) and run the event loop."
+description = "Stipple example: open a real native window (X11) and run the event loop."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

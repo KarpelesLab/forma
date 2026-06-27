@@ -4,8 +4,8 @@
 //! and after to confirm the paste changed the field. The copied text is also
 //! pushed to the OS clipboard (verified separately via xclip).
 
-use forma::prelude::*;
-use forma::widgets::EditBuffer;
+use stipple::prelude::*;
+use stipple::widgets::EditBuffer;
 
 #[derive(Default)]
 struct State {
@@ -32,7 +32,7 @@ fn main() {
         },
         view,
     )
-    .title("Forma Clipboard")
+    .title("Stipple Clipboard")
     .theme(Theme::dark())
     .logical_size(Size::new(640.0, 240.0));
     if let Some(font) = Font::system_default() {

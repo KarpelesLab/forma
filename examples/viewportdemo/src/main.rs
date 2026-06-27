@@ -1,7 +1,7 @@
-//! Embedded-content viewport: reserve a rectangle in the Forma UI and composite
+//! Embedded-content viewport: reserve a rectangle in the Stipple UI and composite
 //! externally-rendered pixels into it.
 //!
-//! This is the toolkit-side seam of the **Forma-as-compositor** model
+//! This is the toolkit-side seam of the **Stipple-as-compositor** model
 //! (ROADMAP.md, browser viewport): a sandboxed content process renders a page
 //! into a GPU texture and hands it to the UI process (a `dma-buf` on Linux),
 //! which imports it as a texture and composites it into a viewport element so
@@ -13,7 +13,7 @@
 //! region shows the content (cyan/magenta), not the dark placeholder — i.e. the
 //! registered content was blitted into the reserved rect.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 /// The embedded content's pixel size (physical, == logical at 1× scale).
 const VW: u32 = 320;
@@ -62,7 +62,7 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
 /// Build the demo's app, off-screen-renderable for tests/screenshots.
 fn demo_app() -> App<()> {
     App::new((), view)
-        .title("Forma — viewport")
+        .title("Stipple — viewport")
         .theme(Theme::dark())
         .logical_size(Size::new(480.0, 360.0))
         .with_viewport_content(PAGE, content())

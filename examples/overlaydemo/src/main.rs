@@ -5,7 +5,7 @@
 //! interaction job clicks the buttons and screenshots: the dropdown appears over
 //! the content, and the modal darkens the whole frame (the scrim).
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 const W: f64 = 480.0;
 const H: f64 = 420.0;
@@ -104,7 +104,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> Element {
 
 fn main() {
     let mut app = App::new(State::default(), view)
-        .title("Forma Overlays")
+        .title("Stipple Overlays")
         .theme(Theme::dark())
         .logical_size(Size::new(W, H));
     if let Some(font) = Font::system_default() {

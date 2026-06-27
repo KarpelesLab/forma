@@ -9,21 +9,21 @@ edition = "2024"
 # requires rustc 1.88. (We'd happily target 1.86 otherwise.)
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/KarpelesLab/forma"
+repository = "https://github.com/KarpelesLab/stipple"
 authors = ["Karpelès Lab Inc."]
 
 [workspace.dependencies]
-# --- Forma internal crates ---
-forma-geometry = { version = "0.0.1", path = "crates/forma-geometry" }
-forma-render = { version = "0.0.1", path = "crates/forma-render" }
-forma-platform = { version = "0.0.1", path = "crates/forma-platform" }
-forma-layout = { version = "0.0.1", path = "crates/forma-layout" }
-forma-core = { version = "0.0.1", path = "crates/forma-core" }
-forma-anim = { version = "0.0.1", path = "crates/forma-anim" }
-forma-style = { version = "0.0.1", path = "crates/forma-style" }
-forma-widgets = { version = "0.0.1", path = "crates/forma-widgets" }
-forma-gpu = { version = "0.0.1", path = "crates/forma-gpu" }
-forma = { version = "0.0.1", path = "crates/forma" }
+# --- Stipple internal crates ---
+stipple-geometry = { version = "0.0.1", path = "crates/stipple-geometry" }
+stipple-render = { version = "0.0.1", path = "crates/stipple-render" }
+stipple-platform = { version = "0.0.1", path = "crates/stipple-platform" }
+stipple-layout = { version = "0.0.1", path = "crates/stipple-layout" }
+stipple-core = { version = "0.0.1", path = "crates/stipple-core" }
+stipple-anim = { version = "0.0.1", path = "crates/stipple-anim" }
+stipple-style = { version = "0.0.1", path = "crates/stipple-style" }
+stipple-widgets = { version = "0.0.1", path = "crates/stipple-widgets" }
+stipple-gpu = { version = "0.0.1", path = "crates/stipple-gpu" }
+stipple = { version = "0.0.1", path = "crates/stipple" }
 
 # --- oxideav media stack (the one sanctioned heavy dependency) ---
 # Pure-Rust content rendering: scene graph, CPU rasterizer, font shaping,

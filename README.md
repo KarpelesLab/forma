@@ -1,8 +1,8 @@
-# Forma
+# Stipple
 
 A cross-platform UI library and toolkit in Rust.
 
-Forma draws **beautiful, fully themeable, pixel-identical** interfaces on Linux,
+Stipple draws **beautiful, fully themeable, pixel-identical** interfaces on Linux,
 macOS, Windows, Android, iOS, and the web — staying **as close to the OS as
 possible** while depending on **as little third-party code as possible**.
 
@@ -12,7 +12,7 @@ decode, SVG) and adds everything around it: native windowing and input per OS,
 presenting the rendered buffer, and a declarative, reactive UI toolkit.
 
 ```rust
-use forma::prelude::*;
+use stipple::prelude::*;
 
 struct Counter { n: i64 }
 
@@ -28,7 +28,7 @@ fn view(state: &Counter) -> impl View {
 }
 
 fn main() {
-    forma::App::new(Counter { n: 0 }, view)
+    stipple::App::new(Counter { n: 0 }, view)
         .title("Counter")
         .run();
 }
@@ -37,28 +37,28 @@ fn main() {
 > **Status: pre-alpha.** The architecture and phased plan live in
 > [`ROADMAP.md`](./ROADMAP.md). APIs are unstable.
 
-The same app, rendered by Forma's **native backends** and screenshotted in CI
+The same app, rendered by Stipple's **native backends** and screenshotted in CI
 (the `Visual` workflow) — Linux X11 (under Xvfb) and Wayland (under headless
 sway), Win32, and Cocoa, each from-scratch with no windowing crates:
 
 | Linux / X11 | Linux / Wayland | Windows / Win32 | macOS / Cocoa |
 |---|---|---|---|
-| ![X11](./docs/screenshots/forma-x11.png) | ![Wayland](./docs/screenshots/forma-wayland.png) | ![Windows](./docs/screenshots/forma-windows.png) | ![macOS](./docs/screenshots/forma-macos.png) |
+| ![X11](./docs/screenshots/stipple-x11.png) | ![Wayland](./docs/screenshots/stipple-wayland.png) | ![Windows](./docs/screenshots/stipple-windows.png) | ![macOS](./docs/screenshots/stipple-macos.png) |
 
 | Web / wasm + canvas | GPU / GLES (offscreen) |
 |---|---|
-| ![Web](./docs/screenshots/forma-web.png) | ![GPU](./docs/screenshots/forma-gpu.png) |
+| ![Web](./docs/screenshots/stipple-web.png) | ![GPU](./docs/screenshots/stipple-gpu.png) |
 
 Input is verified too: CI synthesizes real events and screenshots the result —
-X11 via `xdotool` (clicking a counter; caret-aware editing — type "Forma",
+X11 via `xdotool` (clicking a counter; caret-aware editing — type "Stipple",
 arrow-left twice, insert "XY" → "ForXYma" with a mid-string caret), macOS via
 `cliclick`, and **Wayland** via `wtype` (whose virtual keyboard exercises the
-`wl_seat` keyboard + xkb-keymap decode path — Tab to focus, then type "forma
+`wl_seat` keyboard + xkb-keymap decode path — Tab to focus, then type "stipple
 wl"):
 
 | X11 click | X11 edit (mid-string caret) | macOS click | Wayland type |
 |---|---|---|---|
-| ![clicks](./docs/screenshots/forma-x11-clicks.png) | ![typing](./docs/screenshots/forma-x11-textinput.png) | ![mac clicks](./docs/screenshots/forma-macos-clicks.png) | ![wl type](./docs/screenshots/forma-wayland-input.png) |
+| ![clicks](./docs/screenshots/stipple-x11-clicks.png) | ![typing](./docs/screenshots/stipple-x11-textinput.png) | ![mac clicks](./docs/screenshots/stipple-macos-clicks.png) | ![wl type](./docs/screenshots/stipple-wayland-input.png) |
 
 ## Themeable by design
 
@@ -71,7 +71,7 @@ derives its hover/active tints, and picks a readable on-color automatically;
 rendered under four themes (light, dark, a violet-accent dark, high-contrast),
 montaged in CI:
 
-![themes](./docs/screenshots/forma-themes.png)
+![themes](./docs/screenshots/stipple-themes.png)
 
 ## Design at a glance
 
@@ -80,21 +80,21 @@ montaged in CI:
 - **Reactive / declarative** API: UI is a function of state.
 - **Self-drawn widgets** — one theme engine, identical on every platform.
 - **No** `winit` / `wgpu` / `taffy` / `lyon` / GTK / Qt. OS interfaces are
-  hand-written per platform in `forma-platform`.
+  hand-written per platform in `stipple-platform`.
 
 ## Workspace layout
 
 | Crate | Role |
 |---|---|
-| `forma-geometry` | Logical-pixel math (Point, Size, Rect, Affine) |
-| `forma-render` | Scene → oxideav `VectorFrame` → raster → `Surface` |
-| `forma-platform` | Per-OS windowing, input, IME, clipboard, vsync |
-| `forma-layout` | Flex/box layout solver |
-| `forma-core` | Reactive runtime: `View`, reconcile, state, events |
-| `forma-anim` | Frame clock, easing, springs, transitions |
-| `forma-style` | Design tokens and themes |
-| `forma-widgets` | Standard widget library |
-| `forma` | Umbrella crate: `App`, prelude, re-exports |
+| `stipple-geometry` | Logical-pixel math (Point, Size, Rect, Affine) |
+| `stipple-render` | Scene → oxideav `VectorFrame` → raster → `Surface` |
+| `stipple-platform` | Per-OS windowing, input, IME, clipboard, vsync |
+| `stipple-layout` | Flex/box layout solver |
+| `stipple-core` | Reactive runtime: `View`, reconcile, state, events |
+| `stipple-anim` | Frame clock, easing, springs, transitions |
+| `stipple-style` | Design tokens and themes |
+| `stipple-widgets` | Standard widget library |
+| `stipple` | Umbrella crate: `App`, prelude, re-exports |
 
 ## Examples
 
@@ -107,7 +107,7 @@ cargo run -p themegallery # one card rendered under four themes (writes .raw fil
 
 Each opens a real native window (X11/Win32/Cocoa) via `App::run`, or falls back
 to a one-shot headless render where no display is available. The web target
-lives in `crates/forma-web` (built for `wasm32`; see the `Visual` workflow).
+lives in `crates/stipple-web` (built for `wasm32`; see the `Visual` workflow).
 
 ## Status & MSRV
 

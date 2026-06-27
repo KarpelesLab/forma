@@ -5,7 +5,7 @@
 //! clipped), then `xdotool` wheel-scrolls and screenshots again to confirm the
 //! content moved and is still clipped to the viewport.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 const W: f64 = 420.0;
 const H: f64 = 360.0;
@@ -35,7 +35,10 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
             ])
             .gap(theme.spacing.md)
             .padding(Insets::uniform(theme.spacing.sm))
-            .align(forma::prelude::Align::Start, forma::prelude::Align::Center)
+            .align(
+                stipple::prelude::Align::Start,
+                stipple::prelude::Align::Center,
+            )
         })
         .collect();
     let content = column(items).gap(theme.spacing.sm);
@@ -46,14 +49,15 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
         vec![label(&theme, "Scrollable list"), divider(&theme), viewport],
     )
     .width(360.0);
-    column(vec![card])
-        .grow(1.0)
-        .align(forma::prelude::Align::Center, forma::prelude::Align::Center)
+    column(vec![card]).grow(1.0).align(
+        stipple::prelude::Align::Center,
+        stipple::prelude::Align::Center,
+    )
 }
 
 fn main() {
     let mut app = App::new((), view)
-        .title("Forma Scroll")
+        .title("Stipple Scroll")
         .theme(Theme::dark())
         .logical_size(Size::new(W, H));
     if let Some(font) = Font::system_default() {

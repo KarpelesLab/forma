@@ -1,6 +1,6 @@
 [package]
 name = "material3demo"
-description = "Forma example: a Material 3 (Material You) dynamic-color theme — baseline light/dark plus seed-recolored schemes."
+description = "Stipple example: a Material 3 (Material You) dynamic-color theme — baseline light/dark plus seed-recolored schemes."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

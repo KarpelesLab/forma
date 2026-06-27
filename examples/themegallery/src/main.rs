@@ -5,7 +5,7 @@
 //! size; the CI theme job converts each to a PNG and montages them into one
 //! screenshot.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 const W: f64 = 360.0;
 const H: f64 = 300.0;
@@ -16,7 +16,7 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
     let card = panel(
         &t,
         vec![
-            heading(&t, "Forma"),
+            heading(&t, "Stipple"),
             label(&t, "Theme customization"),
             divider(&t),
             row(vec![
@@ -43,7 +43,7 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
         .align(Align::Center, Align::Center)
 }
 
-fn render(theme: Theme) -> forma::render::Pixmap {
+fn render(theme: Theme) -> stipple::render::Pixmap {
     let mut app = App::new((), view)
         .theme(theme)
         .logical_size(Size::new(W, H));

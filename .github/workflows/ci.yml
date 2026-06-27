@@ -57,4 +57,4 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: cargo build (umbrella crate)
-        run: cargo build -p forma --target ${{ matrix.target }}
+        run: cargo build -p stipple --target ${{ matrix.target }}

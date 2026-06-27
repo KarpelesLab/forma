@@ -29,7 +29,7 @@ jobs:
 
   # Run the windowed example against a real (virtual) X server and screenshot
   # the result, proving the native X11 backend connects, maps a window, and
-  # paints. The Forma X11 backend speaks the wire protocol directly, so no
+  # paints. The Stipple X11 backend speaks the wire protocol directly, so no
   # libX11/libxcb is needed — only Xvfb (a server) and ImageMagick (capture).
   visual-x11:
     name: Visual test (X11 / Xvfb)
@@ -53,10 +53,10 @@ jobs:
           echo "XVFB_PID=$!" >> "$GITHUB_ENV"
           sleep 2
 
-      - name: Launch the Forma window and screenshot it
+      - name: Launch the Stipple window and screenshot it
         env:
           DISPLAY: ":99"
-          FORMA_X11_DEBUG: "1"
+          STIPPLE_X11_DEBUG: "1"
         run: |
           mkdir -p visual_output
           ./target/release/window > visual_output/app.log 2>&1 &
@@ -65,8 +65,8 @@ jobs:
           echo "=== window tree ==="
           xwininfo -root -tree -display :99 | head -40 || true
           # Capture the whole virtual root (our window maps at the top-left).
-          import -window root visual_output/forma-x11.png
-          echo "=== capture ==="; identify visual_output/forma-x11.png
+          import -window root visual_output/stipple-x11.png
+          echo "=== capture ==="; identify visual_output/stipple-x11.png
           echo "=== app.log ==="; cat visual_output/app.log || true
 
       - name: Stop the app and Xvfb
@@ -79,7 +79,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-x11-screenshot
+          name: stipple-x11-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -120,13 +120,13 @@ jobs:
           ./target/release/viewportdemo > visual_output/viewport.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 4
-          import -window root visual_output/forma-viewport.png
-          echo "=== capture ==="; identify visual_output/forma-viewport.png
+          import -window root visual_output/stipple-viewport.png
+          echo "=== capture ==="; identify visual_output/stipple-viewport.png
           echo "=== viewport.log ==="; cat visual_output/viewport.log || true
           # The window is 480x360 at the root top-left; the 320x240 viewport is
           # centered under the heading, so a region around the window center
           # (240,180) lands well inside it. Crop 200x150 there.
-          convert visual_output/forma-viewport.png -crop 200x150+140+105 +repage \
+          convert visual_output/stipple-viewport.png -crop 200x150+140+105 +repage \
             visual_output/viewport-region.png
           # The checkerboard is cyan (0,255,255) + magenta (255,0,255): both have
           # full blue, so the region's mean blue is ~1.0 — unreachable by the dark
@@ -156,7 +156,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-viewport-screenshot
+          name: stipple-viewport-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -217,7 +217,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-scroll-screenshot
+          name: stipple-scroll-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -290,7 +290,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-overlay-screenshot
+          name: stipple-overlay-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -360,7 +360,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-clipboard-screenshot
+          name: stipple-clipboard-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -426,7 +426,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-multiwindow-screenshot
+          name: stipple-multiwindow-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -497,7 +497,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-calculator-screenshot
+          name: stipple-calculator-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -564,11 +564,11 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-tabs-screenshot
+          name: stipple-tabs-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
-  # Render a real window whose frames are produced on the GPU (forma-gpu) and
+  # Render a real window whose frames are produced on the GPU (stipple-gpu) and
   # presented through the X11 Surface — the GPU render path wired into the live
   # on-screen present loop. Runs under Xvfb + Mesa (surfaceless EGL).
   visual-gpu-window:
@@ -586,7 +586,7 @@ jobs:
             libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm-dev
 
       - name: Build the GPU window example (GLES backend)
-        run: cargo build --release -p gpuwindow --features forma-gpu/gl
+        run: cargo build --release -p gpuwindow --features stipple-gpu/gl
 
       - name: Start Xvfb
         run: |
@@ -604,14 +604,14 @@ jobs:
           ./target/release/gpuwindow > visual_output/gpuwindow.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          import -window root visual_output/forma-gpu-window.png
-          echo "=== capture ==="; identify visual_output/forma-gpu-window.png
+          import -window root visual_output/stipple-gpu-window.png
+          echo "=== capture ==="; identify visual_output/stipple-gpu-window.png
           echo "=== gpuwindow.log ==="; cat visual_output/gpuwindow.log || true
           # The GPU path must actually be used (no software fallback message)...
           ! grep -q "GPU render unavailable" visual_output/gpuwindow.log
           # ...and the window must have painted a non-trivial frame (the dark
           # theme background plus the card): more than one distinct color.
-          colors=$(convert visual_output/forma-gpu-window.png -format '%k' info:)
+          colors=$(convert visual_output/stipple-gpu-window.png -format '%k' info:)
           echo "distinct colors: $colors"
           [ "$colors" -gt 1 ]
 
@@ -625,7 +625,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-gpu-window-screenshot
+          name: stipple-gpu-window-screenshot
           path: visual_output/*
           if-no-files-found: warn
 
@@ -649,7 +649,7 @@ jobs:
           sudo apt-get install -y libegl-dev libgles-dev libegl-mesa0 libgl1-mesa-dri libgbm-dev
 
       - name: Build the dma-buf spike (GLES backend)
-        run: cargo build --release -p dmabuftest --features forma-gpu/gl
+        run: cargo build --release -p dmabuftest --features stipple-gpu/gl
 
       - name: Run the export/import self-test
         env:
@@ -764,14 +764,14 @@ jobs:
           SOCK=$(ls "$XDG_RUNTIME_DIR" | grep -m1 '^wayland-[0-9]*$' || true)
           echo "wayland socket: '$SOCK'"
           export WAYLAND_DISPLAY="$SOCK"
-          export FORMA_WAYLAND_DEBUG=1
+          export STIPPLE_WAYLAND_DEBUG=1
           mkdir -p visual_output
 
           # --- render: the window example, screenshotted with grim ---
           ./target/release/window > visual_output/wl.log 2>&1 &
           WIN_PID=$!
           sleep 5
-          grim visual_output/forma-wayland.png || echo "grim failed"
+          grim visual_output/stipple-wayland.png || echo "grim failed"
           kill "$WIN_PID" 2>/dev/null || true
           sleep 1
 
@@ -783,9 +783,9 @@ jobs:
           sleep 4
           # One wtype session keeps a single virtual keyboard alive for the whole
           # sequence (Tab to focus, then type), so the keymap stays valid: Tab,
-          # then "forma wl", with a delay between keystrokes.
-          wtype -d 120 -k Tab -- "forma wl" 2>> visual_output/wtype.log; sleep 2
-          grim visual_output/forma-wayland-input.png || echo "grim failed"
+          # then "stipple wl", with a delay between keystrokes.
+          wtype -d 120 -k Tab -- "stipple wl" 2>> visual_output/wtype.log; sleep 2
+          grim visual_output/stipple-wayland-input.png || echo "grim failed"
           echo "=== wtype.log ==="; cat visual_output/wtype.log || true
           kill "$TXT_PID" 2>/dev/null || true
 
@@ -793,14 +793,14 @@ jobs:
           echo "=== sway.log ==="; cat sway.log || true
           echo "=== wl.log ==="; cat visual_output/wl.log || true
           echo "=== wl-input.log ==="; cat visual_output/wl-input.log || true
-          identify visual_output/forma-wayland.png || true
+          identify visual_output/stipple-wayland.png || true
           kill "$SWAY_PID" 2>/dev/null || true
 
       - name: Upload screenshot + logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-wayland-screenshot
+          name: stipple-wayland-screenshot
           path: |
             visual_output/*
             sway.log
@@ -830,7 +830,7 @@ jobs:
       - name: Click + type, screenshotting the results
         env:
           DISPLAY: ":99"
-          FORMA_X11_DEBUG: "1"
+          STIPPLE_X11_DEBUG: "1"
         run: |
           mkdir -p visual_output
           Xvfb :99 -screen 0 1024x768x24 &
@@ -854,8 +854,8 @@ jobs:
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 3
           xdotool key Tab; sleep 1
-          xdotool type --delay 80 "Forma"
-          # Caret now after "Forma"; move left twice and insert -> "ForXYma".
+          xdotool type --delay 80 "Stipple"
+          # Caret now after "Stipple"; move left twice and insert -> "ForXYma".
           xdotool key Left Left; sleep 0.5
           xdotool type --delay 80 "XY"
           sleep 2
@@ -911,7 +911,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-x11-interaction
+          name: stipple-x11-interaction
           path: visual_output/*
           if-no-files-found: warn
 
@@ -932,7 +932,7 @@ jobs:
       - name: Exercise the raw Direct3D 11 (WARP) backend
         shell: bash
         run: |
-          cargo run --release -p d3ddemo --features forma-gpu/d3d | tee d3ddemo.log
+          cargo run --release -p d3ddemo --features stipple-gpu/d3d | tee d3ddemo.log
           # WARP is always available on the runner, so a device must come up.
           grep -q "D3D11 device: WARP device" d3ddemo.log
 
@@ -941,12 +941,12 @@ jobs:
         run: |
           cargo run --release -p uiademo | tee uiademo.log
           # The hand-built IRawElementProviderSimple answers via its COM vtable:
-          # a server-side provider (options 1), a Group control (50026), "Forma".
-          grep -q 'UIA provider: options=1 controltype=50026 name="Forma"' uiademo.log
-          # ...and a GPU-rendered frame must read back as the cleared forma blue
+          # a server-side provider (options 1), a Group control (50026), "Stipple".
+          grep -q 'UIA provider: options=1 controltype=50026 name="Stipple"' uiademo.log
+          # ...and a GPU-rendered frame must read back as the cleared stipple blue
           # (R=0x60 G=0x9c B=0xff A=0xff), checked tool-free from the printed pixel.
           grep -q "D3D11 readback: .* first pixel 96,156,255,255" d3ddemo.log
-          # ...and a triangle drawn by HLSL shaders must put forma green
+          # ...and a triangle drawn by HLSL shaders must put stipple green
           # (52,211,153) at the center pixel.
           grep -q "D3D11 triangle: .* center pixel 52,211,153,255" d3ddemo.log
           # ...and the shared-texture export (dma-buf analog) must run to
@@ -954,7 +954,7 @@ jobs:
           # declines it; absence would mean the COM call crashed.
           grep -q "D3D11 shared handle" d3ddemo.log
 
-      - name: Launch the Forma window and screenshot the desktop
+      - name: Launch the Stipple window and screenshot the desktop
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path visual_output | Out-Null
@@ -965,7 +965,7 @@ jobs:
           $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
           $gfx = [System.Drawing.Graphics]::FromImage($bmp)
           $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-          $bmp.Save("$PWD\visual_output\forma-windows.png")
+          $bmp.Save("$PWD\visual_output\stipple-windows.png")
           Write-Host "Saved screenshot ($($bounds.Width)x$($bounds.Height))"
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
 
@@ -973,7 +973,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-windows-screenshot
+          name: stipple-windows-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
@@ -1002,8 +1002,8 @@ jobs:
             convert -size 360x320 -depth 8 "rgba:theme$i.raw" "m$i.png"
           done
           montage m0.png m1.png m2.png m3.png -tile 2x2 -geometry +6+6 -background '#222' \
-            visual_output/forma-material3.png
-          identify visual_output/forma-material3.png
+            visual_output/stipple-material3.png
+          identify visual_output/stipple-material3.png
           # The baseline light (m0) and dark (m1) schemes must clearly differ in
           # brightness (M3 surfaces invert between modes).
           ml=$(convert m0.png -colorspace Gray -format "%[fx:mean]" info:)
@@ -1019,7 +1019,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-material3-screenshot
+          name: stipple-material3-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
@@ -1042,13 +1042,13 @@ jobs:
             convert -size 360x300 -depth 8 "rgba:theme$i.raw" "t$i.png"
           done
           montage t0.png t1.png t2.png t3.png -tile 2x2 -geometry +6+6 -background '#222' \
-            visual_output/forma-themes.png
-          identify visual_output/forma-themes.png
+            visual_output/stipple-themes.png
+          identify visual_output/stipple-themes.png
       - name: Upload screenshot
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-themes-screenshot
+          name: stipple-themes-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
@@ -1065,7 +1065,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the wasm module
-        run: cargo build -p forma-web --target wasm32-unknown-unknown --release
+        run: cargo build -p stipple-web --target wasm32-unknown-unknown --release
 
       - name: Install a font
         run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
@@ -1073,8 +1073,8 @@ jobs:
       - name: Assemble the web bundle
         run: |
           mkdir -p web visual_output
-          cp crates/forma-web/web/index.html web/
-          cp target/wasm32-unknown-unknown/release/forma_web.wasm web/
+          cp crates/stipple-web/web/index.html web/
+          cp target/wasm32-unknown-unknown/release/stipple_web.wasm web/
           cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf web/font.ttf
           ls -l web/
 
@@ -1087,9 +1087,9 @@ jobs:
           # self-driven clicks run before the screenshot is taken.
           google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
             --window-size=700,420 --virtual-time-budget=15000 \
-            --screenshot="$PWD/visual_output/forma-web.png" \
+            --screenshot="$PWD/visual_output/stipple-web.png" \
             http://localhost:8000/index.html
-          echo "Captured:"; identify visual_output/forma-web.png || true
+          echo "Captured:"; identify visual_output/stipple-web.png || true
 
       - name: Stop server
         if: always()
@@ -1099,7 +1099,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-web-screenshot
+          name: stipple-web-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
@@ -1117,12 +1117,12 @@ jobs:
       - name: Serve + render the WebGPU triangle with headless Chrome
         run: |
           mkdir -p visual_output
-          python3 -m http.server 8000 --directory crates/forma-web/web &
+          python3 -m http.server 8000 --directory crates/stipple-web/web &
           echo "SRV_PID=$!" >> "$GITHUB_ENV"
           sleep 2
           # The page reads the rendered pixel back in JS and logs it, so the check
           # is deterministic (no canvas-composite/screenshot timing). The triangle
-          # center must be forma green (52,211,153).
+          # center must be stipple green (52,211,153).
           #
           # Bringing up WebGPU on the bundled SwiftShader Vulkan ICD headlessly is
           # itself intermittently flaky on CI (Chrome occasionally blocklists the
@@ -1138,7 +1138,7 @@ jobs:
               --use-angle=swiftshader --use-vulkan=swiftshader \
               --enable-logging=stderr --v=1 \
               --window-size=420,300 --virtual-time-budget=20000 \
-              --screenshot="$PWD/visual_output/forma-webgpu.png" \
+              --screenshot="$PWD/visual_output/stipple-webgpu.png" \
               http://localhost:8000/webgpu.html 2>chrome.log || true
             grep -iE "WEBGPU |WEBGPU_" chrome.log | head -5 || true
             if grep -q "WEBGPU center=52,211,153" chrome.log; then
@@ -1146,7 +1146,7 @@ jobs:
             fi
             sleep 3
           done
-          identify visual_output/forma-webgpu.png || true
+          identify visual_output/stipple-webgpu.png || true
           [ "$ok" = 1 ]
 
       - name: Stop server
@@ -1157,11 +1157,11 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-webgpu-screenshot
+          name: stipple-webgpu-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
-  # Route a Forma frame through the GPU (forma-gpu: EGL + GLES2) on Mesa's
+  # Route a Stipple frame through the GPU (stipple-gpu: EGL + GLES2) on Mesa's
   # software GL and screenshot the read-back, proving the GPU present path.
   visual-gpu:
     name: Visual test (GPU / GLES via Mesa)
@@ -1180,7 +1180,7 @@ jobs:
             imagemagick fonts-dejavu-core
 
       - name: Build gpudemo with the GL + Vulkan features
-        run: cargo build --release -p gpudemo --features forma-gpu/gl,forma-gpu/vk
+        run: cargo build --release -p gpudemo --features stipple-gpu/gl,stipple-gpu/vk
 
       - name: Render through the GPU and convert the readback to PNG
         env:
@@ -1189,16 +1189,16 @@ jobs:
         run: |
           mkdir -p visual_output
           ./target/release/gpudemo | tee gpudemo.log
-          convert -size 420x300 -depth 8 rgba:gpu-out.raw visual_output/forma-gpu.png
+          convert -size 420x300 -depth 8 rgba:gpu-out.raw visual_output/stipple-gpu.png
           # GPU-native geometry: solid rects tessellated + filled on the GPU.
-          convert -size 420x300 -depth 8 rgba:gpu-rects.raw visual_output/forma-gpu-rects.png
+          convert -size 420x300 -depth 8 rgba:gpu-rects.raw visual_output/stipple-gpu-rects.png
           # GPU-native render of the actual widget-tree Scene (render_scene).
-          convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/forma-gpu-scene.png
+          convert -size 420x300 -depth 8 rgba:gpu-scene.raw visual_output/stipple-gpu-scene.png
           # Vulkan-rendered frame (clear) read back from the GPU, raw FFI.
-          convert -size 420x300 -depth 8 rgba:gpu-vk.raw visual_output/forma-gpu-vk.png
+          convert -size 420x300 -depth 8 rgba:gpu-vk.raw visual_output/stipple-gpu-vk.png
           # Vulkan triangle drawn by real SPIR-V shaders, read back, raw FFI.
-          convert -size 420x300 -depth 8 rgba:gpu-vk-tri.raw visual_output/forma-gpu-vk-tri.png
-          echo "Captured:"; identify visual_output/forma-gpu*.png
+          convert -size 420x300 -depth 8 rgba:gpu-vk-tri.raw visual_output/stipple-gpu-vk-tri.png
+          echo "Captured:"; identify visual_output/stipple-gpu*.png
           # The raw-FFI Vulkan foundation must reach a device (Mesa lavapipe) and
           # create a logical device + graphics queue.
           grep -q "Vulkan devices:" gpudemo.log
@@ -1211,14 +1211,14 @@ jobs:
           grep -q "Vulkan clear: .*(fence signaled)" gpudemo.log
           # ...and read a GPU-rendered frame back to the CPU (a real screenshot).
           grep -q "Vulkan readback: .* bytes" gpudemo.log
-          # The readback must be the cleared forma blue (R=0x60 G=0x9c B=0xff), not black.
-          vkpx=$(convert visual_output/forma-gpu-vk.png -format '%[pixel:p{10,10}]' info:)
+          # The readback must be the cleared stipple blue (R=0x60 G=0x9c B=0xff), not black.
+          vkpx=$(convert visual_output/stipple-gpu-vk.png -format '%[pixel:p{10,10}]' info:)
           echo "Vulkan readback pixel: $vkpx"
           echo "$vkpx" | grep -q "96,156,255"
-          # The triangle was drawn by real shaders: the center pixel must be forma
+          # The triangle was drawn by real shaders: the center pixel must be stipple
           # green (R=0x34 G=0xd3 B=0x99 = 52,211,153), the corner the dark clear.
           grep -q "Vulkan triangle: .* bytes" gpudemo.log
-          tript=$(convert visual_output/forma-gpu-vk-tri.png -format '%[pixel:p{210,150}]' info:)
+          tript=$(convert visual_output/stipple-gpu-vk-tri.png -format '%[pixel:p{210,150}]' info:)
           echo "Vulkan triangle center pixel: $tript"
           echo "$tript" | grep -q "52,211,153"
 
@@ -1226,7 +1226,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-gpu-screenshot
+          name: stipple-gpu-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
@@ -1266,7 +1266,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-macos-interaction
+          name: stipple-macos-interaction
           path: visual_output/*
           if-no-files-found: warn
 
@@ -1286,33 +1286,33 @@ jobs:
 
       - name: Exercise the raw Metal backend
         run: |
-          cargo run --release -p metaldemo --features forma-gpu/mtl | tee metaldemo.log
+          cargo run --release -p metaldemo --features stipple-gpu/mtl | tee metaldemo.log
           # A Metal device is always available on the macOS runner.
           grep -q "Metal device: " metaldemo.log
-          # ...and a GPU-rendered frame must read back as the cleared forma blue
+          # ...and a GPU-rendered frame must read back as the cleared stipple blue
           # (R=0x60 G=0x9c B=0xff A=0xff), checked tool-free from the printed pixel.
           grep -q "Metal readback: .* first pixel 96,156,255,255" metaldemo.log
-          # ...and a triangle drawn by a compiled .metal shader must put forma
+          # ...and a triangle drawn by a compiled .metal shader must put stipple
           # green (52,211,153) at the center pixel.
           grep -q "Metal triangle: .* center pixel 52,211,153,255" metaldemo.log
           # ...and a shareable IOSurface (dma-buf analog) must be created with a
           # global id — the macOS runner has real IOSurface support.
           grep -q "Metal IOSurface: IOSurface .* id [0-9]" metaldemo.log
 
-      - name: Launch the Forma window and screenshot the screen
+      - name: Launch the Stipple window and screenshot the screen
         env:
-          FORMA_COCOA_A11Y: "1"
+          STIPPLE_COCOA_A11Y: "1"
         run: |
           mkdir -p visual_output
           ./target/release/window > visual_output/macos.log 2>&1 &
           echo "APP_PID=$!" >> "$GITHUB_ENV"
           sleep 5
-          screencapture -x visual_output/forma-macos.png
-          echo "Captured:"; (sips -g pixelWidth -g pixelHeight visual_output/forma-macos.png || true)
+          screencapture -x visual_output/stipple-macos.png
+          echo "Captured:"; (sips -g pixelWidth -g pixelHeight visual_output/stipple-macos.png || true)
           echo "=== macos.log ==="; cat visual_output/macos.log || true
           # The custom NSView vends NSAccessibility info via real objc dispatch:
-          # an accessible AXGroup labelled with the window title ("Forma").
-          grep -q "Cocoa a11y: element=true role=AXGroup label=Forma" visual_output/macos.log
+          # an accessible AXGroup labelled with the window title ("Stipple").
+          grep -q "Cocoa a11y: element=true role=AXGroup label=Stipple" visual_output/macos.log
 
       - name: Stop the app
         if: always()
@@ -1322,7 +1322,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-macos-screenshot
+          name: stipple-macos-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
@@ -1351,7 +1351,7 @@ jobs:
           # ...and we can reach the separate AT-SPI bus via org.a11y.Bus.
           grep -qE "AT-SPI bus connected: unique name :1\." a11y.log
 
-      - name: Expose a Forma UI's accessibility tree over AT-SPI and query it
+      - name: Expose a Stipple UI's accessibility tree over AT-SPI and query it
         run: |
           dbus-run-session -- bash -ec '
             ./target/release/a11ydemo serve > serve.log 2>&1 &
@@ -1359,26 +1359,26 @@ jobs:
             sleep 2
             cat serve.log
             # We must own the well-known name (RequestName -> 1 = primary owner).
-            grep -q "RequestName org.formaui.A11yDemo -> 1" serve.log
-            # The root of the Forma UI is a Window -> AT-SPI FRAME role (27),
+            grep -q "RequestName org.stippleui.A11yDemo -> 1" serve.log
+            # The root of the Stipple UI is a Window -> AT-SPI FRAME role (27),
             # with two children (a label and a button).
             grep -q "a11y root: role=27 .* children=2" serve.log
 
             # Query our hand-written AT-SPI server the way a screen reader would.
-            dbus-send --session --print-reply --dest=org.formaui.A11yDemo \
-              /org/formaui/a11y org.a11y.atspi.Accessible.GetRole | tee role.log
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y org.a11y.atspi.Accessible.GetRole | tee role.log
             grep -q "uint32 27" role.log
-            dbus-send --session --print-reply --dest=org.formaui.A11yDemo \
-              /org/formaui/a11y org.freedesktop.DBus.Properties.Get \
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y org.freedesktop.DBus.Properties.Get \
               string:org.a11y.atspi.Accessible string:ChildCount | tee cc.log
             grep -q "int32 2" cc.log
-            dbus-send --session --print-reply --dest=org.formaui.A11yDemo \
-              /org/formaui/a11y org.freedesktop.DBus.Properties.Get \
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y org.freedesktop.DBus.Properties.Get \
               string:org.a11y.atspi.Accessible string:Name | tee name.log
-            grep -q "Forma" name.log
+            grep -q "Stipple" name.log
             # ...and the standard introspection still works.
-            dbus-send --session --print-reply --dest=org.formaui.A11yDemo \
-              /org/formaui/a11y org.freedesktop.DBus.Introspectable.Introspect | tee introspect.log
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y org.freedesktop.DBus.Introspectable.Introspect | tee introspect.log
             grep -q "org.a11y.atspi.Accessible" introspect.log
             kill $SRV 2>/dev/null || true
           '
@@ -1414,7 +1414,7 @@ jobs:
             # The mock portal served exactly one request...
             grep -q "mock portal served one request" serve.log
             # ...and the client got the URI it returned, decoded to a path.
-            [ "$out" = "PICKED: /tmp/forma-pick.txt" ]
+            [ "$out" = "PICKED: /tmp/stipple-pick.txt" ]
             kill $SRV 2>/dev/null || true
           '
 
@@ -1436,15 +1436,15 @@ jobs:
 
       - name: Bundle, boot a simulator, launch, and capture the runtime marker
         run: |
-          mkdir -p visual_output Forma.app
-          cp target/aarch64-apple-ios-sim/release/window Forma.app/window
-          cat > Forma.app/Info.plist <<'PLIST'
+          mkdir -p visual_output Stipple.app
+          cp target/aarch64-apple-ios-sim/release/window Stipple.app/window
+          cat > Stipple.app/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>CFBundleExecutable</key><string>window</string>
-            <key>CFBundleIdentifier</key><string>com.karpeleslab.forma</string>
-            <key>CFBundleName</key><string>Forma</string>
+            <key>CFBundleIdentifier</key><string>com.karpeleslab.stipple</string>
+            <key>CFBundleName</key><string>Stipple</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>1.0</string>
             <key>CFBundleVersion</key><string>1</string>
@@ -1462,35 +1462,35 @@ jobs:
           [ -n "$DEV" ]
           xcrun simctl boot "$DEV" || true
           xcrun simctl bootstatus "$DEV" -b || true
-          xcrun simctl install "$DEV" Forma.app
+          xcrun simctl install "$DEV" Stipple.app
 
           # Launch the app (it runs forever) and give it a moment to render.
-          xcrun simctl launch "$DEV" com.karpeleslab.forma || true
+          xcrun simctl launch "$DEV" com.karpeleslab.stipple || true
           sleep 12
-          xcrun simctl io "$DEV" screenshot visual_output/forma-ios.png || true
-          (sips -g pixelWidth -g pixelHeight visual_output/forma-ios.png || true)
+          xcrun simctl io "$DEV" screenshot visual_output/stipple-ios.png || true
+          (sips -g pixelWidth -g pixelHeight visual_output/stipple-ios.png || true)
           # The backend writes a runtime marker into the app's tmp dir; read it
           # back from the simulator's data container (app stdout isn't reliably
           # captured headlessly).
-          DATA=$(xcrun simctl get_app_container "$DEV" com.karpeleslab.forma data)
+          DATA=$(xcrun simctl get_app_container "$DEV" com.karpeleslab.stipple data)
           echo "data container: $DATA"
           ls -la "$DATA/tmp" || true
-          cat "$DATA/tmp/forma-ios.txt" || true
+          cat "$DATA/tmp/stipple-ios.txt" || true
           # The native UIKit backend booted via UIApplicationMain, created the
-          # window, and the Forma handler rendered a non-empty frame.
-          grep -qE "Forma iOS: window shown, framebuffer [1-9][0-9]*x[1-9][0-9]*" "$DATA/tmp/forma-ios.txt"
+          # window, and the Stipple handler rendered a non-empty frame.
+          grep -qE "Stipple iOS: window shown, framebuffer [1-9][0-9]*x[1-9][0-9]*" "$DATA/tmp/stipple-ios.txt"
 
       - name: Upload screenshot + log
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forma-ios-screenshot
+          name: stipple-ios-screenshot
           path: visual_output/*.png
           if-no-files-found: warn
 
   # Run the native Android backend on an emulator: build the cdylib, package a
   # debug APK by hand (aapt + zipalign + apksigner — no Gradle), install it, and
-  # confirm via logcat that the NativeActivity presented a Forma frame to the
+  # confirm via logcat that the NativeActivity presented a Stipple frame to the
   # ANativeWindow surface.
   visual-android:
     name: Visual test (Android emulator)
@@ -1520,11 +1520,11 @@ jobs:
 
           cat > AndroidManifest.xml <<'MAN'
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.karpeleslab.forma">
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.karpeleslab.stipple">
             <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34"/>
-            <application android:label="Forma" android:hasCode="false" android:debuggable="true">
+            <application android:label="Stipple" android:hasCode="false" android:debuggable="true">
               <activity android:name="android.app.NativeActivity" android:exported="true">
-                <meta-data android:name="android.app.lib_name" android:value="forma_android"/>
+                <meta-data android:name="android.app.lib_name" android:value="stipple_android"/>
                 <intent-filter>
                   <action android:name="android.intent.action.MAIN"/>
                   <category android:name="android.intent.category.LAUNCHER"/>
@@ -1535,15 +1535,15 @@ jobs:
           MAN
 
           mkdir -p lib/x86_64
-          cp target/x86_64-linux-android/release/libforma_android.so lib/x86_64/
+          cp target/x86_64-linux-android/release/libstipple_android.so lib/x86_64/
           "$BT/aapt" package -f -M AndroidManifest.xml -I "$JAR" -F base.apk
-          "$BT/aapt" add base.apk lib/x86_64/libforma_android.so
+          "$BT/aapt" add base.apk lib/x86_64/libstipple_android.so
           keytool -genkeypair -keystore debug.ks -storepass android -keypass android \
-            -alias d -dname "CN=forma" -keyalg RSA -keysize 2048 -validity 10000
+            -alias d -dname "CN=stipple" -keyalg RSA -keysize 2048 -validity 10000
           "$BT/zipalign" -f -p 4 base.apk aligned.apk
           "$BT/apksigner" sign --ks debug.ks --ks-pass pass:android --key-pass pass:android \
-            --out forma.apk aligned.apk
-          echo "APK built:"; ls -l forma.apk
+            --out stipple.apk aligned.apk
+          echo "APK built:"; ls -l stipple.apk
 
       - name: Enable KVM
         run: |
@@ -1561,10 +1561,10 @@ jobs:
           force-avd-creation: true
           disable-animations: true
           script: |
-            adb install -r forma.apk
+            adb install -r stipple.apk
             adb logcat -c
-            adb shell am start -n com.karpeleslab.forma/android.app.NativeActivity
+            adb shell am start -n com.karpeleslab.stipple/android.app.NativeActivity
             sleep 15
             adb logcat -d > logcat.txt || true
-            grep "Forma Android: window" logcat.txt || true
-            grep -q "Forma Android: window [0-9]*x[0-9]* presented=true" logcat.txt
+            grep "Stipple Android: window" logcat.txt || true
+            grep -q "Stipple Android: window [0-9]*x[0-9]* presented=true" logcat.txt

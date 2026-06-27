@@ -1,12 +1,12 @@
 //! Phase-B integration probe for the DRI3 + Present GPU-present path. Connects
-//! to the X server over Forma's raw X11 socket, negotiates DRI3, and receives
-//! the server's DRM device fd via SCM_RIGHTS (B.2); then binds Forma's GPU
+//! to the X server over Stipple's raw X11 socket, negotiates DRI3, and receives
+//! the server's DRM device fd via SCM_RIGHTS (B.2); then binds Stipple's GPU
 //! context to *that* device via GBM and round-trips a dma-buf through it (B.3) —
 //! proving the X server's own GPU can export and re-import the buffers the
 //! compositor will hand it. Maps no window (DRI3Open targets the root).
 //!
 //! Run on a machine with a real GPU + X server (DRI3):
-//!   cargo run -p dri3probe --features forma-gpu/gl
+//!   cargo run -p dri3probe --features stipple-gpu/gl
 //!
 //! Expected on GPU+X: the DRM fd, then "device dma-buf round-trip: PASS".
 
@@ -18,12 +18,12 @@ fn main() -> ExitCode {
         // The Present extension (which flips the DRI3 pixmap to the window) needs
         // no GPU, so this negotiation succeeds even under Xvfb — the CI-verifiable
         // half of the zero-copy present path.
-        match forma_platform::backend::x11::present_probe() {
+        match stipple_platform::backend::x11::present_probe() {
             Ok(s) => println!("Present probe: {s}"),
             Err(e) => println!("Present probe error: {e}"),
         }
 
-        let fd = match forma_platform::backend::x11::dri3_open_drm_fd() {
+        let fd = match stipple_platform::backend::x11::dri3_open_drm_fd() {
             Ok(Some(fd)) => {
                 println!("DRI3Open ok: DRM device fd = {fd}");
                 fd
@@ -39,7 +39,7 @@ fn main() -> ExitCode {
         };
 
         // Bind the server's GPU via GBM and round-trip a dma-buf on it.
-        match forma_gpu::dmabuf_self_test_on_device(fd) {
+        match stipple_gpu::dmabuf_self_test_on_device(fd) {
             Ok(px) => {
                 println!("device dma-buf round-trip: PASS ({} bytes)", px.len());
                 // Compose the full zero-copy present on real hardware: export a
@@ -71,9 +71,9 @@ fn main() -> ExitCode {
 /// unsupported.
 #[cfg(target_os = "linux")]
 fn present_exported_dmabuf(drm_fd: i32) {
-    use forma_platform::backend::x11::DmabufImage;
+    use stipple_platform::backend::x11::DmabufImage;
 
-    match forma_gpu::export_dmabuf_on_device(drm_fd, 256, 256) {
+    match stipple_gpu::export_dmabuf_on_device(drm_fd, 256, 256) {
         Ok(d) => {
             println!(
                 "dmabuf export: {}x{} stride={} offset={} modifier={:#x} fourcc={:#x}",
@@ -87,7 +87,7 @@ fn present_exported_dmabuf(drm_fd: i32) {
                 modifier: d.modifier,
                 planes: vec![(d.stride, d.offset)],
             };
-            match forma_platform::backend::x11::dri3_present_dmabuf_self_test(&img, &[d.fd]) {
+            match stipple_platform::backend::x11::dri3_present_dmabuf_self_test(&img, &[d.fd]) {
                 Ok(s) => println!("on-window present: {s}"),
                 Err(e) => println!("on-window present error: {e}"),
             }

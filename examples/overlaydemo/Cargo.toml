@@ -1,6 +1,6 @@
 [package]
 name = "overlaydemo"
-description = "Forma example: a dropdown menu and a modal dialog rendered as overlay layers."
+description = "Stipple example: a dropdown menu and a modal dialog rendered as overlay layers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

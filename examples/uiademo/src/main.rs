@@ -1,4 +1,4 @@
-//! Exercises the hand-written UI Automation provider in `forma_platform::uia`
+//! Exercises the hand-written UI Automation provider in `stipple_platform::uia`
 //! (no `windows`/`uiautomation` crate) — the Windows accessibility bridge.
 //!
 //! The Windows visual CI job runs this and greps the output to confirm the
@@ -9,7 +9,7 @@
 fn main() {
     #[cfg(target_os = "windows")]
     {
-        if let Err(e) = forma_platform::uia::selftest("Forma") {
+        if let Err(e) = stipple_platform::uia::selftest("Stipple") {
             eprintln!("UIA selftest failed: {e}");
             std::process::exit(1);
         }

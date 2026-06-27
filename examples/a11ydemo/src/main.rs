@@ -1,4 +1,4 @@
-//! Exercises the hand-written D-Bus client in `forma_platform::a11y` (no
+//! Exercises the hand-written D-Bus client in `stipple_platform::a11y` (no
 //! `zbus`/`dbus` crate) — the foundation of the AT-SPI accessibility bridge.
 //!
 //! - no args: connect to the session bus and the AT-SPI bus, print our unique
@@ -11,7 +11,7 @@
 
 #[cfg(target_os = "linux")]
 const INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
-<node name="/org/formaui/a11y">
+<node name="/org/stippleui/a11y">
   <interface name="org.freedesktop.DBus.Introspectable">
     <method name="Introspect"><arg name="data" type="s" direction="out"/></method>
   </interface>
@@ -22,10 +22,10 @@ const INTROSPECT_XML: &str = r#"<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS
   <interface name="org.a11y.atspi.Accessible"/>
 </node>"#;
 
-/// Map a Forma accessibility role to an `org.a11y.atspi` role number.
+/// Map a Stipple accessibility role to an `org.a11y.atspi` role number.
 #[cfg(target_os = "linux")]
-fn atspi_role(role: forma::core::Role) -> u32 {
-    use forma::core::Role;
+fn atspi_role(role: stipple::core::Role) -> u32 {
+    use stipple::core::Role;
     match role {
         Role::Window => 27,    // ATSPI_ROLE_FRAME
         Role::Group => 54,     // ATSPI_ROLE_PANEL
@@ -38,12 +38,12 @@ fn atspi_role(role: forma::core::Role) -> u32 {
 fn main() {
     #[cfg(target_os = "linux")]
     {
-        use forma::prelude::*;
-        use forma_platform::a11y::{AtspiNode, DBus};
+        use stipple::prelude::*;
+        use stipple_platform::a11y::{AtspiNode, DBus};
         let serve = std::env::args().nth(1).as_deref() == Some("serve");
 
         if serve {
-            // Build a real Forma UI and derive its accessibility tree, then
+            // Build a real Stipple UI and derive its accessibility tree, then
             // expose the root over AT-SPI.
             let mut app = App::new((), |_s: &(), cx: &mut Cx<()>| {
                 let theme = *cx.theme();
@@ -57,7 +57,7 @@ fn main() {
             let node = AtspiNode {
                 role: atspi_role(root.role),
                 name: if root.name.is_empty() {
-                    "Forma".to_string()
+                    "Stipple".to_string()
                 } else {
                     root.name.clone()
                 },
@@ -75,8 +75,8 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match bus.request_name("org.formaui.A11yDemo") {
-                Ok(code) => println!("RequestName org.formaui.A11yDemo -> {code}"),
+            match bus.request_name("org.stippleui.A11yDemo") {
+                Ok(code) => println!("RequestName org.stippleui.A11yDemo -> {code}"),
                 Err(e) => {
                     eprintln!("RequestName failed: {e}");
                     std::process::exit(1);

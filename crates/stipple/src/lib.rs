@@ -1,0 +1,1849 @@
+//! Stipple — a cross-platform, self-drawn UI toolkit in Rust.
+//!
+//! This umbrella crate ties the layers together and provides the [`App`]
+//! entry point and a [`prelude`]. See `ROADMAP.md` for the architecture and
+//! phased plan.
+//!
+//! ```
+//! use stipple::prelude::*;
+//!
+//! struct Counter {
+//!     n: i64,
+//! }
+//!
+//! let mut app = App::new(Counter { n: 0 }, |state: &Counter, cx: &mut Cx<Counter>| {
+//!     let theme = *cx.theme();
+//!     panel(
+//!         &theme,
+//!         vec![button(&theme).on_tap(cx, |s: &mut Counter| s.n += 1)],
+//!     )
+//! })
+//! .title("Counter")
+//! .logical_size(Size::new(360.0, 200.0));
+//!
+//! // Render one frame off-screen (no window needed) and inspect it.
+//! let frame = app.render_once();
+//! assert_eq!(frame.size().width, 360);
+//! ```
+
+#![forbid(unsafe_code)]
+
+// Re-export the layer crates for direct access.
+pub use stipple_anim as anim;
+pub use stipple_core as core;
+pub use stipple_geometry as geometry;
+pub use stipple_layout as layout;
+pub use stipple_platform as platform;
+pub use stipple_render as render;
+pub use stipple_style as style;
+pub use stipple_widgets as widgets;
+
+use std::collections::HashMap;
+use stipple_core::{
+    ActionId, Anchor, BoxStyle, Cx, Damage, DragId, Element, FocusId, Handlers, KeyInput,
+    LayoutNode, TextPosId, ViewportEvent, ViewportId, caret_index_at, collect_focusables,
+    collect_viewports, context_at, drag_at, find_action, find_focus, find_text_pos, focus_at,
+    hit_test, layout, measure, paint, paint_focus, paint_hover, text_pos_at, viewport_at,
+};
+use stipple_geometry::{PhysicalSize, Point, Rect, ScaleFactor, Size};
+use stipple_platform::{
+    ButtonState, ControlFlow, Event, KeyCode, Modifiers, PointerButton, WindowAttributes, WindowId,
+    backend,
+};
+use stipple_render::{Color, Font, Pixmap, Scene, SoftwareRenderer, Surface};
+use stipple_style::Theme;
+
+/// A Stipple application.
+///
+/// Owns the global app `state` and shared presentation (the active [`Theme`] and
+/// font), plus one [`Pane`] per OS window. The primary window's `build` closure
+/// is passed to [`App::new`]; further windows are added with
+/// [`App::open_window`], each with its own view onto the same shared state.
+/// Every pane maps state (via a [`Cx`] for registering event handlers) to an
+/// [`Element`] tree; pointer/keyboard events route through that window's laid-out
+/// tree back to the handlers the view registered.
+///
+/// [`App::run`] drives the platform backend (native X11 when `$DISPLAY` is set,
+/// else a one-shot headless present) through the full build → layout → paint →
+/// rasterize → present path for each window, opening every registered window as
+/// a real native window where the backend supports it (X11) and ending when the
+/// last one closes.
+pub struct App<S> {
+    // Global application state, shared by every window's view.
+    state: S,
+    // Shared presentation settings used by all windows.
+    theme: Theme,
+    font: Option<Font>,
+    // One [`Pane`] per OS window. There is always at least one (the primary,
+    // index 0); additional windows are added via [`App::open_window`].
+    panes: Vec<Pane<S>>,
+    // Externally-rendered content for embedded viewports, keyed by the
+    // caller-chosen [`ViewportId`]. After a frame is rasterized, each viewport's
+    // content (sized to the viewport's physical extent) is blitted over its
+    // placeholder — the CPU analog of a GPU backend sampling an imported
+    // (dma-buf / IOSurface / shared-handle) content texture into the rect.
+    viewport_content: HashMap<ViewportId, Pixmap>,
+    // Sink for input that lands in an embedded viewport (pointer/keys/wheel),
+    // forwarded with viewport-local coordinates to the content process. `None`
+    // = viewports are display-only and input routes to the Stipple chrome.
+    viewport_input: Option<ViewportInputFn>,
+}
+
+/// A sink for input forwarded to an embedded viewport's content: receives the
+/// target [`ViewportId`] and a [`ViewportEvent`] (pointer/keys/wheel) in
+/// viewport-local coordinates. Set via [`App::on_viewport_input`].
+pub type ViewportInputFn = Box<dyn FnMut(ViewportId, ViewportEvent)>;
+
+/// A pointer transition forwarded to a viewport (internal helper for
+/// [`App::try_forward_pointer`]).
+#[derive(Clone, Copy)]
+enum PointerKind {
+    /// Pressed with the given button code (0 = left, 1 = right, 2 = middle).
+    Down(u8),
+    /// Released with the given button code.
+    Up(u8),
+    /// Moved over the viewport.
+    Move,
+}
+
+/// A pluggable rasterizer: turns a built [`Scene`] (with a background color, at a
+/// scale factor) into the [`Pixmap`] the [`Surface`] presents. Set via
+/// [`App::render_with`] to route frames through a GPU backend.
+pub type FrameRenderer = Box<dyn FnMut(&Scene, Color, ScaleFactor) -> Pixmap>;
+
+/// A view closure mapping the shared state (and a [`Cx`] for registering event
+/// handlers) to an [`Element`] tree. Boxed so each window can hold its own view.
+pub type ViewFn<S> = Box<dyn FnMut(&S, &mut Cx<'_, S>) -> Element>;
+
+/// Logical-pixel margin added around a focused element's bounds so the damage
+/// region covers the focus ring (a 2px stroke straddling the bounds).
+const FOCUS_RING_MARGIN: f64 = 2.0;
+
+/// Grow `r` by `m` logical pixels on every side.
+fn inflate(r: Rect, m: f64) -> Rect {
+    Rect::from_xywh(
+        r.min_x() - m,
+        r.min_y() - m,
+        r.width() + 2.0 * m,
+        r.height() + 2.0 * m,
+    )
+}
+
+/// Fold `extra` damage rects into `base`. [`Damage::Full`] absorbs everything;
+/// otherwise the rects extend (or become) the region list. An empty `extra`
+/// leaves `base` unchanged.
+fn merge_regions(base: Damage, extra: Vec<Rect>) -> Damage {
+    if matches!(base, Damage::Full) || extra.is_empty() {
+        return base;
+    }
+    let mut regions = match base {
+        Damage::Regions(rs) => rs,
+        Damage::None => Vec::new(),
+        Damage::Full => unreachable!("handled above"),
+    };
+    regions.extend(extra);
+    Damage::Regions(regions)
+}
+
+/// Everything specific to one OS window: its view onto the shared state, its
+/// window attributes, and all the retained per-window render/event state (the
+/// laid-out tree, handlers, focus/hover/drag/selection, scroll offsets, the
+/// on-screen diff baseline, and an optional custom rasterizer).
+///
+/// Multiple panes read and mutate the same `App::state`, so they stay in sync;
+/// each maintains its own input focus and damage tracking independently.
+struct Pane<S> {
+    view: ViewFn<S>,
+    attrs: WindowAttributes,
+    scale: ScaleFactor,
+    // Optional GPU (or other) rasterizer used in place of the software renderer
+    // to turn each frame's `Scene` into the `Pixmap` that is presented. Lets a
+    // GPU backend (stipple-gpu) drive on-screen present through the `Surface` seam
+    // without stipple depending on it. `None` = software rasterization.
+    frame_renderer: Option<FrameRenderer>,
+    // Retained from the last frame build, for routing pointer events.
+    tree: Option<LayoutNode>,
+    handlers: Handlers<S>,
+    pressed: Option<ActionId>,
+    focused: Option<FocusId>,
+    hovered: Option<ActionId>,
+    dragging: Option<(DragId, Rect)>,
+    // The text element currently being selected by a pointer drag.
+    text_selecting: Option<TextPosId>,
+    // Set when state/focus/hover changed so the next build rebuilds the tree.
+    dirty: bool,
+    // The tree + overlay state that is currently on screen, used as the diff
+    // baseline so a present can be limited to the region that actually changed.
+    presented: Option<LayoutNode>,
+    // The full-window pixmap currently on screen (software path only). Retained
+    // so a partial repaint can re-rasterize just the damaged rects into it and
+    // present those, instead of rebuilding the whole frame's pixels.
+    last_pixmap: Option<Pixmap>,
+    painted_hovered: Option<ActionId>,
+    painted_focused: Option<FocusId>,
+    // Cross-frame memo cache for `Cx::memo` (static subtree reuse).
+    memo_cache: std::collections::HashMap<u64, Element>,
+    // Per-container scroll offsets (vertical, logical px), adjusted by wheel
+    // events and re-applied + clamped each frame by `apply_scroll`.
+    scroll_offsets: std::collections::HashMap<stipple_core::ScrollId, f64>,
+    // Last pointer position, so a `Scroll` event (which carries only a delta)
+    // can find the scroll container under the cursor.
+    last_pointer: Point,
+    // Whether the frame just built / on screen has overlay layers — overlays
+    // can't be localized by the tree diff, so their presence forces full damage.
+    overlay_active: bool,
+    painted_overlay_active: bool,
+    // The embedded viewport that currently holds input focus (set when its
+    // content was last pressed), so keyboard input forwards to it until focus
+    // moves elsewhere. `None` = the Stipple chrome owns keyboard focus.
+    input_viewport: Option<ViewportId>,
+}
+
+impl<S> std::fmt::Debug for App<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `state` and the view closures are not required to be Debug.
+        f.debug_struct("App")
+            .field("theme", &self.theme)
+            .field("windows", &self.panes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> Pane<S> {
+    /// Create a pane for `view` with default window attributes.
+    fn new(view: ViewFn<S>) -> Self {
+        Self {
+            view,
+            attrs: WindowAttributes::new(),
+            scale: ScaleFactor::IDENTITY,
+            frame_renderer: None,
+            tree: None,
+            handlers: Handlers::default(),
+            pressed: None,
+            focused: None,
+            hovered: None,
+            dragging: None,
+            text_selecting: None,
+            dirty: true,
+            presented: None,
+            last_pixmap: None,
+            painted_hovered: None,
+            painted_focused: None,
+            memo_cache: std::collections::HashMap::new(),
+            scroll_offsets: std::collections::HashMap::new(),
+            last_pointer: Point::new(0.0, 0.0),
+            overlay_active: false,
+            painted_overlay_active: false,
+            input_viewport: None,
+        }
+    }
+}
+
+impl<S> App<S> {
+    /// Create an app from initial `state` and a primary-window `build` closure.
+    pub fn new(state: S, build: impl FnMut(&S, &mut Cx<'_, S>) -> Element + 'static) -> Self {
+        Self {
+            state,
+            theme: Theme::light(),
+            font: None,
+            panes: vec![Pane::new(Box::new(build))],
+            viewport_content: HashMap::new(),
+            viewport_input: None,
+        }
+    }
+
+    /// The primary window's pane (index 0), which the builder methods and the
+    /// single-window public API operate on. Always present.
+    fn primary(&mut self) -> &mut Pane<S> {
+        &mut self.panes[0]
+    }
+
+    /// Register an additional OS window with its own `view` onto the shared
+    /// state. Stipple drives every registered window once [`App::run`] starts.
+    ///
+    /// Note: true OS multi-window presentation is wired per backend (X11 first);
+    /// on backends that don't yet support it only the primary window is shown.
+    pub fn open_window(
+        &mut self,
+        attrs: WindowAttributes,
+        view: impl FnMut(&S, &mut Cx<'_, S>) -> Element + 'static,
+    ) {
+        let mut pane = Pane::new(Box::new(view));
+        pane.attrs = attrs;
+        self.panes.push(pane);
+    }
+
+    /// Set the font used to render text. Without one, text elements are laid
+    /// out as zero-size and not painted.
+    pub fn font(mut self, font: Font) -> Self {
+        self.font = Some(font);
+        self
+    }
+
+    /// Route frame rasterization through a custom renderer — e.g. a GPU backend
+    /// (`stipple-gpu`) that turns each frame's [`Scene`] into a [`Pixmap`] on the
+    /// GPU, which is then presented through the platform [`Surface`]. This wires
+    /// GPU rendering into the live present path without stipple depending on any
+    /// GPU crate. Without it, frames are rasterized on the CPU.
+    pub fn render_with(
+        mut self,
+        renderer: impl FnMut(&Scene, Color, ScaleFactor) -> Pixmap + 'static,
+    ) -> Self {
+        self.primary().frame_renderer = Some(Box::new(renderer));
+        self
+    }
+
+    /// Set the window title.
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.primary().attrs.title = title.into();
+        self
+    }
+
+    /// Set the initial logical window size.
+    pub fn logical_size(mut self, size: Size) -> Self {
+        self.primary().attrs.logical_size = size;
+        self
+    }
+
+    /// Set the active theme.
+    pub fn theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    /// Override the DPI scale used for off-screen rendering (default 1×).
+    pub fn scale(mut self, scale: ScaleFactor) -> Self {
+        self.primary().scale = scale;
+        self
+    }
+
+    /// Access the current state.
+    pub fn state(&self) -> &S {
+        &self.state
+    }
+
+    /// Seed the content for an embedded [`viewport`](Element::viewport) at build
+    /// time (builder form of [`set_viewport_content`](App::set_viewport_content)).
+    pub fn with_viewport_content(mut self, id: ViewportId, content: Pixmap) -> Self {
+        self.viewport_content.insert(id, content);
+        self
+    }
+
+    /// Register (or replace) the externally-rendered `content` for the viewport
+    /// `id`. After each frame is rasterized, this content — which should be sized
+    /// to the viewport's physical extent — is composited over the viewport's
+    /// placeholder. This is the CPU content path; a GPU backend imports a shared
+    /// texture (dma-buf / `IOSurface` / shared handle) into the same rect
+    /// instead. Marks every window dirty so the change is presented next frame.
+    pub fn set_viewport_content(&mut self, id: ViewportId, content: Pixmap) {
+        self.viewport_content.insert(id, content);
+        for pane in &mut self.panes {
+            pane.dirty = true;
+        }
+    }
+
+    /// Remove any registered content for the viewport `id` (reverting it to the
+    /// placeholder). Marks every window dirty.
+    pub fn clear_viewport_content(&mut self, id: ViewportId) {
+        if self.viewport_content.remove(&id).is_some() {
+            for pane in &mut self.panes {
+                pane.dirty = true;
+            }
+        }
+    }
+
+    /// Forward input that lands in an embedded [`viewport`](Element::viewport) to
+    /// `sink` instead of routing it to the Stipple chrome. The sink receives the
+    /// target [`ViewportId`] and a [`ViewportEvent`] (pointer press/release/move,
+    /// wheel, or — while the viewport holds input focus — keys) in viewport-local
+    /// coordinates, so a sandboxed content process can handle it. Pressing a
+    /// viewport's content gives it keyboard focus (dropping any Stipple focus)
+    /// until a press lands elsewhere. Typically the sink feeds the content
+    /// process, which renders a new frame and calls
+    /// [`set_viewport_content`](App::set_viewport_content).
+    pub fn on_viewport_input(
+        mut self,
+        sink: impl FnMut(ViewportId, ViewportEvent) + 'static,
+    ) -> Self {
+        self.viewport_input = Some(Box::new(sink));
+        self
+    }
+
+    /// If `pos` lands in a viewport and an input sink is registered, forward the
+    /// pointer transition `kind` to it (in viewport-local coordinates) and return
+    /// `true` — the event is consumed by the embedded content. A `Down` also
+    /// gives the viewport keyboard focus (dropping any Stipple focus).
+    fn try_forward_pointer(&mut self, idx: usize, pos: Point, kind: PointerKind) -> bool {
+        if self.viewport_input.is_none() {
+            return false;
+        }
+        let Some(tree) = self.panes[idx].tree.as_ref() else {
+            return false;
+        };
+        let Some((id, bounds)) = viewport_at(tree, pos) else {
+            return false;
+        };
+        let local = Point::new(pos.x - bounds.min_x(), pos.y - bounds.min_y());
+        let event = match kind {
+            PointerKind::Down(button) => {
+                self.panes[idx].input_viewport = Some(id);
+                self.panes[idx].focused = None;
+                ViewportEvent::PointerDown { local, button }
+            }
+            PointerKind::Up(button) => ViewportEvent::PointerUp { local, button },
+            PointerKind::Move => ViewportEvent::PointerMove { local },
+        };
+        if let Some(sink) = self.viewport_input.as_mut() {
+            sink(id, event);
+        }
+        true
+    }
+
+    /// If `pos` lands in a viewport with an input sink, forward a wheel scroll of
+    /// `dy` logical pixels (viewport-local) and return `true` (consumed).
+    fn try_forward_wheel(&mut self, idx: usize, pos: Point, dy: f64) -> bool {
+        if self.viewport_input.is_none() {
+            return false;
+        }
+        let Some(tree) = self.panes[idx].tree.as_ref() else {
+            return false;
+        };
+        let Some((id, bounds)) = viewport_at(tree, pos) else {
+            return false;
+        };
+        let local = Point::new(pos.x - bounds.min_x(), pos.y - bounds.min_y());
+        if let Some(sink) = self.viewport_input.as_mut() {
+            sink(id, ViewportEvent::Wheel { local, delta_y: dy });
+        }
+        true
+    }
+
+    /// If a viewport currently holds input focus (its content was last pressed),
+    /// forward keyboard `input` to it and return `true` (consumed). The Stipple
+    /// chrome doesn't see the key.
+    fn try_forward_key(&mut self, idx: usize, input: KeyInput) -> bool {
+        let Some(id) = self.panes[idx].input_viewport else {
+            return false;
+        };
+        if let Some(sink) = self.viewport_input.as_mut() {
+            sink(id, ViewportEvent::Key(input));
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<S> Pane<S> {
+    /// Rasterize a built `scene` into a `Pixmap` — through the custom
+    /// [`render_with`](App::render_with) renderer if set, else the software path.
+    fn rasterize(&mut self, scene: Scene, theme: &Theme, scale: ScaleFactor) -> Pixmap {
+        let bg = theme.palette.background;
+        match self.frame_renderer.as_mut() {
+            Some(render) => render(&scene, bg, scale),
+            None => SoftwareRenderer::new()
+                .with_background(bg)
+                .render(scene, scale),
+        }
+    }
+
+    /// Composite registered embedded content over each viewport's placeholder in
+    /// `pixmap`. For every viewport in the laid-out tree with content registered
+    /// for its id, blit that content — assumed sized to the viewport's physical
+    /// extent — at the viewport's physical top-left. A straight replace over the
+    /// placeholder the scene painted; the CPU analog of a GPU backend sampling an
+    /// imported content texture into the rect.
+    fn composite_viewports(
+        &self,
+        pixmap: &mut Pixmap,
+        content: &HashMap<ViewportId, Pixmap>,
+        scale: ScaleFactor,
+    ) {
+        if content.is_empty() {
+            return;
+        }
+        let Some(tree) = self.tree.as_ref() else {
+            return;
+        };
+        let mut views = Vec::new();
+        collect_viewports(tree, &mut views);
+        let s = scale.get();
+        for (id, bounds) in views {
+            if let Some(src) = content.get(&id) {
+                let x = (bounds.min_x() * s).round() as u32;
+                let y = (bounds.min_y() * s).round() as u32;
+                pixmap.blit(src, x, y);
+            }
+        }
+    }
+
+    /// Whether the laid-out tree contains any embedded-content viewport. Content
+    /// is composited post-rasterize (not via the area-repaint sub-renderer), so a
+    /// frame with a viewport opts out of partial repaint to avoid a damaged rect
+    /// over the viewport erasing its content back to the placeholder.
+    fn has_viewports(&self) -> bool {
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        let mut views = Vec::new();
+        collect_viewports(tree, &mut views);
+        !views.is_empty()
+    }
+
+    /// Build the element tree for the current state, lay it out to fill the
+    /// window, retain the layout tree + handlers for event routing, and return
+    /// the painted [`Scene`].
+    fn build_frame(&mut self, state: &S, theme: &Theme, font: Option<&Font>) -> Scene {
+        let theme = *theme; // Theme is Copy; avoids borrowing through `theme` in `cx`.
+        let mut cx = Cx::new(&theme);
+        cx.set_memo_cache(std::mem::take(&mut self.memo_cache));
+        let element = (self.view)(state, &mut cx);
+        self.memo_cache = cx.take_memo_cache();
+        let overlays = cx.take_overlays();
+        self.handlers = cx.into_handlers();
+
+        let size = self.attrs.logical_size;
+        let win = Rect::from_xywh(0.0, 0.0, size.width, size.height);
+        let main = layout(&element, win, font);
+
+        // Compose the main tree with any floating overlay layers under one
+        // routable/paintable root: each overlay (with a scrim behind a modal
+        // one) is a later child, so it paints on top and hit-tests first.
+        let mut tree = if overlays.is_empty() {
+            main
+        } else {
+            let mut roots = Vec::with_capacity(overlays.len() * 2 + 1);
+            roots.push(main);
+            for spec in &overlays {
+                // A full-window catcher behind the overlay: a dark scrim for a
+                // modal, or an invisible click-catcher for a non-modal that wants
+                // outside-press dismissal. Either way it carries the dismiss
+                // action and blocks clicks from reaching the tree below.
+                if spec.modal || spec.dismiss.is_some() {
+                    let mut catcher = Element::boxed(BoxStyle {
+                        fill: spec.modal.then(|| Color::rgba(0, 0, 0, 0x80)),
+                        radius: 0.0,
+                        border: None,
+                    })
+                    .width(size.width)
+                    .height(size.height);
+                    catcher.action = spec.dismiss;
+                    roots.push(layout(&catcher, win, font));
+                }
+                let m = measure(&spec.content, size, font);
+                let origin = match spec.anchor {
+                    Anchor::At(p) => p,
+                    Anchor::Center => Point::new(
+                        ((size.width - m.width) / 2.0).max(0.0),
+                        ((size.height - m.height) / 2.0).max(0.0),
+                    ),
+                };
+                let bounds = Rect::from_xywh(origin.x, origin.y, m.width, m.height);
+                roots.push(layout(&spec.content, bounds, font));
+            }
+            LayoutNode::container(win, roots)
+        };
+        self.overlay_active = !overlays.is_empty();
+        // Apply (and clamp) scroll-container offsets to the laid-out tree before
+        // painting, so the retained tree matches what's drawn for event routing.
+        stipple_core::apply_scroll(&mut tree, &mut self.scroll_offsets);
+        let mut scene = Scene::new(size);
+        paint(&tree, &mut scene, font);
+        // Lighten the hovered tappable element with the theme's overlay.
+        if let Some(hid) = self.hovered {
+            paint_hover(&tree, hid, &mut scene, theme.palette.hover_overlay);
+        }
+        // Overlay a focus ring + caret on the focused element.
+        if let Some(fid) = self.focused {
+            paint_focus(
+                &tree,
+                fid,
+                &mut scene,
+                font,
+                theme.palette.focus_ring,
+                theme.palette.text,
+                theme.palette.selection,
+            );
+        }
+        self.tree = Some(tree);
+        self.dirty = false;
+        scene
+    }
+
+    /// Compute the [`Damage`] of the frame just built (in `self.tree`) relative
+    /// to what is currently on screen (`self.presented`), then adopt the new
+    /// frame as the on-screen baseline.
+    ///
+    /// The tree diff localizes content changes. The hover highlight and focus
+    /// ring paint *outside* the tree, so a change to either is localized
+    /// separately: the union of the affected element's old and new bounds is
+    /// merged into the damage (the focus rect is inflated to cover the ring
+    /// stroke). The first frame, a root-size (resize) change, a floating-overlay
+    /// frame, and any case where a referenced node can't be found all fall back
+    /// to [`Damage::Full`].
+    fn take_damage(&mut self) -> Damage {
+        // Floating overlays paint above the tree and can't be localized by the
+        // diff, so any frame with overlays (or that just had them) is full.
+        let overlay_changed = self.overlay_active || self.painted_overlay_active;
+        let hover_changed = self.hovered != self.painted_hovered;
+        let focus_changed = self.focused != self.painted_focused;
+
+        let damage = match (&self.presented, &self.tree) {
+            (Some(old), Some(new)) if !overlay_changed && old.bounds == new.bounds => {
+                let base = stipple_core::diff_trees(old, new);
+                match self.overlay_damage_rects(old, new, hover_changed, focus_changed) {
+                    Some(rects) => merge_regions(base, rects),
+                    None => Damage::Full, // a referenced node vanished; repaint all
+                }
+            }
+            _ => Damage::Full,
+        };
+        self.presented = self.tree.clone();
+        self.painted_hovered = self.hovered;
+        self.painted_focused = self.focused;
+        self.painted_overlay_active = self.overlay_active;
+        damage
+    }
+
+    /// Logical rects whose hover-highlight or focus-ring overlay changed between
+    /// the on-screen frame (`old`, carrying the `painted_*` ids) and the new
+    /// frame (`new`, carrying the current ids). Returns the (possibly empty) set
+    /// of rects, or `None` if a referenced node is missing — which the caller
+    /// treats as [`Damage::Full`].
+    fn overlay_damage_rects(
+        &self,
+        old: &LayoutNode,
+        new: &LayoutNode,
+        hover_changed: bool,
+        focus_changed: bool,
+    ) -> Option<Vec<Rect>> {
+        let mut rects = Vec::new();
+        if hover_changed {
+            if let Some(id) = self.painted_hovered {
+                rects.push(find_action(old, id)?.bounds);
+            }
+            if let Some(id) = self.hovered {
+                rects.push(find_action(new, id)?.bounds);
+            }
+        }
+        if focus_changed {
+            // The focus ring is a 2px stroke centered on the bounds, so inflate
+            // to cover the half that sits outside (plus a safety margin).
+            if let Some(id) = self.painted_focused {
+                rects.push(inflate(find_focus(old, id)?.bounds, FOCUS_RING_MARGIN));
+            }
+            if let Some(id) = self.focused {
+                rects.push(inflate(find_focus(new, id)?.bounds, FOCUS_RING_MARGIN));
+            }
+        }
+        Some(rects)
+    }
+
+    /// Build, paint, and rasterize the next frame, returning the [`Pixmap`] and
+    /// the [`Damage`] (changed region, in logical pixels) relative to the
+    /// previously returned frame. The first call always reports [`Damage::Full`].
+    fn render_frame(
+        &mut self,
+        state: &S,
+        theme: &Theme,
+        font: Option<&Font>,
+        content: &HashMap<ViewportId, Pixmap>,
+    ) -> (Pixmap, Damage) {
+        let scene = self.build_frame(state, theme, font);
+        let scale = self.scale;
+        let mut pixmap = self.rasterize(scene, theme, scale);
+        self.composite_viewports(&mut pixmap, content, scale);
+        let damage = self.take_damage();
+        (pixmap, damage)
+    }
+
+    /// Build the [accessibility tree](stipple_core::accessibility_tree) for the
+    /// current frame, or `None` until one has been built.
+    fn accessibility_tree(&self) -> Option<stipple_core::AccessNode> {
+        self.tree
+            .as_ref()
+            .map(|t| stipple_core::accessibility_tree(t, self.focused))
+    }
+
+    fn ensure_tree(&mut self, state: &S, theme: &Theme, font: Option<&Font>) {
+        if self.tree.is_none() || self.dirty {
+            let _ = self.build_frame(state, theme, font);
+        }
+    }
+
+    /// Route a completed click at `pos` (logical pixels): update keyboard focus
+    /// to the focusable under the cursor (if any), then dispatch the hit
+    /// element's tap handler. Returns `true` if a tap handler ran.
+    fn click_at(&mut self, state: &mut S, theme: &Theme, font: Option<&Font>, pos: Point) -> bool {
+        self.ensure_tree(state, theme, font);
+        let (hit, foc) = self
+            .tree
+            .as_ref()
+            .map(|t| (hit_test(t, pos), focus_at(t, pos)))
+            .unwrap_or((None, None));
+
+        // Clicking moves focus (to the focusable under the cursor, or away).
+        if foc != self.focused {
+            self.focused = foc;
+            self.dirty = true;
+        }
+        match hit {
+            Some(id) => {
+                let ran = self.handlers.dispatch(id, state);
+                if ran {
+                    self.dirty = true;
+                }
+                ran
+            }
+            None => false,
+        }
+    }
+
+    /// Route a secondary (right) click at `pos` to the context handler under the
+    /// cursor, passing the click position (so it can open a context menu there).
+    /// Returns `true` if a handler ran.
+    fn context_at(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
+        let Some(id) = self.tree.as_ref().and_then(|t| context_at(t, pos)) else {
+            return false;
+        };
+        let ran = self.handlers.dispatch_context(id, pos, state);
+        if ran {
+            self.dirty = true;
+        }
+        ran
+    }
+
+    /// Deliver committed `text` to the focused element. Returns `true` if a
+    /// focused key handler consumed it.
+    fn type_text(&mut self, state: &mut S, theme: &Theme, font: Option<&Font>, text: &str) -> bool {
+        self.send_key(state, theme, font, KeyInput::Text(text.to_string()))
+    }
+
+    /// Deliver an editing key (backspace, arrows, …) to the focused element.
+    fn press_key(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        input: KeyInput,
+    ) -> bool {
+        self.send_key(state, theme, font, input)
+    }
+
+    fn send_key(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        input: KeyInput,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
+        let Some(id) = self.focused else { return false };
+        let ran = self.handlers.dispatch_key(id, &input, state);
+        if ran {
+            self.dirty = true;
+        }
+        ran
+    }
+
+    /// Move focus to the next focusable element in tree order (wrapping),
+    /// like pressing Tab. Returns `true` if focus changed.
+    fn focus_next(&mut self, state: &S, theme: &Theme, font: Option<&Font>) -> bool {
+        self.ensure_tree(state, theme, font);
+        let mut order = Vec::new();
+        if let Some(t) = self.tree.as_ref() {
+            collect_focusables(t, &mut order);
+        }
+        if order.is_empty() {
+            return false;
+        }
+        let next = match self.focused {
+            Some(cur) => match order.iter().position(|f| *f == cur) {
+                Some(i) => order[(i + 1) % order.len()],
+                None => order[0],
+            },
+            None => order[0],
+        };
+        let changed = self.focused != Some(next);
+        self.focused = Some(next);
+        self.dirty = true;
+        changed
+    }
+
+    /// Begin or continue a pointer drag at `pos` (logical pixels). On the first
+    /// call it latches onto the draggable element under the cursor; subsequent
+    /// calls feed it the pointer's fractional x position until [`App::end_drag`].
+    /// Returns `true` if a drag handler ran.
+    fn drag_at_point(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
+        if self.dragging.is_none() {
+            self.dragging = self.tree.as_ref().and_then(|t| drag_at(t, pos));
+        }
+        let Some((id, bounds)) = self.dragging else {
+            return false;
+        };
+        let fraction = if bounds.width() > 0.0 {
+            ((pos.x - bounds.min_x()) / bounds.width()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let ran = self.handlers.dispatch_drag(id, fraction, state);
+        if ran {
+            self.dirty = true;
+        }
+        ran
+    }
+
+    /// End the current drag (pointer released).
+    fn end_drag(&mut self) {
+        self.dragging = None;
+    }
+
+    /// Begin a pointer text interaction at `pos` (logical pixels): if an editable
+    /// text element is under the cursor, focus it, resolve the caret byte index
+    /// from the pointer x, place the caret there (clearing any selection), and
+    /// latch a drag-selection. Returns `true` if a text element was hit.
+    fn text_press_at(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        self.ensure_tree(state, theme, font);
+        let Some((id, index, foc)) = self.tree.as_ref().and_then(|t| {
+            let (id, node) = text_pos_at(t, pos)?;
+            let index = caret_index_at(node, pos, font)?;
+            Some((id, index, focus_at(t, pos)))
+        }) else {
+            return false;
+        };
+        if foc != self.focused {
+            self.focused = foc;
+        }
+        self.text_selecting = Some(id);
+        self.handlers.dispatch_text_pos(id, index, false, state);
+        self.dirty = true;
+        true
+    }
+
+    /// Continue a latched text drag-selection at `pos`: resolve the caret index
+    /// from the pointer x and extend the selection to it. Returns `true` if a
+    /// selection is active and was updated.
+    fn text_drag_at(
+        &mut self,
+        state: &mut S,
+        theme: &Theme,
+        font: Option<&Font>,
+        pos: Point,
+    ) -> bool {
+        let Some(id) = self.text_selecting else {
+            return false;
+        };
+        self.ensure_tree(state, theme, font);
+        let Some(index) = self
+            .tree
+            .as_ref()
+            .and_then(|t| find_text_pos(t, id))
+            .and_then(|node| caret_index_at(node, pos, font))
+        else {
+            return false;
+        };
+        let ran = self.handlers.dispatch_text_pos(id, index, true, state);
+        if ran {
+            self.dirty = true;
+        }
+        ran
+    }
+
+    /// End the current pointer text selection (pointer released).
+    fn end_text_select(&mut self) {
+        self.text_selecting = None;
+    }
+
+    /// Update the hovered element to whatever tappable sits under `pos`.
+    /// Returns `true` if the hovered element changed (the UI should repaint).
+    fn hover_at(&mut self, state: &S, theme: &Theme, font: Option<&Font>, pos: Point) -> bool {
+        self.ensure_tree(state, theme, font);
+        let now = self.tree.as_ref().and_then(|t| hit_test(t, pos));
+        let changed = now != self.hovered;
+        self.hovered = now;
+        changed
+    }
+
+    /// Scroll the container under the last pointer position by `dy` logical
+    /// pixels (positive = reveal content further down). Returns whether anything
+    /// scrolled (the offset is re-clamped to the content during the next build).
+    fn scroll_by(&mut self, state: &S, theme: &Theme, font: Option<&Font>, dy: f64) -> bool {
+        self.ensure_tree(state, theme, font);
+        let Some(id) = self
+            .tree
+            .as_ref()
+            .and_then(|t| stipple_core::scroll_at(t, self.last_pointer))
+        else {
+            return false;
+        };
+        let off = self.scroll_offsets.entry(id).or_insert(0.0);
+        let before = *off;
+        *off = (*off + dy).max(0.0);
+        // A scroll always rebuilds (apply_scroll re-clamps to the content); only
+        // report movement when the unclamped offset actually changed.
+        let moved = (*off - before).abs() > f64::EPSILON;
+        if moved {
+            self.dirty = true;
+        }
+        moved
+    }
+}
+
+impl<S> App<S> {
+    /// Build, paint, and rasterize the primary window's next frame, returning
+    /// the [`Pixmap`] and the [`Damage`] (changed region, logical pixels)
+    /// relative to the previously returned frame. The first call reports
+    /// [`Damage::Full`].
+    pub fn render_frame(&mut self) -> (Pixmap, Damage) {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            viewport_content,
+            ..
+        } = self;
+        panes[0].render_frame(state, theme, font.as_ref(), viewport_content)
+    }
+
+    /// Render a single frame off-screen and return it as a [`Pixmap`]. Needs no
+    /// window — used for tests, thumbnails, and golden-image comparisons.
+    pub fn render_once(&mut self) -> Pixmap {
+        self.render_frame().0
+    }
+
+    /// The primary window's currently focused element, if any.
+    pub fn focused(&self) -> Option<FocusId> {
+        self.panes[0].focused
+    }
+
+    /// Build the [accessibility tree](stipple_core::accessibility_tree) for the
+    /// primary window's current frame — the semantic view a platform AT backend
+    /// would expose. Returns `None` until a frame has been built (call
+    /// [`render_once`](App::render_once) or any event-routing method first).
+    pub fn accessibility_tree(&self) -> Option<stipple_core::AccessNode> {
+        self.panes[0].accessibility_tree()
+    }
+
+    /// Route a completed click at `pos` (logical pixels) to the primary window.
+    pub fn click_at(&mut self, pos: Point) -> bool {
+        self.pane_click_at(0, pos)
+    }
+
+    /// Deliver committed `text` to the primary window's focused element.
+    pub fn type_text(&mut self, text: &str) -> bool {
+        self.pane_type_text(0, text)
+    }
+
+    /// Deliver an editing key to the primary window's focused element.
+    pub fn press_key(&mut self, input: KeyInput) -> bool {
+        self.pane_press_key(0, input)
+    }
+
+    /// Move focus to the next focusable element in the primary window (Tab).
+    pub fn focus_next(&mut self) -> bool {
+        self.pane_focus_next(0)
+    }
+
+    /// Begin or continue a pointer drag at `pos` in the primary window.
+    pub fn drag_at_point(&mut self, pos: Point) -> bool {
+        self.pane_drag_at_point(0, pos)
+    }
+
+    /// End the current drag (pointer released).
+    pub fn end_drag(&mut self) {
+        self.panes[0].end_drag();
+    }
+
+    /// Begin a pointer text interaction at `pos` in the primary window.
+    pub fn text_press_at(&mut self, pos: Point) -> bool {
+        self.pane_text_press_at(0, pos)
+    }
+
+    /// Continue a latched text drag-selection at `pos` in the primary window.
+    pub fn text_drag_at(&mut self, pos: Point) -> bool {
+        self.pane_text_drag_at(0, pos)
+    }
+
+    /// End the current pointer text selection (pointer released).
+    pub fn end_text_select(&mut self) {
+        self.panes[0].end_text_select();
+    }
+
+    /// Update the primary window's hovered element to whatever sits under `pos`.
+    pub fn hover_at(&mut self, pos: Point) -> bool {
+        self.pane_hover_at(0, pos)
+    }
+
+    /// Scroll the container under the last pointer position in the primary
+    /// window by `dy` logical pixels.
+    pub fn scroll_by(&mut self, dy: f64) -> bool {
+        self.pane_scroll_by(0, dy)
+    }
+
+    // --- Per-pane event routing (by window index) --------------------------
+    // The live multi-window loop routes each event to the pane that owns the
+    // window it arrived on; the public methods above are these against pane 0.
+
+    fn pane_click_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].click_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_context_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].context_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_type_text(&mut self, idx: usize, text: &str) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].type_text(state, theme, font.as_ref(), text)
+    }
+
+    fn pane_press_key(&mut self, idx: usize, input: KeyInput) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].press_key(state, theme, font.as_ref(), input)
+    }
+
+    fn pane_focus_next(&mut self, idx: usize) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].focus_next(state, theme, font.as_ref())
+    }
+
+    fn pane_drag_at_point(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].drag_at_point(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_text_press_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].text_press_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_text_drag_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].text_drag_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_hover_at(&mut self, idx: usize, pos: Point) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].hover_at(state, theme, font.as_ref(), pos)
+    }
+
+    fn pane_scroll_by(&mut self, idx: usize, dy: f64) -> bool {
+        let App {
+            state,
+            theme,
+            font,
+            panes,
+            ..
+        } = self;
+        panes[idx].scroll_by(state, theme, font.as_ref(), dy)
+    }
+
+    /// Run the app against the platform backend ([`backend::run`]): native X11
+    /// when `$DISPLAY` is set, else a one-shot headless present. Frames are
+    /// rendered into each window's [`Surface`]; pointer/keyboard events route
+    /// through the same dispatch path used by the headless tests.
+    ///
+    /// Every window registered with [`open_window`](App::open_window) is opened
+    /// as a real OS window on backends that support it (X11 today); each renders
+    /// its own pane onto the shared state, and events are routed to the window
+    /// they arrived on. Backends without multi-window show only the primary
+    /// window. The loop ends when the last window closes.
+    pub fn run(mut self) {
+        let primary_attrs = self.panes[0].attrs.clone();
+        // Per-pane surfaces, created lazily on first present, parallel to panes.
+        let mut surfaces: Vec<Option<Box<dyn Surface>>> =
+            (0..self.panes.len()).map(|_| None).collect();
+        // native window id -> pane index, filled as windows are created.
+        let mut id_to_pane: std::collections::HashMap<WindowId, usize> =
+            std::collections::HashMap::new();
+        let mut open_count = 0usize;
+        let mut opened_extras = false;
+
+        // `force` presents the whole frame regardless of computed damage — used
+        // for expose/resize, where the window's pixels were lost and a partial
+        // update would leave stale or blank regions.
+        let present = |app: &mut Self,
+                       surfaces: &mut [Option<Box<dyn Surface>>],
+                       idx: usize,
+                       window: &dyn stipple_platform::Window,
+                       force: bool| {
+            let App {
+                state,
+                theme,
+                font,
+                panes,
+                viewport_content,
+                ..
+            } = app;
+            let pane = &mut panes[idx];
+            let scale = window.scale_factor();
+            let scene = pane.build_frame(state, theme, font.as_ref());
+            let damage = pane.take_damage();
+
+            // Nothing changed since the last present: render nothing, upload
+            // nothing. (Skips the whole rasterize, not just the upload.)
+            if !force && damage.is_empty() {
+                return;
+            }
+
+            let phys_size = window.inner_size();
+            let surface = surfaces[idx].get_or_insert_with(|| window.create_surface());
+            surface.resize(phys_size);
+            let bounds = Rect::from_xywh(0.0, 0.0, phys_size.width as f64, phys_size.height as f64);
+
+            // Area repaint: re-rasterize only the damaged rects into the
+            // retained pixmap and upload those. Requires the software path, a
+            // localizable (non-forced, region) damage, and a retained pixmap
+            // matching the current surface size.
+            let can_partial = !force
+                && pane.frame_renderer.is_none()
+                && !pane.has_viewports()
+                && matches!(damage, Damage::Regions(_))
+                && pane.last_pixmap.as_ref().map(Pixmap::size) == Some(phys_size);
+
+            if can_partial {
+                let regions = damage.to_physical(scale, bounds);
+                if regions.is_empty() {
+                    return; // damage fell entirely outside the surface
+                }
+                let s = scale.get();
+                let renderer = SoftwareRenderer::new().with_background(theme.palette.background);
+                let pixmap = pane.last_pixmap.as_mut().expect("checked by can_partial");
+                for r in &regions {
+                    let (pw, ph) = (r.width() as u32, r.height() as u32);
+                    if pw == 0 || ph == 0 {
+                        continue;
+                    }
+                    // `regions` are integer device-pixel rects; the matching
+                    // logical view is exactly that rect divided by the scale, so
+                    // the sub-render lands 1:1 on the destination pixels.
+                    let view = Rect::from_xywh(
+                        r.min_x() / s,
+                        r.min_y() / s,
+                        r.width() / s,
+                        r.height() / s,
+                    );
+                    let sub =
+                        renderer.render_region(scene.clone(), view, PhysicalSize::new(pw, ph));
+                    pixmap.blit(&sub, r.min_x() as u32, r.min_y() as u32);
+                }
+                surface.present(pixmap, &regions);
+            } else {
+                // Full render: forced (expose/resize), GPU path, first frame, a
+                // size change, or unlocalizable (`Damage::Full`) damage.
+                let mut pixmap = pane.rasterize(scene, theme, scale);
+                pane.composite_viewports(&mut pixmap, viewport_content, scale);
+                let regions = if force {
+                    Vec::new()
+                } else {
+                    damage.to_physical(scale, bounds)
+                };
+                surface.present(&pixmap, &regions);
+                pane.last_pixmap = Some(pixmap);
+            }
+        };
+
+        backend::run(primary_attrs, |event, window| {
+            let wid = window.id();
+            // On the first event we learn the primary window's id; register it
+            // and ask the backend to open the remaining panes as OS windows.
+            if !opened_extras {
+                opened_extras = true;
+                id_to_pane.insert(wid, 0);
+                open_count = 1;
+                for idx in 1..self.panes.len() {
+                    let attrs = self.panes[idx].attrs.clone();
+                    if let Some(id) = window.open_window(attrs) {
+                        id_to_pane.insert(id, idx);
+                        open_count += 1;
+                    }
+                }
+            }
+            let idx = id_to_pane.get(&wid).copied().unwrap_or(0);
+            match event {
+                Event::RedrawRequested => {
+                    present(&mut self, &mut surfaces, idx, window, true);
+                    ControlFlow::Wait
+                }
+                Event::Resized(size) => {
+                    self.panes[idx].attrs.logical_size = window.scale_factor().to_logical(size);
+                    self.panes[idx].dirty = true;
+                    present(&mut self, &mut surfaces, idx, window, true);
+                    ControlFlow::Wait
+                }
+                // Secondary (right) click: route to a context handler, which
+                // typically opens a context menu at the click position.
+                Event::PointerButton {
+                    button: PointerButton::Right,
+                    state: ButtonState::Pressed,
+                    position,
+                } => {
+                    // A right-press inside a viewport forwards to its content
+                    // (button 1) instead of opening a Stipple context menu.
+                    if self.try_forward_pointer(idx, position, PointerKind::Down(1))
+                        || self.pane_context_at(idx, position)
+                    {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::PointerButton {
+                    button: PointerButton::Left,
+                    state: ButtonState::Pressed,
+                    position,
+                } => {
+                    // A press inside a viewport forwards to its content (button 0)
+                    // and grabs key focus; a press elsewhere drops that focus.
+                    if self.try_forward_pointer(idx, position, PointerKind::Down(0)) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
+                    self.panes[idx].input_viewport = None;
+                    self.panes[idx].pressed = self.panes[idx]
+                        .tree
+                        .as_ref()
+                        .and_then(|t| hit_test(t, position));
+                    // Editable text under the cursor starts a click/drag
+                    // selection; otherwise latch a drag if a draggable sits there.
+                    if self.pane_text_press_at(idx, position)
+                        || self.pane_drag_at_point(idx, position)
+                    {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::PointerMoved { position } => {
+                    self.panes[idx].last_pointer = position;
+                    // Forward moves over a viewport to its content, unless a Stipple
+                    // drag/selection latched on a press outside it is in progress.
+                    if self.panes[idx].text_selecting.is_none()
+                        && self.panes[idx].dragging.is_none()
+                        && self.try_forward_pointer(idx, position, PointerKind::Move)
+                    {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
+                    if self.panes[idx].text_selecting.is_some() {
+                        if self.pane_text_drag_at(idx, position) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                    } else if self.panes[idx].dragging.is_some() {
+                        if self.pane_drag_at_point(idx, position) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                    } else if self.pane_hover_at(idx, position) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::PointerButton {
+                    button: PointerButton::Left,
+                    state: ButtonState::Released,
+                    position,
+                } => {
+                    // Release inside a viewport forwards to its content (button 0).
+                    if self.try_forward_pointer(idx, position, PointerKind::Up(0)) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
+                    if self.panes[idx].text_selecting.is_some() {
+                        self.panes[idx].end_text_select();
+                    } else if self.panes[idx].dragging.is_some() {
+                        self.panes[idx].end_drag();
+                    } else {
+                        let down = self.panes[idx].pressed.take();
+                        let up = self.panes[idx]
+                            .tree
+                            .as_ref()
+                            .and_then(|t| hit_test(t, position));
+                        if down.is_some() && down == up && self.pane_click_at(idx, position) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Text(text) => {
+                    // A viewport with input focus consumes typed text.
+                    if self.try_forward_key(idx, KeyInput::Text(text.clone())) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                        return ControlFlow::Wait;
+                    }
+                    if self.pane_type_text(idx, &text) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Key {
+                    code: KeyCode::Tab,
+                    state: ButtonState::Pressed,
+                    ..
+                } => {
+                    if self.pane_focus_next(idx) {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Key {
+                    code,
+                    state: ButtonState::Pressed,
+                    modifiers,
+                } => {
+                    if let Some(input) = map_key(code, modifiers) {
+                        // A viewport with input focus consumes editing/navigation
+                        // keys too (no clipboard sync — that's the content's job).
+                        if self.try_forward_key(idx, input.clone()) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                            return ControlFlow::Wait;
+                        }
+                        // Pull the OS clipboard into the mirror before a paste,
+                        // and push the mirror to the OS after a copy/cut, so
+                        // editing interoperates with other apps (the mirror alone
+                        // covers the in-app case + headless).
+                        if input == KeyInput::Paste
+                            && let Some(text) = window.clipboard()
+                        {
+                            stipple_core::set_clipboard_text(&text);
+                        }
+                        let writes_clipboard = matches!(input, KeyInput::Copy | KeyInput::Cut);
+                        if self.pane_press_key(idx, input) {
+                            present(&mut self, &mut surfaces, idx, window, false);
+                        }
+                        if writes_clipboard {
+                            window.set_clipboard(&stipple_core::clipboard_text());
+                        }
+                    }
+                    ControlFlow::Wait
+                }
+                Event::Scroll { delta } => {
+                    // A wheel over a viewport scrolls its content, not the chrome.
+                    let at = self.panes[idx].last_pointer;
+                    if self.try_forward_wheel(idx, at, delta.dy)
+                        || self.pane_scroll_by(idx, delta.dy)
+                    {
+                        present(&mut self, &mut surfaces, idx, window, false);
+                    }
+                    ControlFlow::Wait
+                }
+                Event::CloseRequested => {
+                    // Close just this window; end the loop only when the last
+                    // window goes away.
+                    id_to_pane.remove(&wid);
+                    open_count = open_count.saturating_sub(1);
+                    if open_count == 0 {
+                        ControlFlow::Exit
+                    } else {
+                        window.close_window();
+                        ControlFlow::Wait
+                    }
+                }
+                _ => ControlFlow::Wait,
+            }
+        });
+    }
+}
+
+/// Translate a platform [`KeyCode`] (plus active `modifiers`) into a core
+/// [`KeyInput`] editing command. Character input arrives via [`Event::Text`], so
+/// only editing/navigation keys map here. Shift turns caret motions into
+/// selection-extending motions; Ctrl/Cmd+A selects all.
+fn map_key(code: KeyCode, modifiers: Modifiers) -> Option<KeyInput> {
+    let shift = modifiers.shift;
+    Some(match code {
+        KeyCode::Backspace => KeyInput::Backspace,
+        KeyCode::Delete => KeyInput::Delete,
+        KeyCode::ArrowLeft if shift => KeyInput::SelectLeft,
+        KeyCode::ArrowLeft => KeyInput::Left,
+        KeyCode::ArrowRight if shift => KeyInput::SelectRight,
+        KeyCode::ArrowRight => KeyInput::Right,
+        KeyCode::ArrowUp if shift => KeyInput::SelectUp,
+        KeyCode::ArrowUp => KeyInput::Up,
+        KeyCode::ArrowDown if shift => KeyInput::SelectDown,
+        KeyCode::ArrowDown => KeyInput::Down,
+        KeyCode::Home if shift => KeyInput::SelectHome,
+        KeyCode::Home => KeyInput::Home,
+        KeyCode::End if shift => KeyInput::SelectEnd,
+        KeyCode::End => KeyInput::End,
+        KeyCode::Char('a') | KeyCode::Char('A') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::SelectAll
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::Copy
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::Cut
+        }
+        KeyCode::Char('v') | KeyCode::Char('V') if modifiers.ctrl || modifiers.meta => {
+            KeyInput::Paste
+        }
+        KeyCode::Enter => KeyInput::Enter,
+        KeyCode::Escape => KeyInput::Escape,
+        _ => return None,
+    })
+}
+
+/// The common imports for building a Stipple app.
+pub mod prelude {
+    pub use crate::App;
+    pub use stipple_anim::{Easing, Spring, Tween};
+    pub use stipple_core::ViewportId;
+    pub use stipple_core::{
+        Align, Anchor, Axis, BoxStyle, Cx, Element, KeyInput, OverlaySpec, View,
+    };
+    pub use stipple_geometry::{Insets, PhysicalSize, Point, Rect, ScaleFactor, Size};
+    pub use stipple_render::{Color, Font, Pixmap};
+    pub use stipple_style::Theme;
+    pub use stipple_style::{Palette, Spacing, Typography};
+    pub use stipple_widgets::{
+        EditBuffer, Variant, button, button_labeled, button_variant, checkbox, column, divider,
+        edit_string, heading, label, menu, menu_item, open_dialog, open_menu, panel, paragraph,
+        progress_bar, radio, row, scroll, setting_row, slider, spacer, spinner, swatch, switch,
+        tabs, text_area, text_editor, text_field, tooltip, viewport,
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stipple_widgets::{button, column};
+
+    struct Counter {
+        n: i64,
+    }
+
+    /// A counter view: a single 200×80 button at the window origin that
+    /// increments the count. Fixed geometry keeps the hit point predictable.
+    fn counter_app() -> App<Counter> {
+        App::new(
+            Counter { n: 0 },
+            |_state: &Counter, cx: &mut Cx<Counter>| {
+                let theme = *cx.theme();
+                column(vec![
+                    button(&theme)
+                        .width(200.0)
+                        .height(80.0)
+                        .on_tap(cx, |s: &mut Counter| s.n += 1),
+                ])
+            },
+        )
+        .logical_size(Size::new(200.0, 80.0))
+    }
+
+    #[test]
+    fn click_dispatches_handler_and_mutates_state() {
+        let mut app = counter_app();
+        assert_eq!(app.state().n, 0);
+        // Click inside the button.
+        assert!(app.click_at(Point::new(100.0, 40.0)));
+        assert_eq!(app.state().n, 1);
+        app.click_at(Point::new(100.0, 40.0));
+        assert_eq!(app.state().n, 2);
+    }
+
+    #[test]
+    fn click_outside_any_handler_is_a_noop() {
+        let mut app = counter_app().logical_size(Size::new(400.0, 400.0));
+        // (300, 300) is outside the 200×80 button.
+        assert!(!app.click_at(Point::new(300.0, 300.0)));
+        assert_eq!(app.state().n, 0);
+    }
+
+    #[test]
+    fn render_once_matches_window_size() {
+        let mut app = counter_app();
+        assert_eq!(
+            app.render_once().size(),
+            stipple_geometry::PhysicalSize::new(200, 80)
+        );
+    }
+
+    #[test]
+    fn input_forwards_to_a_viewport_sink_in_local_coords() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use stipple_core::{ViewportEvent, ViewportId, collect_viewports};
+
+        let vid = ViewportId(7);
+        let log: Rc<RefCell<Vec<(ViewportId, ViewportEvent)>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink_log = log.clone();
+        let mut app = App::new((), move |_s: &(), _cx: &mut Cx<()>| {
+            column(vec![Element::viewport(vid).width(100.0).height(80.0)])
+        })
+        .logical_size(Size::new(200.0, 150.0))
+        .on_viewport_input(move |id, ev| sink_log.borrow_mut().push((id, ev)));
+
+        // Build the tree, then find the viewport's on-screen rect.
+        app.render_once();
+        let mut vps = Vec::new();
+        collect_viewports(app.panes[0].tree.as_ref().unwrap(), &mut vps);
+        let (_, bounds) = vps[0];
+        let inside = Point::new(bounds.min_x() + 10.0, bounds.min_y() + 5.0);
+
+        // Press inside: forwarded as local (10,5) and grabs keyboard focus.
+        assert!(app.try_forward_pointer(0, inside, PointerKind::Down(0)));
+        assert_eq!(app.panes[0].input_viewport, Some(vid));
+        // Typed text now routes to the viewport (it holds input focus)...
+        assert!(app.try_forward_key(0, KeyInput::Text("x".into())));
+        // ...and release forwards too.
+        assert!(app.try_forward_pointer(0, inside, PointerKind::Up(0)));
+        // A point outside the viewport is never forwarded.
+        let outside = Point::new(bounds.max_x() + 50.0, bounds.max_y() + 50.0);
+        assert!(!app.try_forward_pointer(0, outside, PointerKind::Move));
+
+        let got = log.borrow();
+        assert_eq!(got.len(), 3, "down + key + up");
+        assert!(
+            matches!(&got[0], (v, ViewportEvent::PointerDown { local, button: 0 })
+                if *v == vid && *local == Point::new(10.0, 5.0)),
+            "press forwarded with local coords, got {:?}",
+            got[0]
+        );
+        assert!(matches!(&got[1].1, ViewportEvent::Key(KeyInput::Text(t)) if t == "x"));
+        assert!(matches!(
+            got[2].1,
+            ViewportEvent::PointerUp { button: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn viewport_content_is_composited_over_the_placeholder() {
+        use stipple_core::ViewportId;
+        use stipple_geometry::PhysicalSize;
+        use stipple_render::Color;
+        use stipple_widgets::viewport;
+
+        let vid = ViewportId(1);
+        // A 100×60 window holding a 40×30 viewport inset at (10,10) by a 10px pad.
+        let mut app = App::new((), move |_s: &(), _cx: &mut Cx<()>| {
+            column(vec![viewport(&Theme::light(), vid, 40.0, 30.0)])
+                .padding(stipple_geometry::Insets::uniform(10.0))
+        })
+        .logical_size(Size::new(100.0, 60.0));
+
+        // No content yet: the viewport shows the dark-slate placeholder.
+        let before = app.render_once();
+        assert_eq!(before.pixel(20, 20), Some([0x20, 0x24, 0x2c, 0xff]));
+
+        // Register solid-magenta content sized to the viewport's physical extent.
+        let mut content = Pixmap::new(PhysicalSize::new(40, 30));
+        for px in content.as_bytes_mut().chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 255, 255]);
+        }
+        app.set_viewport_content(vid, content);
+
+        // Now the viewport interior is the content color, and pixels outside the
+        // viewport (e.g. the padding at (2,2)) are untouched.
+        let after = app.render_once();
+        assert_eq!(
+            after.pixel(20, 20),
+            Some([255, 0, 255, 255]),
+            "content blitted"
+        );
+        assert_eq!(
+            after.pixel(30, 25),
+            Some([255, 0, 255, 255]),
+            "interior filled"
+        );
+        assert_ne!(
+            after.pixel(2, 2),
+            Some([255, 0, 255, 255]),
+            "padding outside the viewport is not painted with content"
+        );
+        let _ = Color::WHITE;
+    }
+
+    /// Two stacked 200×40 boxes; tapping the top one flips a flag that only
+    /// recolors the *bottom* box. The layout never moves, so a state change
+    /// should damage just the bottom box — not the whole window.
+    fn damage_app() -> App<bool> {
+        use stipple_core::BoxStyle;
+        use stipple_render::Color;
+        App::new(false, |flipped: &bool, cx: &mut Cx<bool>| {
+            let bottom = if *flipped {
+                Color::rgb(200, 0, 0)
+            } else {
+                Color::rgb(0, 0, 200)
+            };
+            column(vec![
+                Element::boxed(BoxStyle {
+                    fill: Some(Color::rgb(20, 20, 20)),
+                    radius: 0.0,
+                    border: None,
+                })
+                .width(200.0)
+                .height(40.0)
+                .on_tap(cx, |f: &mut bool| *f = !*f),
+                Element::boxed(BoxStyle {
+                    fill: Some(bottom),
+                    radius: 0.0,
+                    border: None,
+                })
+                .width(200.0)
+                .height(40.0),
+            ])
+        })
+        .logical_size(Size::new(200.0, 80.0))
+    }
+
+    #[test]
+    fn first_frame_is_full_then_unchanged_is_none() {
+        let mut app = damage_app();
+        let (_p, d0) = app.render_frame();
+        assert_eq!(d0, Damage::Full, "first frame must repaint everything");
+        // No state change between frames → nothing to repaint.
+        let (_p, d1) = app.render_frame();
+        assert_eq!(d1, Damage::None);
+        assert!(d1.is_empty());
+    }
+
+    #[test]
+    fn state_change_damages_only_the_changed_box() {
+        let mut app = damage_app();
+        let _ = app.render_frame(); // prime the baseline (Full)
+
+        // Tap the top box; only the bottom box's color changes.
+        assert!(app.click_at(Point::new(100.0, 20.0)));
+        let (_p, d) = app.render_frame();
+
+        let bound = match d {
+            Damage::Regions(_) => d.bounding().expect("some region"),
+            other => panic!("expected localized regions, got {other:?}"),
+        };
+        // Damage is confined to the bottom box (y in 40..80), not the full 80px.
+        assert!(bound.min_y() >= 40.0, "damage strayed above the bottom box");
+        assert!(bound.height() <= 40.0, "damage taller than the bottom box");
+        assert!(bound.width() <= 200.0);
+    }
+
+    #[test]
+    fn hover_change_damages_only_the_hovered_box() {
+        let mut app = damage_app();
+        let _ = app.render_frame(); // prime the baseline (Full)
+
+        // Hover the top (tappable) box: the highlight appears on it alone. The
+        // tree is unchanged, so the damage comes purely from hover localization.
+        assert!(app.hover_at(Point::new(100.0, 20.0)));
+        let (_p, d) = app.render_frame();
+        let bound = match &d {
+            Damage::Regions(_) => d.bounding().expect("some region"),
+            other => panic!("expected localized regions, got {other:?}"),
+        };
+        // Confined to the top box (y in 0..40), not the full 80px window.
+        assert!(
+            bound.max_y() <= 40.0,
+            "hover damage strayed into the bottom box"
+        );
+        assert!(bound.height() <= 40.0, "hover damage taller than the box");
+
+        // Moving the hover off any tappable clears the highlight, damaging the
+        // box it just left — again localized, not full.
+        assert!(app.hover_at(Point::new(100.0, 60.0)));
+        let (_p, d) = app.render_frame();
+        let bound = match &d {
+            Damage::Regions(_) => d.bounding().expect("some region"),
+            other => panic!("expected localized regions on unhover, got {other:?}"),
+        };
+        assert!(
+            bound.max_y() <= 40.0,
+            "unhover damage strayed past the old box"
+        );
+    }
+
+    #[derive(Default)]
+    struct Form {
+        name: String,
+    }
+
+    /// A form with a single text field filling the window.
+    fn form_app() -> App<Form> {
+        App::new(Form::default(), |state: &Form, cx: &mut Cx<Form>| {
+            let theme = *cx.theme();
+            stipple_widgets::text_field(cx, &theme, &state.name, |s: &mut Form, k| {
+                stipple_widgets::edit_string(&mut s.name, k)
+            })
+            .width(300.0)
+            .height(100.0)
+        })
+        .logical_size(Size::new(300.0, 100.0))
+    }
+
+    #[test]
+    fn focus_and_type_edits_state() {
+        let mut app = form_app();
+        // Typing with nothing focused is a no-op.
+        assert!(!app.type_text("x"));
+        assert_eq!(app.state().name, "");
+
+        // Focus the field by clicking it, then type.
+        app.click_at(Point::new(150.0, 50.0));
+        assert!(app.focused().is_some());
+        assert!(app.type_text("Ada"));
+        assert_eq!(app.state().name, "Ada");
+
+        // Backspace removes the last character.
+        assert!(app.press_key(KeyInput::Backspace));
+        assert_eq!(app.state().name, "Ad");
+    }
+
+    #[derive(Default)]
+    struct Toggles {
+        on: bool,
+    }
+
+    #[test]
+    fn checkbox_toggles_on_click() {
+        let mut app = App::new(Toggles::default(), |s: &Toggles, cx: &mut Cx<Toggles>| {
+            let theme = *cx.theme();
+            // A checkbox filling the window for a predictable hit point.
+            stipple_widgets::checkbox(cx, &theme, s.on, |t: &mut Toggles| t.on = !t.on)
+                .width(100.0)
+                .height(100.0)
+        })
+        .logical_size(Size::new(100.0, 100.0));
+
+        assert!(!app.state().on);
+        app.click_at(Point::new(50.0, 50.0));
+        assert!(app.state().on);
+        app.click_at(Point::new(50.0, 50.0));
+        assert!(!app.state().on);
+    }
+
+    #[derive(Default)]
+    struct Volume {
+        level: f64,
+    }
+
+    #[test]
+    fn slider_drag_sets_value_from_position() {
+        let mut app = App::new(Volume::default(), |s: &Volume, cx: &mut Cx<Volume>| {
+            let theme = *cx.theme();
+            stipple_widgets::slider(cx, &theme, s.level, |v: &mut Volume, f| v.level = f)
+                .width(200.0)
+        })
+        .logical_size(Size::new(200.0, 40.0));
+
+        // Press at x=150 of a 200-wide slider -> fraction 0.75.
+        app.drag_at_point(Point::new(150.0, 20.0));
+        assert!(
+            (app.state().level - 0.75).abs() < 1e-9,
+            "got {}",
+            app.state().level
+        );
+        // Drag to x=50 -> 0.25.
+        app.drag_at_point(Point::new(50.0, 20.0));
+        assert!((app.state().level - 0.25).abs() < 1e-9);
+        app.end_drag();
+    }
+
+    #[test]
+    fn tab_focuses_first_field() {
+        let mut app = form_app();
+        assert!(app.focused().is_none());
+        assert!(app.focus_next());
+        assert!(app.focused().is_some());
+        assert!(app.type_text("hi"));
+        assert_eq!(app.state().name, "hi");
+    }
+
+    #[test]
+    fn accessibility_tree_reflects_focus() {
+        use stipple_core::Role;
+        // A container root holding a field — the realistic shape (the root is
+        // the Window, the field a nested TextField).
+        let mut app = App::new(Form::default(), |state: &Form, cx: &mut Cx<Form>| {
+            let theme = *cx.theme();
+            let field = stipple_widgets::text_field(cx, &theme, &state.name, |s: &mut Form, k| {
+                stipple_widgets::edit_string(&mut s.name, k)
+            });
+            column(vec![field])
+        })
+        .logical_size(Size::new(300.0, 100.0));
+        app.focus_next(); // focus the field
+        let tree = app.accessibility_tree().expect("a frame was built");
+        assert_eq!(tree.role, Role::Window);
+        // Exactly one node is focused, and it's a text field.
+        let focused: Vec<_> = tree
+            .descendants()
+            .into_iter()
+            .filter(|n| n.focused)
+            .collect();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].role, Role::TextField);
+    }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "viewportdemo"
-description = "Forma example: composite externally-rendered content into an embedded viewport."
+description = "Stipple example: composite externally-rendered content into an embedded viewport."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

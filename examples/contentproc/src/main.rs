@@ -1,11 +1,11 @@
-//! Forma-as-compositor **content process** path, CPU shm dual (Linux).
+//! Stipple-as-compositor **content process** path, CPU shm dual (Linux).
 //!
 //! The browser-compositor architecture end to end, with a CPU buffer instead of
 //! a GPU texture (so it runs with no GPU and verifies headlessly): a UI process
 //! spawns a separate **content process**; the content process renders pixels
 //! into a `memfd` [`SharedBuffer`] and hands the UI process its fd over a Unix
 //! socket (`SCM_RIGHTS`); the UI process maps the *same* memory and composites it
-//! into a [`viewport`](forma::widgets::viewport). Input the UI routes to the
+//! into a [`viewport`](stipple::widgets::viewport). Input the UI routes to the
 //! viewport is forwarded over the socket, and the content process redraws into
 //! the shared buffer — exactly the GPU `dma-buf` flow, minus the GPU.
 //!
@@ -41,14 +41,14 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use forma::platform::shm::SharedBuffer;
-    use forma::platform::{sandbox, scm};
-    use forma::prelude::*;
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, RawFd};
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, ExitCode};
+    use stipple::platform::shm::SharedBuffer;
+    use stipple::platform::{sandbox, scm};
+    use stipple::prelude::*;
 
     const W: u32 = 200;
     const H: u32 = 120;
@@ -208,7 +208,7 @@ mod imp {
             return Ok(ExitCode::from(1));
         }
 
-        // 4. Composite that shared buffer into a Forma viewport and confirm
+        // 4. Composite that shared buffer into a Stipple viewport and confirm
         //    render_once paints the content (not the placeholder) — no display.
         let content = Pixmap::from_rgba8(PhysicalSize::new(w, h), buf.as_slice().to_vec());
         let mut app = App::new((), |_s: &(), _cx: &mut Cx<()>| {

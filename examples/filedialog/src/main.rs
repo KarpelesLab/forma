@@ -1,4 +1,4 @@
-//! Exercises Forma's native file dialog (`forma::platform::dialog`), which on
+//! Exercises Stipple's native file dialog (`stipple::platform::dialog`), which on
 //! Linux drives `org.freedesktop.portal.FileChooser` over the hand-written D-Bus
 //! client — no GTK/Qt, no `zbus`/`dbus` crate.
 //!
@@ -16,7 +16,7 @@ fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
     if mode == "serve" {
         // The path the mock portal "returns" to whoever opens a file.
-        match forma::platform::a11y::run_mock_file_portal("file:///tmp/forma-pick.txt") {
+        match stipple::platform::a11y::run_mock_file_portal("file:///tmp/stipple-pick.txt") {
             Ok(()) => println!("mock portal served one request"),
             Err(e) => {
                 eprintln!("mock portal error: {e}");
@@ -26,7 +26,7 @@ fn main() {
         return;
     }
 
-    use forma::platform::dialog::{self, FileDialog};
+    use stipple::platform::dialog::{self, FileDialog};
     match dialog::open_file(&FileDialog::new().with_title("Pick a file")) {
         Some(path) => println!("PICKED: {}", path.display()),
         None => {

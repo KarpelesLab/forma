@@ -15,8 +15,8 @@
 //! └───────────┴─────┴─────────┘
 //! ```
 
-use forma::prelude::*;
-use forma::widgets::{Variant, button_variant};
+use stipple::prelude::*;
+use stipple::widgets::{Variant, button_variant};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Op {
@@ -239,7 +239,7 @@ fn view(state: &Calc, cx: &mut Cx<Calc>) -> Element {
 
 fn main() {
     let mut app = App::new(Calc::default(), view)
-        .title("Forma Calculator")
+        .title("Stipple Calculator")
         .theme(Theme::dark())
         .logical_size(Size::new(300.0, 460.0));
     if let Some(font) = Font::system_default() {

@@ -1,13 +1,13 @@
-//! Renders a Forma frame on the CPU, routes it through the GPU
-//! ([`forma_gpu::present_offscreen`] — EGL + GLES2 upload → draw → read back),
+//! Renders a Stipple frame on the CPU, routes it through the GPU
+//! ([`stipple_gpu::present_offscreen`] — EGL + GLES2 upload → draw → read back),
 //! and writes the read-back RGBA to `gpu-out.raw`.
 //!
-//! The CI GPU job builds this with `--features forma-gpu/gl`, runs it against
+//! The CI GPU job builds this with `--features stipple-gpu/gl`, runs it against
 //! Mesa's software GL, and converts the raw output to a PNG screenshot. Without
 //! the `gl` feature, `present_offscreen` returns an error and the demo exits
 //! non-zero.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 // Fixed size so CI knows the raw image dimensions (scale 1 ⇒ 420×300 px).
 const W: f64 = 420.0;
@@ -40,7 +40,7 @@ fn main() {
     }
     let cpu = app.render_once();
 
-    match forma_gpu::present_offscreen(&cpu) {
+    match stipple_gpu::present_offscreen(&cpu) {
         Ok(out) => {
             std::fs::write("gpu-out.raw", out.as_bytes()).expect("write raw");
             println!(
@@ -57,7 +57,7 @@ fn main() {
 
     // GPU-native drawing: three solid rectangles tessellated and filled by the
     // GPU (no CPU pixmap), on a dark background.
-    let size = forma::geometry::PhysicalSize::new(W as u32, H as u32);
+    let size = stipple::geometry::PhysicalSize::new(W as u32, H as u32);
     // (rect, color, corner_radius, border_width): a sharp fill, a rounded fill,
     // a pill fill, and a rounded *outline* (border).
     let rects = [
@@ -89,22 +89,22 @@ fn main() {
     // GPU text: rasterize a label to a white-on-black coverage mask on the CPU,
     // then let the GPU composite it (alpha-blended, recolored) over the boxes.
     let mask = Font::system_default().map(|font| {
-        let label = "FORMA - GPU";
+        let label = "STIPPLE - GPU";
         let m = font.measure(label, 30.0);
         let (tw, th) = (m.width.ceil() + 12.0, m.height.ceil() + 6.0);
-        let mut scene = forma::render::Scene::new(Size::new(tw, th));
+        let mut scene = stipple::render::Scene::new(Size::new(tw, th));
         scene.fill_text(&font, label, Point::new(6.0, 2.0), 30.0, Color::WHITE);
-        let pm = forma::render::SoftwareRenderer::new()
+        let pm = stipple::render::SoftwareRenderer::new()
             .with_background(Color::BLACK)
             .render(scene, ScaleFactor::IDENTITY);
         (pm, Rect::from_xywh(40.0, 130.0, tw, th))
     });
-    let texts: Vec<(&forma::render::Pixmap, Rect, Color)> = mask
+    let texts: Vec<(&stipple::render::Pixmap, Rect, Color)> = mask
         .iter()
         .map(|(pm, dst)| (pm, *dst, Color::rgb(0xec, 0xee, 0xf2)))
         .collect();
 
-    match forma_gpu::render_offscreen(size, Color::rgb(0x14, 0x15, 0x18), &rects, &texts) {
+    match stipple_gpu::render_offscreen(size, Color::rgb(0x14, 0x15, 0x18), &rects, &texts) {
         Ok(out) => {
             std::fs::write("gpu-rects.raw", out.as_bytes()).expect("write raw");
             println!(
@@ -125,8 +125,8 @@ fn main() {
     if let Some(font) = Font::system_default() {
         let theme = Theme::dark();
         let element = view(&(), &mut Cx::new(&theme));
-        let scene = forma::core::render_view(&element, Size::new(W, H), &theme, Some(&font));
-        match forma_gpu::render_scene(&scene, theme.palette.background, &font) {
+        let scene = stipple::core::render_view(&element, Size::new(W, H), &theme, Some(&font));
+        match stipple_gpu::render_scene(&scene, theme.palette.background, &font) {
             Ok(out) => {
                 std::fs::write("gpu-scene.raw", out.as_bytes()).expect("write raw");
                 println!(
@@ -145,29 +145,29 @@ fn main() {
     // Vulkan FFI foundation: enumerate physical devices and create a logical
     // device + graphics queue (non-fatal — only built with the `vk` feature).
     // Under Mesa lavapipe this lists "llvmpipe".
-    match forma_gpu::vulkan_devices() {
+    match stipple_gpu::vulkan_devices() {
         Ok(devs) => println!("Vulkan devices: {devs:?}"),
         Err(e) => println!("Vulkan unavailable: {e}"),
     }
-    match forma_gpu::vulkan_init_device() {
+    match stipple_gpu::vulkan_init_device() {
         Ok(summary) => println!("Vulkan init: {summary}"),
         Err(e) => println!("Vulkan init unavailable: {e}"),
     }
-    match forma_gpu::vulkan_init_image(W as u32, H as u32) {
+    match stipple_gpu::vulkan_init_image(W as u32, H as u32) {
         Ok(summary) => println!("Vulkan image: {summary}"),
         Err(e) => println!("Vulkan image unavailable: {e}"),
     }
-    match forma_gpu::vulkan_init_framebuffer(W as u32, H as u32) {
+    match stipple_gpu::vulkan_init_framebuffer(W as u32, H as u32) {
         Ok(summary) => println!("Vulkan framebuffer: {summary}"),
         Err(e) => println!("Vulkan framebuffer unavailable: {e}"),
     }
-    match forma_gpu::vulkan_clear(W as u32, H as u32) {
+    match stipple_gpu::vulkan_clear(W as u32, H as u32) {
         Ok(summary) => println!("Vulkan clear: {summary}"),
         Err(e) => println!("Vulkan clear unavailable: {e}"),
     }
     // The Vulkan capstone: a GPU-rendered frame read back to the CPU and written
     // out, so CI can convert it to a real screenshot.
-    match forma_gpu::vulkan_render_clear(W as u32, H as u32) {
+    match stipple_gpu::vulkan_render_clear(W as u32, H as u32) {
         Ok(pixels) => {
             std::fs::write("gpu-vk.raw", &pixels).expect("write raw");
             println!("Vulkan readback: {} bytes ({W}x{H})", pixels.len());
@@ -176,7 +176,7 @@ fn main() {
     }
     // The full Vulkan pipeline: a triangle drawn by real SPIR-V shaders, read
     // back so CI can confirm the GPU actually rasterized green geometry.
-    match forma_gpu::vulkan_render_triangle(W as u32, H as u32) {
+    match stipple_gpu::vulkan_render_triangle(W as u32, H as u32) {
         Ok(pixels) => {
             std::fs::write("gpu-vk-tri.raw", &pixels).expect("write raw");
             println!("Vulkan triangle: {} bytes ({W}x{H})", pixels.len());

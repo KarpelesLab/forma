@@ -8,7 +8,7 @@
 //! column's 24px padding and a 20px gap, the left button spans x∈[24,184] and
 //! the right x∈[204,364], both at y∈[24,114].
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 fn button(theme: &Theme, label: &str, cx: &mut Cx<()>) -> Element {
     button_labeled(theme, label)
@@ -31,7 +31,7 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
 
 fn main() {
     let mut app = App::new((), view)
-        .title("Forma Hover")
+        .title("Stipple Hover")
         .theme(Theme::dark())
         .logical_size(Size::new(420.0, 160.0));
     if let Some(font) = Font::system_default() {

@@ -4,7 +4,7 @@
 //! lines (Enter inserts a newline), navigate with arrows, and select across
 //! lines with Shift+Down — the caret and selection render on the right line.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 #[derive(Default)]
 struct Form {
@@ -26,7 +26,7 @@ fn view(state: &Form, cx: &mut Cx<Form>) -> Element {
 
 fn main() {
     let mut app = App::new(Form::default(), view)
-        .title("Forma Text Area")
+        .title("Stipple Text Area")
         .theme(Theme::dark())
         .logical_size(Size::new(640.0, 320.0));
     if let Some(font) = Font::system_default() {

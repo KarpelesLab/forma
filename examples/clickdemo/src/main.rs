@@ -5,7 +5,7 @@
 //! the window, and screenshots again ("Clicks: 1") — proving the
 //! native-event → hit-test → dispatch → re-present loop works on a real server.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 struct Clicks {
     n: u32,
@@ -29,7 +29,7 @@ fn view(state: &Clicks, cx: &mut Cx<Clicks>) -> Element {
 
 fn main() {
     let mut app = App::new(Clicks { n: 0 }, view)
-        .title("Forma Clicks")
+        .title("Stipple Clicks")
         .theme(Theme::dark())
         .logical_size(Size::new(640.0, 480.0));
     if let Some(font) = Font::system_default() {

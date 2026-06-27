@@ -1,6 +1,6 @@
 [package]
 name = "filedialog"
-description = "Forma example: native file dialog via the xdg-desktop-portal FileChooser (D-Bus), with a built-in mock portal for headless verification."
+description = "Stipple example: native file dialog via the xdg-desktop-portal FileChooser (D-Bus), with a built-in mock portal for headless verification."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
-forma-platform.workspace = true
+stipple.workspace = true
+stipple-platform.workspace = true
 
 [lints]
 workspace = true

@@ -1,16 +1,16 @@
-//! A **Material 3 (Material You)** theme rendered by Forma's self-drawn widgets.
+//! A **Material 3 (Material You)** theme rendered by Stipple's self-drawn widgets.
 //!
 //! Shows `Theme::material3_*`: the baseline light/dark schemes (the default
 //! `#6750A4` seed) plus two **dynamic-color** schemes generated from arbitrary
 //! seed colors — the "Material You" idea that one brand/wallpaper color recolors
 //! the whole UI. Each scheme is built from tonal palettes (tones are CIELAB
-//! L*) and maps onto Forma's existing tokens, so the standard widgets theme
+//! L*) and maps onto Stipple's existing tokens, so the standard widgets theme
 //! correctly with no changes.
 //!
 //! Writes one raw RGBA file per scheme (`theme0.raw` … `theme3.raw`) at a fixed
 //! size; the CI Material 3 job converts each to a PNG and montages them.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 const W: f64 = 360.0;
 const H: f64 = 320.0;
@@ -50,7 +50,7 @@ fn view(_state: &(), cx: &mut Cx<()>) -> Element {
         .align(Align::Center, Align::Center)
 }
 
-fn render(theme: Theme) -> forma::render::Pixmap {
+fn render(theme: Theme) -> stipple::render::Pixmap {
     let mut app = App::new((), view)
         .theme(theme)
         .logical_size(Size::new(W, H));

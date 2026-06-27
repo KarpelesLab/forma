@@ -1,6 +1,6 @@
 [package]
 name = "a11ydemo"
-description = "Forma example: connect to D-Bus with the hand-written client in forma-platform (the AT-SPI accessibility bridge foundation) and print the unique name."
+description = "Stipple example: connect to D-Bus with the hand-written client in stipple-platform (the AT-SPI accessibility bridge foundation) and print the unique name."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
-forma-platform.workspace = true
+stipple.workspace = true
+stipple-platform.workspace = true
 
 [lints]
 workspace = true

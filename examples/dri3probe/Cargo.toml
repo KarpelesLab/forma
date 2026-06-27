@@ -1,6 +1,6 @@
 [package]
 name = "dri3probe"
-description = "Forma spike: DRI3Open over the raw X11 socket -> the server's DRM fd -> bind that GPU via GBM and round-trip a dma-buf (DRI3 + Present groundwork)."
+description = "Stipple spike: DRI3Open over the raw X11 socket -> the server's DRM fd -> bind that GPU via GBM and round-trip a dma-buf (DRI3 + Present groundwork)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,8 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma-platform.workspace = true
-forma-gpu.workspace = true
+stipple-platform.workspace = true
+stipple-gpu.workspace = true
 
 [lints]
 workspace = true

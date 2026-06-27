@@ -1,6 +1,6 @@
 [package]
 name = "clipboarddemo"
-description = "Forma example: copy/cut/paste in a text field (Ctrl+C/X/V), synced with the OS clipboard."
+description = "Stipple example: copy/cut/paste in a text field (Ctrl+C/X/V), synced with the OS clipboard."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-forma.workspace = true
+stipple.workspace = true
 
 [lints]
 workspace = true

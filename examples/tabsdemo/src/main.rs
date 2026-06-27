@@ -2,7 +2,7 @@
 //! the `tabs` widget and the `on_context` (secondary-click) handler driving an
 //! overlay menu at the click position.
 
-use forma::prelude::*;
+use stipple::prelude::*;
 
 #[derive(Default)]
 struct State {
@@ -72,7 +72,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> Element {
 
 fn main() {
     let mut app = App::new(State::default(), view)
-        .title("Forma Tabs")
+        .title("Stipple Tabs")
         .theme(Theme::dark())
         .logical_size(Size::new(360.0, 440.0));
     if let Some(font) = Font::system_default() {
