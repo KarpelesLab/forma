@@ -246,8 +246,23 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   `AXGroup`. **CI-verified**: the `visual-macos` job recursively walks
   `-accessibilityChildren` through real objc dispatch and reads nested
   `AXStaticText` descendants (e.g. "Welcome to Stipple") under the window root.
-  (The Windows UIA fragment tree — `IRawElementProviderFragment` navigation +
-  `WM_GETOBJECT` window wiring — is the remaining a11y follow-up.)
+  **Windows full element tree:** the UIA bridge likewise vends the whole
+  hierarchy now. `stipple_platform::uia::UiaTree::build` turns an `A11yNode` tree
+  into one hand-written COM provider per node — a combined
+  `IRawElementProviderFragmentRoot` vtable (IUnknown → Simple → Fragment →
+  FragmentRoot) answering `Navigate` (parent/sibling/child), `GetRuntimeId` (a
+  `SAFEARRAY`), `BoundingRectangle`, `get_FragmentRoot`, and `GetFocus`; the
+  Win32 `WM_GETOBJECT` handler returns the root via
+  `UiaReturnRawElementProvider`. **CI-verified**: `uiademo` walks the tree
+  through `Navigate` (FirstChild/NextSibling) over the real COM vtable and reads
+  a nested Text (50020) and a Button (50000) under a Group, plus the focused
+  field via `GetFocus`. Both desktops share the same plumbing: the App maps each
+  frame's `AccessNode` tree into the neutral `stipple_platform::A11yNode` and
+  pushes it through `Window::set_accessibility_tree`. (Remaining a11y depth:
+  bringing the **Linux** AT-SPI server up to the full child tree — it still
+  exposes only the root over `org.a11y.atspi.Accessible` — plus raising
+  `UiaRaiseStructureChangedEvent` to live UIA clients on each tree swap and
+  mapping bounds to screen coordinates.)
 - ✅ **GPU-native drawing**: a live stipple `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `stipple-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a

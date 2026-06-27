@@ -940,9 +940,17 @@ jobs:
         shell: bash
         run: |
           cargo run --release -p uiademo | tee uiademo.log
-          # The hand-built IRawElementProviderSimple answers via its COM vtable:
-          # a server-side provider (options 1), a Group control (50026), "Stipple".
-          grep -q 'UIA provider: options=1 controltype=50026 name="Stipple"' uiademo.log
+          # The hand-built provider answers via its COM vtable: a server-side
+          # provider (options 1) whose root is a Window control (50032), "Stipple".
+          grep -q 'UIA provider: options=1 controltype=50032 name="Stipple"' uiademo.log
+          # ...and the *full* element tree (not just the root) is navigable: a walk
+          # via IRawElementProviderFragment::Navigate (FirstChild/NextSibling)
+          # through real COM dispatch reaches a Text child (50020) and a Button
+          # (50000) nested under a Group — proving the whole hierarchy is exposed.
+          grep -q 'controltype=50020 name="Welcome to Stipple"' uiademo.log
+          grep -q 'controltype=50000 name="OK"' uiademo.log
+          # ...and GetFocus reports the focused TextField.
+          grep -q 'UIA provider: focus="Name"' uiademo.log
           # ...and a GPU-rendered frame must read back as the cleared stipple blue
           # (R=0x60 G=0x9c B=0xff A=0xff), checked tool-free from the printed pixel.
           grep -q "D3D11 readback: .* first pixel 96,156,255,255" d3ddemo.log

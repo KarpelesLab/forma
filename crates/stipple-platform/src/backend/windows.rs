@@ -49,6 +49,9 @@ const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_RBUTTONUP: u32 = 0x0205;
 const WM_MBUTTONDOWN: u32 = 0x0207;
 const WM_MBUTTONUP: u32 = 0x0208;
+const WM_GETOBJECT: u32 = 0x003D;
+/// `lParam` value identifying UIA's request for our root fragment provider.
+const UIA_ROOT_OBJECT_ID: i32 = -25;
 
 const VK_BACK: usize = 0x08;
 const VK_TAB: usize = 0x09;
@@ -138,6 +141,18 @@ unsafe extern "system" {
     fn GetModuleHandleW(name: *const u16) -> Handle;
 }
 
+#[link(name = "uiautomationcore")]
+unsafe extern "system" {
+    /// Package a UIA provider as the `WM_GETOBJECT` reply (handles the COM
+    /// marshalling and `AddRef`), returning the `LRESULT` to pass back.
+    fn UiaReturnRawElementProvider(
+        hwnd: Hwnd,
+        wp: Wparam,
+        lp: Lparam,
+        el: *mut c_void,
+    ) -> Lresult;
+}
+
 #[link(name = "user32")]
 unsafe extern "system" {
     fn RegisterClassW(class: *const WndClassW) -> u16;
@@ -201,6 +216,9 @@ struct WinCtx {
     fb_h: i32,
     /// Events pushed by the [`WndProc`], drained by the message loop.
     queue: Vec<Event>,
+    /// The current UIA provider tree, vended from `WM_GETOBJECT`. Rebuilt each
+    /// time the App pushes a new accessibility tree.
+    uia: Option<crate::uia::UiaTree>,
 }
 
 fn push_event(ev: Event) {
@@ -336,6 +354,24 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wp: Wparam, lp: Lparam)
             }
             0
         }
+        WM_GETOBJECT => {
+            // UIA asks for our root provider with lParam == UiaRootObjectId. Hand
+            // back the live provider tree; other object ids fall through to the
+            // default (e.g. legacy MSAA, which we don't serve).
+            if lp as i32 == UIA_ROOT_OBJECT_ID {
+                let root = CTX.with(|c| {
+                    c.borrow()
+                        .uia
+                        .as_ref()
+                        .map(|t| t.root_provider())
+                        .unwrap_or(std::ptr::null_mut())
+                });
+                if !root.is_null() {
+                    return unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, root) };
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
         WM_CLOSE => {
             push_event(Event::CloseRequested);
             0
@@ -373,6 +409,11 @@ impl Window for WinWindow {
             hwnd: self.hwnd,
             size: self.size,
         })
+    }
+    fn set_accessibility_tree(&self, root: &crate::access::A11yNode) {
+        // Rebuild the UIA provider tree; `WM_GETOBJECT` hands its root to UIA.
+        let tree = crate::uia::UiaTree::build(root);
+        CTX.with(|c| c.borrow_mut().uia = Some(tree));
     }
 }
 
