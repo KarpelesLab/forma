@@ -3,8 +3,11 @@
 Cargo.lock
 .DS_Store
 
+# Claude Code per-project agent memory / local state
+.claude/
+
 # Example output artifacts
-/forma-gallery.png
+/stipple-gallery.png
 *.png
 !docs/**/*.png
 *.raw
