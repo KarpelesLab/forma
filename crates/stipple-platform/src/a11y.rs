@@ -5,11 +5,12 @@
 //!
 //! AT-SPI (the Linux accessibility framework) is layered on D-Bus: an app
 //! connects to a bus, claims a name, and exports a tree of objects implementing
-//! the `org.a11y.atspi.*` interfaces that screen readers walk. This module is
-//! the foundation: connect to the session bus, run the SASL `EXTERNAL`
-//! handshake, and call `org.freedesktop.DBus.Hello` to obtain our unique
-//! connection name. Exposing the [`AccessNode`](stipple_core) tree over
-//! `org.a11y.atspi.Accessible` builds on this.
+//! the `org.a11y.atspi.*` interfaces that screen readers walk. This module
+//! connects to the session bus, runs the SASL `EXTERNAL` handshake, calls
+//! `org.freedesktop.DBus.Hello` for our unique connection name, and then
+//! [`serves the whole accessibility tree`](DBus::serve_atspi_tree) over
+//! `org.a11y.atspi.Accessible` — every node a navigable D-Bus object, the
+//! Linux counterpart of the macOS `NSAccessibility` and Windows UIA bridges.
 
 #![allow(unsafe_code)]
 
@@ -288,18 +289,28 @@ impl DBus {
         }
     }
 
-    /// Serve `node` as an `org.a11y.atspi.Accessible` object: answer `GetRole`
-    /// (the role number) and the `Name` / `ChildCount` properties via
-    /// `org.freedesktop.DBus.Properties.Get`, plus `Peer.Ping` and `Introspect`.
-    /// Loops until the connection drops. This exposes the accessibility tree's
-    /// root over the same interface a screen reader reads. Unknown methods get an
-    /// `UnknownMethod` error.
-    pub fn serve_atspi(&mut self, node: &AtspiNode, introspect_xml: &str) -> Result<(), String> {
+    /// Serve a whole [`AtspiTree`] over `org.a11y.atspi.Accessible`: every node is
+    /// a D-Bus object (the root at [`ATSPI_ROOT_PATH`], the rest at
+    /// `{root}/{index}`), and the tree is walkable exactly as a screen reader
+    /// walks it — `GetChildAtIndex` / `GetChildren` return `(so)` object
+    /// references, `GetRole` / `GetIndexInParent` the node's place, and the
+    /// `Name` / `Description` / `ChildCount` / `Parent` properties its data.
+    /// Loops until the connection drops. Unknown methods get an `UnknownMethod`
+    /// error; calls to an unknown object path get `UnknownObject`.
+    pub fn serve_atspi_tree(
+        &mut self,
+        tree: &AtspiTree,
+        introspect_xml: &str,
+    ) -> Result<(), String> {
+        // Object references name us by our unique bus connection (AT-SPI
+        // convention); a client follows the path, so the bus field is advisory.
+        let bus = self.unique_name.clone();
         loop {
             let m = self.read_message()?;
             if m.mtype != 1 {
                 continue;
             }
+            let idx = node_index_for_path(&m.path);
             match (m.interface.as_str(), m.member.as_str()) {
                 ("org.freedesktop.DBus.Peer", "Ping") => self.send_return(&m, "", &[])?,
                 ("org.freedesktop.DBus.Introspectable", "Introspect") => {
@@ -307,19 +318,65 @@ impl DBus {
                     put_string(&mut body, introspect_xml);
                     self.send_return(&m, "s", &body)?;
                 }
-                ("org.a11y.atspi.Accessible", "GetRole") => {
-                    self.send_return(&m, "u", &node.role.to_le_bytes())?;
+                ("org.a11y.atspi.Accessible", member) => {
+                    let Some(i) = idx.filter(|&i| i < tree.nodes.len()) else {
+                        self.send_error(&m, "org.freedesktop.DBus.Error.UnknownObject")?;
+                        continue;
+                    };
+                    let node = &tree.nodes[i];
+                    match member {
+                        "GetRole" => self.send_return(&m, "u", &node.role.to_le_bytes())?,
+                        "GetRoleName" | "GetLocalizedRoleName" => {
+                            let mut body = Vec::new();
+                            put_string(&mut body, role_name(node.role));
+                            self.send_return(&m, "s", &body)?;
+                        }
+                        "GetIndexInParent" => {
+                            self.send_return(&m, "i", &node.index_in_parent.to_le_bytes())?
+                        }
+                        "GetChildAtIndex" => {
+                            // Arg: one INT32 child index.
+                            let mut off = 0;
+                            let ci = read_u32(&m.body, &mut off).unwrap_or(0) as i32;
+                            let mut body = Vec::new();
+                            match usize::try_from(ci).ok().and_then(|c| node.children.get(c)) {
+                                Some(&c) => put_object_ref(&mut body, &bus, &path_for_index(c)),
+                                None => put_object_ref(&mut body, "", ATSPI_NULL_PATH),
+                            }
+                            self.send_return(&m, "(so)", &body)?;
+                        }
+                        "GetChildren" => {
+                            let refs: Vec<(String, String)> = node
+                                .children
+                                .iter()
+                                .map(|&c| (bus.clone(), path_for_index(c)))
+                                .collect();
+                            let mut body = Vec::new();
+                            put_object_ref_array(&mut body, &refs);
+                            self.send_return(&m, "a(so)", &body)?;
+                        }
+                        _ => self.send_error(&m, "org.freedesktop.DBus.Error.UnknownMethod")?,
+                    }
                 }
                 ("org.freedesktop.DBus.Properties", "Get") => {
                     // Args: (ss) = interface name, property name.
                     let mut off = 0;
                     let _iface = read_string(&m.body, &mut off).unwrap_or_default();
                     let prop = read_string(&m.body, &mut off).unwrap_or_default();
+                    let Some(i) = idx.filter(|&i| i < tree.nodes.len()) else {
+                        self.send_error(&m, "org.freedesktop.DBus.Error.UnknownObject")?;
+                        continue;
+                    };
+                    let node = &tree.nodes[i];
                     let mut body = Vec::new();
                     match prop.as_str() {
                         "Name" => put_variant_string(&mut body, &node.name),
                         "Description" => put_variant_string(&mut body, ""),
-                        "ChildCount" => put_variant_i32(&mut body, node.child_count),
+                        "ChildCount" => put_variant_i32(&mut body, node.children.len() as i32),
+                        "Parent" => match node.parent {
+                            Some(p) => put_variant_object_ref(&mut body, &bus, &path_for_index(p)),
+                            None => put_variant_object_ref(&mut body, "", ATSPI_NULL_PATH),
+                        },
                         _ => {
                             self.send_error(&m, "org.freedesktop.DBus.Error.InvalidArgs")?;
                             continue;
@@ -462,14 +519,94 @@ pub fn run_mock_file_portal(canned_uri: &str) -> Result<(), String> {
     }
 }
 
-/// A node of accessibility data to expose over AT-SPI — a transport-neutral view
-/// (so this crate needs no dependency on the widget tree). Higher layers map
-/// their `AccessNode` to this. `role` is an `org.a11y.atspi` role number.
+/// The object path of the accessibility tree root we serve.
+pub const ATSPI_ROOT_PATH: &str = "/org/stippleui/a11y";
+/// The AT-SPI "null" object reference path (returned where there is no parent /
+/// child).
+const ATSPI_NULL_PATH: &str = "/org/a11y/atspi/null";
+
+/// One node of an [`AtspiTree`]: an `org.a11y.atspi` role number, an accessible
+/// name, and indices linking it into the tree (so this crate needs no dependency
+/// on the widget tree — higher layers flatten their `AccessNode` into this).
 #[derive(Debug, Clone)]
-pub struct AtspiNode {
+pub struct AtspiTreeNode {
     pub role: u32,
     pub name: String,
-    pub child_count: i32,
+    /// Index of the parent node, or `None` for the root.
+    pub parent: Option<usize>,
+    /// Indices of the child nodes, in order.
+    pub children: Vec<usize>,
+    /// This node's position among its parent's children (`-1` for the root).
+    pub index_in_parent: i32,
+}
+
+/// A flattened accessibility tree to expose over AT-SPI. Node `0` is the root
+/// (served at [`ATSPI_ROOT_PATH`]); node `i>0` is served at `{root}/{i}`.
+/// Build it with [`AtspiTree::push`], parents before children.
+#[derive(Debug, Clone, Default)]
+pub struct AtspiTree {
+    pub nodes: Vec<AtspiTreeNode>,
+}
+
+impl AtspiTree {
+    pub fn new() -> AtspiTree {
+        AtspiTree::default()
+    }
+
+    /// Add a node with `role` and `name` under `parent` (`None` for the root),
+    /// returning its index. The root must be pushed first.
+    pub fn push(&mut self, role: u32, name: &str, parent: Option<usize>) -> usize {
+        let idx = self.nodes.len();
+        let index_in_parent = match parent {
+            Some(p) => {
+                let n = self.nodes[p].children.len() as i32;
+                self.nodes[p].children.push(idx);
+                n
+            }
+            None => -1,
+        };
+        self.nodes.push(AtspiTreeNode {
+            role,
+            name: name.to_string(),
+            parent,
+            children: Vec::new(),
+            index_in_parent,
+        });
+        idx
+    }
+}
+
+/// The D-Bus object path for tree node `i` (the root has no index suffix).
+fn path_for_index(i: usize) -> String {
+    if i == 0 {
+        ATSPI_ROOT_PATH.to_string()
+    } else {
+        format!("{ATSPI_ROOT_PATH}/{i}")
+    }
+}
+
+/// Map a served object path back to its tree-node index (inverse of
+/// [`path_for_index`]).
+fn node_index_for_path(path: &str) -> Option<usize> {
+    if path == ATSPI_ROOT_PATH {
+        return Some(0);
+    }
+    path.strip_prefix(ATSPI_ROOT_PATH)?
+        .strip_prefix('/')?
+        .parse()
+        .ok()
+}
+
+/// An `org.a11y.atspi` role number → its conventional role name.
+fn role_name(role: u32) -> &'static str {
+    match role {
+        27 => "frame",
+        54 => "panel",
+        44 => "push button",
+        80 => "entry",
+        29 => "label",
+        _ => "unknown",
+    }
 }
 
 /// A received D-Bus message: header metadata plus the raw body bytes.
@@ -611,6 +748,37 @@ fn put_variant_string(buf: &mut Vec<u8>, s: &str) {
     buf.push(b's');
     buf.push(0);
     put_string(buf, s);
+}
+
+/// Append an AT-SPI object reference `(so)`: a bus name + an object path (both
+/// marshalled as strings; a STRUCT aligns to 8).
+fn put_object_ref(buf: &mut Vec<u8>, bus: &str, path: &str) {
+    align(buf, 8);
+    put_string(buf, bus);
+    put_string(buf, path);
+}
+
+/// Append an array of object references `a(so)`.
+fn put_object_ref_array(buf: &mut Vec<u8>, refs: &[(String, String)]) {
+    align(buf, 4);
+    let len_pos = buf.len();
+    buf.extend_from_slice(&0u32.to_le_bytes()); // array byte-length placeholder
+    align(buf, 8); // STRUCT element alignment
+    let start = buf.len();
+    for (bus, path) in refs {
+        put_object_ref(buf, bus, path);
+    }
+    let len = (buf.len() - start) as u32;
+    buf[len_pos..len_pos + 4].copy_from_slice(&len.to_le_bytes());
+}
+
+/// Append a VARIANT holding an object reference: signature `(so)`, then the
+/// struct.
+fn put_variant_object_ref(buf: &mut Vec<u8>, bus: &str, path: &str) {
+    buf.push(4);
+    buf.extend_from_slice(b"(so)");
+    buf.push(0);
+    put_object_ref(buf, bus, path);
 }
 
 // ---- portal FileChooser marshalling ----------------------------------------
@@ -976,6 +1144,55 @@ fn parse_fields(fields: &[u8]) -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atspi_path_index_round_trip() {
+        for i in [0usize, 1, 5, 42] {
+            assert_eq!(node_index_for_path(&path_for_index(i)), Some(i));
+        }
+        assert_eq!(node_index_for_path(ATSPI_ROOT_PATH), Some(0));
+        assert_eq!(node_index_for_path("/some/other/path"), None);
+    }
+
+    #[test]
+    fn atspi_tree_links_parent_and_index() {
+        // Window > [Hello(label), Group > OK(label)].
+        let mut t = AtspiTree::new();
+        let root = t.push(27, "Win", None);
+        let a = t.push(29, "Hello", Some(root));
+        let g = t.push(54, "", Some(root));
+        let b = t.push(29, "OK", Some(g));
+        assert_eq!(t.nodes[root].children, vec![a, g]);
+        assert_eq!(t.nodes[root].index_in_parent, -1);
+        assert_eq!(t.nodes[g].index_in_parent, 1); // 2nd child of root
+        assert_eq!(t.nodes[b].parent, Some(g));
+        assert_eq!(t.nodes[b].index_in_parent, 0);
+    }
+
+    #[test]
+    fn object_ref_array_round_trips() {
+        // Marshal an a(so) and read it back, exercising the struct/array
+        // alignment the AT-SPI GetChildren reply depends on.
+        let refs = vec![
+            (":1.5".to_string(), "/org/stippleui/a11y/1".to_string()),
+            (String::new(), "/org/stippleui/a11y/2".to_string()),
+        ];
+        let mut buf = Vec::new();
+        put_object_ref_array(&mut buf, &refs);
+        let mut off = 0;
+        let alen = read_u32(&buf, &mut off).unwrap() as usize;
+        align_to(&mut off, 8);
+        let end = off + alen;
+        let mut got = Vec::new();
+        while off < end {
+            align_to(&mut off, 8);
+            let bus = read_string(&buf, &mut off).unwrap();
+            let path = read_string(&buf, &mut off).unwrap();
+            got.push((bus, path));
+        }
+        assert_eq!(got, refs);
+        assert_eq!(off, end);
+    }
 
     #[test]
     fn portal_response_round_trips_a_uri_to_a_path() {

@@ -258,11 +258,20 @@ the buffer onto the screen, and the declarative UI toolkit itself.
   a nested Text (50020) and a Button (50000) under a Group, plus the focused
   field via `GetFocus`. Both desktops share the same plumbing: the App maps each
   frame's `AccessNode` tree into the neutral `stipple_platform::A11yNode` and
-  pushes it through `Window::set_accessibility_tree`. (Remaining a11y depth:
-  bringing the **Linux** AT-SPI server up to the full child tree — it still
-  exposes only the root over `org.a11y.atspi.Accessible` — plus raising
-  `UiaRaiseStructureChangedEvent` to live UIA clients on each tree swap and
-  mapping bounds to screen coordinates.)
+  pushes it through `Window::set_accessibility_tree`.
+  **Linux full element tree:** the AT-SPI server matches — `serve_atspi_tree`
+  exposes every node of an `AtspiTree` as its own D-Bus object (the root at
+  `/org/stippleui/a11y`, the rest at `{root}/{i}`), answering `GetChildren` /
+  `GetChildAtIndex` (`(so)` object references), `GetRole`, `GetIndexInParent`,
+  and the `Name` / `Description` / `ChildCount` / `Parent` properties — the exact
+  surface a screen reader walks. **CI-verified**: under `dbus-run-session`,
+  `dbus-send` navigates the real Stipple UI's tree from the root through
+  `GetChildren` to a nested "OK" label two levels down, and reads each node's
+  role/name/parent. **All three desktops now expose the full hierarchy** (AT-SPI,
+  NSAccessibility, UIA), each hand-written with no helper crate. (Remaining a11y
+  depth: raising change events to live clients — `UiaRaiseStructureChangedEvent`,
+  AT-SPI `children-changed` — on each tree swap, and mapping bounds to screen
+  coordinates.)
 - ✅ **GPU-native drawing**: a live stipple `Scene` renders entirely on the GPU.
   The `Scene` records structured `DrawCmd`s; `stipple-gpu::render_scene` turns box
   primitives (sharp/rounded fills + stroked borders) into geometry shaded by a

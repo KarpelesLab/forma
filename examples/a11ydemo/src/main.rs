@@ -38,13 +38,14 @@ fn atspi_role(role: stipple::core::Role) -> u32 {
 fn main() {
     #[cfg(target_os = "linux")]
     {
+        use stipple::core::AccessNode;
         use stipple::prelude::*;
-        use stipple_platform::a11y::{AtspiNode, DBus};
+        use stipple_platform::a11y::{AtspiTree, DBus};
         let serve = std::env::args().nth(1).as_deref() == Some("serve");
 
         if serve {
             // Build a real Stipple UI and derive its accessibility tree, then
-            // expose the root over AT-SPI.
+            // expose the *whole* tree over AT-SPI.
             let mut app = App::new((), |_s: &(), cx: &mut Cx<()>| {
                 let theme = *cx.theme();
                 panel(
@@ -54,19 +55,36 @@ fn main() {
             });
             app.render_once();
             let root = app.accessibility_tree().expect("accessibility tree");
-            let node = AtspiNode {
-                role: atspi_role(root.role),
-                name: if root.name.is_empty() {
-                    "Stipple".to_string()
+
+            // Flatten the AccessNode tree into the AT-SPI tree (parents first).
+            fn add(tree: &mut AtspiTree, node: &AccessNode, parent: Option<usize>) {
+                let name = if parent.is_none() && node.name.is_empty() {
+                    "Stipple" // the window root takes the app name
                 } else {
-                    root.name.clone()
-                },
-                child_count: root.children.len() as i32,
-            };
+                    &node.name
+                };
+                let idx = tree.push(atspi_role(node.role), name, parent);
+                for c in &node.children {
+                    add(tree, c, Some(idx));
+                }
+            }
+            let mut tree = AtspiTree::new();
+            add(&mut tree, &root, None);
+
+            let r = &tree.nodes[0];
             println!(
                 "a11y root: role={} name={:?} children={}",
-                node.role, node.name, node.child_count
+                r.role,
+                r.name,
+                r.children.len()
             );
+            // Print the full flattened tree so the served hierarchy is visible.
+            for (i, n) in tree.nodes.iter().enumerate() {
+                println!(
+                    "a11y node[{i}]: role={} name={:?} parent={:?} children={:?}",
+                    n.role, n.name, n.parent, n.children
+                );
+            }
 
             let mut bus = match DBus::connect_session() {
                 Ok(b) => b,
@@ -83,7 +101,7 @@ fn main() {
                 }
             }
             // Answer method calls until the connection drops (CI kills us).
-            if let Err(e) = bus.serve_atspi(&node, INTROSPECT_XML) {
+            if let Err(e) = bus.serve_atspi_tree(&tree, INTROSPECT_XML) {
                 eprintln!("serve ended: {e}");
             }
             return;

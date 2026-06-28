@@ -1389,6 +1389,42 @@ jobs:
               /org/stippleui/a11y org.freedesktop.DBus.Properties.Get \
               string:org.a11y.atspi.Accessible string:Name | tee name.log
             grep -q "Stipple" name.log
+
+            # ...and the *full* element tree (not just the root) is navigable, the
+            # way a screen reader walks it. GetChildren returns object references
+            # to the root's two children.
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y org.a11y.atspi.Accessible.GetChildren | tee children.log
+            grep -q '/org/stippleui/a11y/1' children.log
+            grep -q '/org/stippleui/a11y/2' children.log
+            # GetChildAtIndex(0) returns the first child's object reference.
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y org.a11y.atspi.Accessible.GetChildAtIndex int32:0 \
+              | tee child0.log
+            grep -q '/org/stippleui/a11y/1' child0.log
+            # The first child is a label ("Hello", role 29 = LABEL).
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y/1 org.a11y.atspi.Accessible.GetRole | tee crole.log
+            grep -q "uint32 29" crole.log
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y/1 org.freedesktop.DBus.Properties.Get \
+              string:org.a11y.atspi.Accessible string:Name | tee cname.log
+            grep -q "Hello" cname.log
+            # ...and that child reports the root as its Parent.
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y/1 org.freedesktop.DBus.Properties.Get \
+              string:org.a11y.atspi.Accessible string:Parent | tee cparent.log
+            grep -q '"/org/stippleui/a11y"' cparent.log
+            # The button's label nests one level deeper: /2 (a panel/group) holds
+            # /3, the "OK" label — proving multi-level navigation.
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y/2 org.a11y.atspi.Accessible.GetChildren | tee gc.log
+            grep -q '/org/stippleui/a11y/3' gc.log
+            dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
+              /org/stippleui/a11y/3 org.freedesktop.DBus.Properties.Get \
+              string:org.a11y.atspi.Accessible string:Name | tee okname.log
+            grep -q "OK" okname.log
+
             # ...and the standard introspection still works.
             dbus-send --session --print-reply --dest=org.stippleui.A11yDemo \
               /org/stippleui/a11y org.freedesktop.DBus.Introspectable.Introspect | tee introspect.log
